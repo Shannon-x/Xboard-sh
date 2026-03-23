@@ -201,6 +201,7 @@ class Server extends Model
             'encryption' => ['type' => 'string', 'default' => null],
             'encryption_settings' => ['type' => 'array', 'default' => null],
             ...self::REALITY_CONFIGURATION,
+            ...self::REALITY_CONFIGURATION,
             ...self::MULTIPLEX_CONFIGURATION,
             ...self::UTLS_CONFIGURATION
         ],

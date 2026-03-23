@@ -124,7 +124,6 @@ class QuantumultX extends AbstractProtocol
             $encStr .= '.' . ($encSettings['password'] ?? '');
             $config[] = "encryption={$encStr}";
         }
-
         self::applyCommonSettings($config, $server);
 
         return implode(',', array_filter($config)) . "\r\n";

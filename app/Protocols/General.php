@@ -82,11 +82,13 @@ class General extends AbstractProtocol
             "port" => (string) $server['port'],
             "id" => $uuid,
             "aid" => '0',
+            "scy" => "auto",
             "net" => $server['protocol_settings']['network'],
             "type" => "none",
             "host" => "",
             "path" => "",
             "tls" => $protocol_settings['tls'] ? "tls" : "",
+            "fp" => "chrome",
         ];
         if ($serverName = data_get($protocol_settings, 'tls_settings.server_name')) {
             $config['sni'] = $serverName;
@@ -146,10 +148,19 @@ class General extends AbstractProtocol
         $config = [
             'mode' => 'multi', //grpc传输模式
             'security' => '', //传输层安全 tls/reality
-            'encryption' => 'none', //加密方式
+            'encryption' => data_get($protocol_settings, 'encryption', 'none'), //加密方式
             'type' => $server['protocol_settings']['network'], //传输协议
             'flow' => $protocol_settings['flow'] ? $protocol_settings['flow'] : null,
         ];
+        if (data_get($protocol_settings, 'encryption') === 'mlkem768x25519plus') {
+            $encSettings = data_get($protocol_settings, 'encryption_settings', []);
+            $enc = 'mlkem768x25519plus.' . data_get($encSettings, 'mode', 'native') . '.' . data_get($encSettings, 'rtt', '0rtt');
+            if (!empty($encSettings['client_padding'])) {
+                $enc .= '.' . $encSettings['client_padding'];
+            }
+            $enc .= '.' . data_get($encSettings, 'password', '');
+            $config['encryption'] = $enc;
+        }
         // 处理TLS
         switch ($server['protocol_settings']['tls']) {
             case 1:

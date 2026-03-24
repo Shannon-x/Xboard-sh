@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: mbstring, xml, curl, zip, bcmath, gd, pdo_mysql, redis
+          tools: composer:v2
+
+      - name: Get version from tag
+        id: version
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Update version in app.php
+        run: |
+          VERSION="${{ steps.version.outputs.tag }}"
+          sed -i "s/'version' => '.*'/'version' => '$VERSION'/g" config/app.php
+          echo "Set app version to: $VERSION"
+
+      - name: Install Composer dependencies
+        run: |
+          composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
+          composer dump-autoload --optimize --no-dev
+
+      - name: Prepare release archive
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          ARCHIVE_NAME="Xboard-sh-${TAG}"
+
+          # Remove dev/CI files from the release archive
+          rm -rf .git .github .gitignore .gitmodules tests storage/logs/*.log
+          rm -f .env.example phpunit.xml docker-compose*.yml
+
+          # Create archives
+          cd ..
+          cp -r Xboard-sh "${ARCHIVE_NAME}"
+          zip -r "${ARCHIVE_NAME}.zip" "${ARCHIVE_NAME}" -x "*.git*"
+          tar -czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}" --exclude='.git*'
+
+          # Move archives to workspace for upload
+          mv "${ARCHIVE_NAME}.zip" Xboard-sh/
+          mv "${ARCHIVE_NAME}.tar.gz" Xboard-sh/
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV_TAG=$(git tag --sort=-creatordate | head -n 2 | tail -n 1 || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" -20)
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..HEAD")
+          fi
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Release ${{ steps.version.outputs.tag }}"
+          body: |
+            ## Xboard-sh ${{ steps.version.outputs.tag }}
+
+            ### Changes
+            ${{ steps.changelog.outputs.changelog }}
+
+            ### Installation
+            Download and extract the archive, then run:
+            ```bash
+            composer install --no-dev
+            php artisan migrate
+            ```
+          files: |
+            Xboard-sh-${{ steps.version.outputs.tag }}.zip
+            Xboard-sh-${{ steps.version.outputs.tag }}.tar.gz
+          draft: false
+          prerelease: false

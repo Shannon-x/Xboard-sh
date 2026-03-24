@@ -93,7 +93,9 @@ class UniProxyController extends Controller
 
         $response['base_config'] = [
             'push_interval' => (int) admin_setting('server_push_interval', 60),
-            'pull_interval' => (int) admin_setting('server_pull_interval', 60)
+            'pull_interval' => (int) admin_setting('server_pull_interval', 60),
+            'node_report_min_traffic' => (int) admin_setting('server_node_report_min_traffic', 0),
+            'device_online_min_traffic' => (int) admin_setting('server_device_online_min_traffic', 0),
         ];
 
         $eTag = sha1(json_encode($response));

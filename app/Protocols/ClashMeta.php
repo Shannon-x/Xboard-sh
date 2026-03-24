@@ -407,6 +407,16 @@ class ClashMeta extends AbstractProtocol
 
         self::appendMultiplex($array, $protocol_settings);
 
+        if (data_get($protocol_settings, 'encryption') === 'mlkem768x25519plus') {
+            $encSettings = data_get($protocol_settings, 'encryption_settings', []);
+            $enc = 'mlkem768x25519plus.' . data_get($encSettings, 'mode', 'native') . '.' . data_get($encSettings, 'rtt', '0rtt');
+            if (!empty($encSettings['client_padding'])) {
+                $enc .= '.' . $encSettings['client_padding'];
+            }
+            $enc .= '.' . data_get($encSettings, 'password', '');
+            $array['encryption'] = $enc;
+        }
+
         return $array;
     }
 
@@ -562,6 +572,12 @@ class ClashMeta extends AbstractProtocol
         }
         if ($allowInsecure = data_get($protocol_settings, 'tls.allow_insecure')) {
             $array['skip-cert-verify'] = (bool) $allowInsecure;
+        }
+        if ($alpn = data_get($protocol_settings, 'alpn')) {
+            $array['alpn'] = is_array($alpn) ? $alpn : [$alpn];
+        }
+        if ($fingerprint = data_get($protocol_settings, 'fingerprint', 'chrome')) {
+            $array['client-fingerprint'] = $fingerprint;
         }
 
         return $array;

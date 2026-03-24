@@ -143,7 +143,7 @@ class ServerService
             'listen_ip' => '0.0.0.0',
             'server_port' => (int) $serverPort,
             'network' => data_get($protocolSettings, 'network'),
-            'networkSettings' => data_get($protocolSettings, 'network_settings') ?: null,
+            'network_settings' => data_get($protocolSettings, 'network_settings') ?: null,
         ];
 
         $response = match ($nodeType) {
@@ -173,6 +173,19 @@ class ServerService
                 ...$baseConfig,
                 'tls' => (int) $protocolSettings['tls'],
                 'flow' => $protocolSettings['flow'],
+                'encryption' => data_get($protocolSettings, 'encryption'),
+                // Translate frontend field names to V2bX EncSettings JSON keys:
+                // frontend: ticket_time / server_padding / private_key
+                // V2bX:     ticket      / server_padding / private_key
+                // Note: rtt (0rtt/1rtt) and client_padding/password are client-only fields for subscription URIs
+                'encryption_settings' => data_get($protocolSettings, 'encryption') === 'mlkem768x25519plus'
+                    ? array_filter([
+                        'mode'           => data_get($protocolSettings, 'encryption_settings.mode', 'native'),
+                        'ticket'         => data_get($protocolSettings, 'encryption_settings.ticket_time', '600s'),
+                        'server_padding' => data_get($protocolSettings, 'encryption_settings.server_padding'),
+                        'private_key'    => data_get($protocolSettings, 'encryption_settings.private_key'),
+                    ], fn($v) => !is_null($v))
+                    : null,
                 'tls_settings' => match ((int) $protocolSettings['tls']) {
                         2 => $protocolSettings['reality_settings'],
                         default => $protocolSettings['tls_settings'],

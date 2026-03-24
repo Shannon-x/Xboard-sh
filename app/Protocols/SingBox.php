@@ -416,6 +416,16 @@ class SingBox extends AbstractProtocol
             $array['transport'] = array_filter($transport, fn($value) => !is_null($value));
         }
 
+        if (data_get($protocol_settings, 'encryption') === 'mlkem768x25519plus') {
+            $encSettings = data_get($protocol_settings, 'encryption_settings', []);
+            $enc = 'mlkem768x25519plus.' . data_get($encSettings, 'mode', 'native') . '.' . data_get($encSettings, 'rtt', '0rtt');
+            if (!empty($encSettings['client_padding'])) {
+                $enc .= '.' . $encSettings['client_padding'];
+            }
+            $enc .= '.' . data_get($encSettings, 'password', '');
+            $array['encryption'] = $enc;
+        }
+
         return $array;
     }
 

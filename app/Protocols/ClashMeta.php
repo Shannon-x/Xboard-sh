@@ -271,8 +271,9 @@ class ClashMeta extends AbstractProtocol
 
         switch (data_get($protocol_settings, 'network')) {
             case 'tcp':
-                $array['network'] = data_get($protocol_settings, 'network_settings.header.type', 'tcp');
-                if (data_get($protocol_settings, 'network_settings.header.type', 'none') !== 'none') {
+                $headerType = data_get($protocol_settings, 'network_settings.header.type', 'none');
+                $array['network'] = ($headerType === 'http') ? 'http' : 'tcp';
+                if ($headerType === 'http') {
                     if (
                         $httpOpts = array_filter([
                             'headers' => data_get($protocol_settings, 'network_settings.header.request.headers'),
@@ -407,16 +408,6 @@ class ClashMeta extends AbstractProtocol
 
         self::appendMultiplex($array, $protocol_settings);
 
-        if (data_get($protocol_settings, 'encryption') === 'mlkem768x25519plus') {
-            $encSettings = data_get($protocol_settings, 'encryption_settings', []);
-            $enc = 'mlkem768x25519plus.' . data_get($encSettings, 'mode', 'native') . '.' . data_get($encSettings, 'rtt', '0rtt');
-            if (!empty($encSettings['client_padding'])) {
-                $enc .= '.' . $encSettings['client_padding'];
-            }
-            $enc .= '.' . data_get($encSettings, 'password', '');
-            $array['encryption'] = $enc;
-        }
-
         return $array;
     }
 
@@ -430,10 +421,26 @@ class ClashMeta extends AbstractProtocol
             'port' => $server['port'],
             'password' => $password,
             'udp' => true,
-            'skip-cert-verify' => (bool) data_get($protocol_settings, 'allow_insecure', false)
         ];
-        if ($serverName = data_get($protocol_settings, 'server_name')) {
-            $array['sni'] = $serverName;
+
+        $tlsMode = (int) data_get($protocol_settings, 'tls', 1);
+        switch ($tlsMode) {
+            case 2: // Reality
+                $array['skip-cert-verify'] = (bool) data_get($protocol_settings, 'reality_settings.allow_insecure', false);
+                if ($serverName = data_get($protocol_settings, 'reality_settings.server_name')) {
+                    $array['sni'] = $serverName;
+                }
+                $array['reality-opts'] = [
+                    'public-key' => data_get($protocol_settings, 'reality_settings.public_key'),
+                    'short-id' => data_get($protocol_settings, 'reality_settings.short_id'),
+                ];
+                break;
+            default: // Standard TLS
+                $array['skip-cert-verify'] = (bool) data_get($protocol_settings, 'allow_insecure', false);
+                if ($serverName = data_get($protocol_settings, 'server_name')) {
+                    $array['sni'] = $serverName;
+                }
+                break;
         }
 
         self::appendUtls($array, $protocol_settings);
@@ -572,12 +579,6 @@ class ClashMeta extends AbstractProtocol
         }
         if ($allowInsecure = data_get($protocol_settings, 'tls.allow_insecure')) {
             $array['skip-cert-verify'] = (bool) $allowInsecure;
-        }
-        if ($alpn = data_get($protocol_settings, 'alpn')) {
-            $array['alpn'] = is_array($alpn) ? $alpn : [$alpn];
-        }
-        if ($fingerprint = data_get($protocol_settings, 'fingerprint', 'chrome')) {
-            $array['client-fingerprint'] = $fingerprint;
         }
 
         return $array;

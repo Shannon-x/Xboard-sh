@@ -276,7 +276,7 @@ class ServerService
             $response['custom_routes'] = $node['custom_routes'];
         }
 
-        if (!empty($node['cert_config'])) {
+        if (!empty($node['cert_config']) && data_get($node['cert_config'], 'cert_mode') !== 'none') {
             $response['cert_config'] = $node['cert_config'];
         }
 

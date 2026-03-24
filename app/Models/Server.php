@@ -148,6 +148,20 @@ class Server extends Model
         ]
     ];
 
+    private const REALITY_CONFIGURATION = [
+        'reality_settings' => [
+            'type' => 'object',
+            'fields' => [
+                'server_name' => ['type' => 'string', 'default' => null],
+                'server_port' => ['type' => 'string', 'default' => null],
+                'public_key' => ['type' => 'string', 'default' => null],
+                'private_key' => ['type' => 'string', 'default' => null],
+                'short_id' => ['type' => 'string', 'default' => null],
+                'allow_insecure' => ['type' => 'boolean', 'default' => false],
+            ]
+        ]
+    ];
+
     private const UTLS_CONFIGURATION = [
         'utls' => [
             'type' => 'object',
@@ -160,10 +174,12 @@ class Server extends Model
 
     private const PROTOCOL_CONFIGURATIONS = [
         self::TYPE_TROJAN => [
+            'tls' => ['type' => 'integer', 'default' => 1],
             'network' => ['type' => 'string', 'default' => null],
             'network_settings' => ['type' => 'array', 'default' => null],
             'server_name' => ['type' => 'string', 'default' => null],
             'allow_insecure' => ['type' => 'boolean', 'default' => false],
+            ...self::REALITY_CONFIGURATION,
             ...self::MULTIPLEX_CONFIGURATION,
             ...self::UTLS_CONFIGURATION
         ],
@@ -180,32 +196,9 @@ class Server extends Model
             'tls' => ['type' => 'integer', 'default' => 0],
             'tls_settings' => ['type' => 'array', 'default' => null],
             'flow' => ['type' => 'string', 'default' => null],
-            'encryption' => ['type' => 'string', 'default' => null],
-            'encryption_settings' => [
-                'type' => 'object',
-                'fields' => [
-                    'mode' => ['type' => 'string', 'default' => 'native'],
-                    'rtt' => ['type' => 'string', 'default' => '0rtt'],
-                    'ticket_time' => ['type' => 'string', 'default' => '600s'],
-                    'server_padding' => ['type' => 'string', 'default' => null],
-                    'private_key' => ['type' => 'string', 'default' => null],
-                    'client_padding' => ['type' => 'string', 'default' => null],
-                    'password' => ['type' => 'string', 'default' => null]
-                ]
-            ],
             'network' => ['type' => 'string', 'default' => null],
             'network_settings' => ['type' => 'array', 'default' => null],
-            'reality_settings' => [
-                'type' => 'object',
-                'fields' => [
-                    'allow_insecure' => ['type' => 'boolean', 'default' => false],
-                    'server_port' => ['type' => 'string', 'default' => null],
-                    'server_name' => ['type' => 'string', 'default' => null],
-                    'public_key' => ['type' => 'string', 'default' => null],
-                    'private_key' => ['type' => 'string', 'default' => null],
-                    'short_id' => ['type' => 'string', 'default' => null]
-                ]
-            ],
+            ...self::REALITY_CONFIGURATION,
             ...self::MULTIPLEX_CONFIGURATION,
             ...self::UTLS_CONFIGURATION
         ],

@@ -296,6 +296,18 @@ class Loon extends AbstractProtocol
 				break;
 		}
 
+		// 处理 VLESS encryption (e.g. mlkem768x25519plus)
+		$encryption = data_get($protocol_settings, 'encryption');
+		if ($encryption === 'mlkem768x25519plus') {
+			$encSettings = data_get($protocol_settings, 'encryption_settings', []);
+			$encStr = $encryption . '.' . ($encSettings['mode'] ?? 'native') . '.' . ($encSettings['rtt'] ?? '1rtt');
+			if (!empty($encSettings['client_padding'])) {
+				$encStr .= '.' . $encSettings['client_padding'];
+			}
+			$encStr .= '.' . ($encSettings['password'] ?? '');
+			$config[] = "encryption={$encStr}";
+		}
+
 		$config = array_filter($config);
 		$uri = implode(',', $config) . "\r\n";
 		return $uri;

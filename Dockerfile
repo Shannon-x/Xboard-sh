@@ -1,3 +1,21 @@
+# Stage 1: Build XBoard-admin frontend
+FROM node:20-alpine AS admin-builder
+
+WORKDIR /build
+
+ARG ADMIN_REPO_URL=https://github.com/Shannon-x/XBoard-admin.git
+ARG ADMIN_BRANCH=main
+
+# Copy patch script first
+COPY scripts/patch-admin.sh /tmp/patch-admin.sh
+
+RUN apk --no-cache add git && \
+    git clone --depth 1 --branch ${ADMIN_BRANCH} ${ADMIN_REPO_URL} . && \
+    sh /tmp/patch-admin.sh && \
+    npm install && \
+    npm run build
+
+# Stage 2: PHP application
 FROM phpswoole/swoole:php8.2-alpine
 
 COPY --from=mlocati/php-extension-installer /usr/bin/install-php-extensions /usr/local/bin/
@@ -25,8 +43,10 @@ RUN echo "Attempting to clone branch: ${BRANCH_NAME} from ${REPO_URL} with CACHE
     rm -rf ./* && \
     rm -rf .git && \
     git config --global --add safe.directory /www && \
-    git clone --depth 1 --branch ${BRANCH_NAME} ${REPO_URL} . && \
-    git submodule update --init --recursive --force
+    git clone --depth 1 --branch ${BRANCH_NAME} ${REPO_URL} .
+
+# Copy XBoard-admin built assets to replace default admin
+COPY --from=admin-builder /build/dist/ /www/public/assets/admin/
 
 COPY .docker/supervisor/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 

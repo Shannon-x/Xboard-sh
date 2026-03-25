@@ -1,0 +1,53 @@
+name: Sync Admin Frontend
+
+on:
+  repository_dispatch:
+    types: [admin-updated]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Xboard-sh
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build Admin Frontend
+        run: |
+          git clone --depth 1 https://github.com/Shannon-x/XBoard-admin.git /tmp/admin
+          cd /tmp/admin
+          bash $GITHUB_WORKSPACE/scripts/patch-admin.sh
+          npm install
+          npm run build
+          rm -rf $GITHUB_WORKSPACE/public/assets/admin
+          cp -r dist/ $GITHUB_WORKSPACE/public/assets/admin/
+
+      - name: Check for changes
+        id: changes
+        run: |
+          git add -f public/assets/admin/
+          if git diff --cached --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f public/assets/admin/
+          git commit -m "chore: sync admin frontend assets [auto]"
+          git push

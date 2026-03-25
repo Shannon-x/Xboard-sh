@@ -15,7 +15,10 @@
     };
   </script>
   @php
-    $manifestPath = public_path('assets/admin/manifest.json');
+    $manifestPath = public_path('assets/admin/.vite/manifest.json');
+    if (!file_exists($manifestPath)) {
+      $manifestPath = public_path('assets/admin/manifest.json');
+    }
     $manifest = file_exists($manifestPath) ? json_decode(file_get_contents($manifestPath), true) : null;
     $entry = is_array($manifest) ? ($manifest['index.html'] ?? null) : null;
     $scripts = [];

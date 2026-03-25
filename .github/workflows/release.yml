@@ -39,6 +39,21 @@ jobs:
           composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
           composer dump-autoload --optimize --no-dev
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build Admin Frontend
+        run: |
+          git clone --depth 1 https://github.com/Shannon-x/XBoard-admin.git /tmp/admin
+          cd /tmp/admin
+          bash $GITHUB_WORKSPACE/scripts/patch-admin.sh
+          npm install
+          npm run build
+          rm -rf $GITHUB_WORKSPACE/public/assets/admin
+          cp -r dist/ $GITHUB_WORKSPACE/public/assets/admin/
+
       - name: Prepare release archive
         run: |
           TAG="${{ steps.version.outputs.tag }}"

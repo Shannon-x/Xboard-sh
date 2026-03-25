@@ -138,14 +138,12 @@ class ServerService
         $serverPort = $node->server_port;
         $host = $node->host;
 
-        $networkSettings = data_get($protocolSettings, 'network_settings') ?: new \stdClass();
         $baseConfig = [
             'protocol' => $nodeType,
             'listen_ip' => '0.0.0.0',
             'server_port' => (int) $serverPort,
             'network' => data_get($protocolSettings, 'network'),
-            'networkSettings' => $networkSettings,  // camelCase: 兼容已部署的 V2bX (TrojanNode 等)
-            'network_settings' => $networkSettings,  // snake_case: 兼容新版 V2bX (VAllssNode 等)
+            'networkSettings' => data_get($protocolSettings, 'network_settings') ?: null,
         ];
 
         $response = match ($nodeType) {

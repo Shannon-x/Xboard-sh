@@ -198,6 +198,8 @@ class Server extends Model
             'flow' => ['type' => 'string', 'default' => null],
             'network' => ['type' => 'string', 'default' => null],
             'network_settings' => ['type' => 'array', 'default' => null],
+            'encryption' => ['type' => 'string', 'default' => null],
+            'encryption_settings' => ['type' => 'array', 'default' => null],
             ...self::REALITY_CONFIGURATION,
             ...self::MULTIPLEX_CONFIGURATION,
             ...self::UTLS_CONFIGURATION

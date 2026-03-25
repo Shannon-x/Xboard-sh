@@ -148,13 +148,35 @@ class General extends AbstractProtocol
         $port = $server['port']; //节点端口
         $name = $server['name']; //节点名称
 
+        $encryption = data_get($protocol_settings, 'encryption', 'none') ?: 'none';
+
         $config = [
             'mode' => 'multi', //grpc传输模式
             'security' => '', //传输层安全 tls/reality
-            'encryption' => 'none', //加密方式
+            'encryption' => $encryption, //加密方式
             'type' => $server['protocol_settings']['network'], //传输协议
             'flow' => data_get($protocol_settings, 'flow'),
         ];
+
+        // 处理 VLESS encryption (e.g. mlkem768x25519plus)
+        if ($encryption !== 'none' && $encryption !== null) {
+            $encSettings = data_get($protocol_settings, 'encryption_settings', []);
+            if (!empty($encSettings)) {
+                if ($mode = data_get($encSettings, 'mode')) {
+                    $config['enc-mode'] = $mode;
+                }
+                if ($ticket = data_get($encSettings, 'ticket_time')) {
+                    $config['enc-ticket'] = $ticket;
+                }
+                if ($clientPadding = data_get($encSettings, 'client_padding')) {
+                    $config['enc-client-padding'] = $clientPadding;
+                }
+                if ($password = data_get($encSettings, 'password')) {
+                    $config['enc-password'] = $password;
+                }
+            }
+        }
+
         // 处理TLS
         switch ($server['protocol_settings']['tls']) {
             case 1:

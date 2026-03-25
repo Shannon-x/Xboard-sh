@@ -24,10 +24,11 @@ export default defineConfig({
 EOF
 
 # 2. Patch src/services/api.js
-#    - VITE_API_BASE_URL -> window.settings.base_url
-#    - VITE_DASHBOARD_SECURE_PATH -> window.settings.secure_path
+#    - getApiOrigin: use window.location.origin for relative base_url (avoids CORS)
+#    - getDashboardSecurePath: use window.settings.secure_path
 #    - Remove VITE_DASHBOARD_API_TOKEN
-sed -i 's#return import\.meta\.env\.VITE_API_BASE_URL || "/"#return window.settings?.base_url || "/"#' src/services/api.js
+sed -i 's#function getApiOrigin() {#function getApiOrigin() { const b = window.settings?.base_url || "/"; return b.startsWith("http") ? b : window.location.origin; } function _getApiOrigin_unused() {#' src/services/api.js
+sed -i 's#return import\.meta\.env\.VITE_API_BASE_URL || "/"#return window.location.origin#' src/services/api.js
 sed -i 's#return import\.meta\.env\.VITE_DASHBOARD_SECURE_PATH || ""#return window.settings?.secure_path || ""#' src/services/api.js
 sed -i '/const apiToken = import\.meta\.env\.VITE_DASHBOARD_API_TOKEN/d' src/services/api.js
 sed -i 's#storedAuthData || (apiToken ? `Bearer ${apiToken}` : "")#storedAuthData || ""#' src/services/api.js

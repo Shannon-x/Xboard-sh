@@ -7,7 +7,7 @@
   <title>{{ $title }}</title>
   <script>
     window.settings = {
-      base_url: "{{ url('/') }}",
+      base_url: "/",
       title: "{{ $title }}",
       version: "{{ $version }}",
       logo: "{{ $logo }}",

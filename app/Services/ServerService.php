@@ -278,6 +278,27 @@ class ServerService
 
         if (!empty($node['cert_config']) && data_get($node['cert_config'], 'cert_mode') !== 'none') {
             $response['cert_config'] = $node['cert_config'];
+
+            // Merge cert fields into tls_settings for v2node compatibility
+            // v2node reads cert config from tls_settings (cert_mode, cert_file, key_file, provider, dns_env)
+            // V2bX reads cert from local YAML config, so these extra fields are safely ignored
+            $certFields = array_filter([
+                'cert_mode'          => data_get($node['cert_config'], 'cert_mode'),
+                'cert_file'          => data_get($node['cert_config'], 'cert_file'),
+                'key_file'           => data_get($node['cert_config'], 'key_file'),
+                'provider'           => data_get($node['cert_config'], 'provider'),
+                'dns_env'            => data_get($node['cert_config'], 'dns_env'),
+                'reject_unknown_sni' => data_get($node['cert_config'], 'reject_unknown_sni'),
+            ], fn($v) => !is_null($v));
+
+            if (!empty($certFields) && isset($response['tls_settings'])) {
+                $response['tls_settings'] = array_merge(
+                    is_array($response['tls_settings']) ? $response['tls_settings'] : [],
+                    $certFields
+                );
+            } elseif (!empty($certFields) && !isset($response['tls_settings'])) {
+                $response['tls_settings'] = $certFields;
+            }
         }
 
         return $response;

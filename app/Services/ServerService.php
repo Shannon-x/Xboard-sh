@@ -138,7 +138,7 @@ class ServerService
         $serverPort = $node->server_port;
         $host = $node->host;
 
-        $networkSettings = data_get($protocolSettings, 'network_settings') ?: new \stdClass();
+        $networkSettings = data_get($protocolSettings, 'network_settings') ?: null;
         $baseConfig = [
             'protocol' => $nodeType,
             'listen_ip' => '0.0.0.0',

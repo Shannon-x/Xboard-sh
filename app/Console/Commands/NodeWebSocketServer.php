@@ -145,8 +145,7 @@ class NodeWebSocketServer extends Command
             Cache::put("node_ws_alive:{$nodeId}", true, 86400);
 
             // 清理该节点的旧设备数据（节点重连后需重新上报全量）
-            $deviceStateService = app(DeviceStateService::class);
-            $deviceStateService->clearNodeDevices($nodeId);
+            app(DeviceStateService::class)->clearAllNodeDevices($nodeId);
 
             Log::debug("[WS] Node#{$nodeId} connected", [
                 'remote' => $conn->getRemoteIp(),
@@ -205,10 +204,15 @@ class NodeWebSocketServer extends Command
                 NodeRegistry::remove($nodeId);
                 Cache::forget("node_ws_alive:{$nodeId}");
 
-                app(DeviceStateService::class)->clearNodeDevices($nodeId);
+                $service = app(DeviceStateService::class);
+                $affectedUserIds = $service->clearAllNodeDevices($nodeId);
+                foreach ($affectedUserIds as $userId) {
+                    $service->notifyUpdate($userId);
+                }
 
                 Log::debug("[WS] Node#{$nodeId} disconnected", [
                     'total' => NodeRegistry::count(),
+                    'affected_users' => count($affectedUserIds),
                 ]);
             }
         };
@@ -245,16 +249,30 @@ class NodeWebSocketServer extends Command
      */
     private function handleDeviceReport(int $nodeId, array $data): void
     {
-        $deviceStateService = app(DeviceStateService::class);
+        $service = app(DeviceStateService::class);
 
-        // 清理该节点的旧数据
-        $deviceStateService->clearNodeDevices($nodeId);
+        // Get old data for this node
+        $oldDevices = $service->getNodeDevices($nodeId);
 
-        // 全量写入新数据
+        // Calculate diff: find users that were connected but are no longer
+        $removedUsers = array_diff_key($oldDevices, $data);
+        $newDevices = [];
+
         foreach ($data as $userId => $ips) {
             if (is_numeric($userId) && is_array($ips)) {
-                $deviceStateService->setDevices((int) $userId, $nodeId, $ips);
+                $newDevices[(int) $userId] = $ips;
             }
+        }
+
+        // Handle removed users — clean their device data and update online_count
+        foreach ($removedUsers as $userId => $ips) {
+            $service->removeNodeDevices($nodeId, $userId);
+            $service->notifyUpdate($userId);
+        }
+
+        // Handle new/updated users
+        foreach ($newDevices as $userId => $ips) {
+            $service->setDevices($userId, $nodeId, $ips);
         }
 
         // 标记该节点待推送（由定时器批量处理）

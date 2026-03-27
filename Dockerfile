@@ -5,11 +5,13 @@ WORKDIR /build
 
 ARG ADMIN_REPO_URL=https://github.com/Shannon-x/XBoard-admin.git
 ARG ADMIN_BRANCH=main
+ARG CACHEBUST
 
 # Copy patch script first
 COPY scripts/patch-admin.sh /tmp/patch-admin.sh
 
 RUN apk --no-cache add git && \
+    echo "Cache bust: ${CACHEBUST}" && \
     git clone --depth 1 --branch ${ADMIN_BRANCH} ${ADMIN_REPO_URL} . && \
     sh /tmp/patch-admin.sh && \
     npm install && \

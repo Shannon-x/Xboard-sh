@@ -438,7 +438,12 @@ class StatController extends Controller
         $type = $request->input('type');
         $startDate = $request->input('start_time', strtotime('-7 days'));
         $endDate = $request->input('end_time', time());
-        $previousStartDate = $startDate - ($endDate - $startDate);
+        
+        $days = (int)ceil(($endDate - $startDate) / 86400);
+        if ($days < 1) {
+            $days = 1;
+        }
+        $previousStartDate = $startDate - ($days * 86400);
         $previousEndDate = $startDate;
 
         if ($type === 'node') {

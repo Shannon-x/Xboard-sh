@@ -1,1 +1,0 @@
-import{a as e,c as t,i as n,o as r,s as i}from"./index-CrAgGK8d.js";var a={class:`not-found`},o=n({__name:`NotFoundPage`,setup(n){return i(()=>{document.title=`404 Not Found`}),(n,i)=>(t(),r(`div`,a,[...i[0]||=[e(`h1`,null,`404 Not Found`,-1),e(`p`,null,`nginx`,-1)]]))}},[[`__scopeId`,`data-v-fb2e0a68`]]);export{o as default};

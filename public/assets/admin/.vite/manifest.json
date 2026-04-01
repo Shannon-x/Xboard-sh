@@ -15,7 +15,7 @@
     "name": "simple-mode"
   },
   "index.html": {
-    "file": "assets/index-ByAofcCu.js",
+    "file": "assets/index-osOjYb1P.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -139,11 +139,11 @@
       "src/views/NotFoundPage.vue"
     ],
     "css": [
-      "assets/index-DygYeqFr.css"
+      "assets/index-C-UOkUeK.css"
     ]
   },
   "node_modules/@codemirror/lang-angular/dist/index.js": {
-    "file": "assets/dist-BwyzReuv.js",
+    "file": "assets/dist-CgR6Vq9X.js",
     "name": "dist",
     "src": "node_modules/@codemirror/lang-angular/dist/index.js",
     "isDynamicEntry": true,
@@ -181,7 +181,7 @@
     ]
   },
   "node_modules/@codemirror/lang-jinja/dist/index.js": {
-    "file": "assets/dist-DlnM-ayS.js",
+    "file": "assets/dist-BnMved5p.js",
     "name": "dist",
     "src": "node_modules/@codemirror/lang-jinja/dist/index.js",
     "isDynamicEntry": true,
@@ -200,7 +200,7 @@
     ]
   },
   "node_modules/@codemirror/lang-less/dist/index.js": {
-    "file": "assets/dist-DMlJX6zB.js",
+    "file": "assets/dist-C_y2AdOk.js",
     "name": "dist",
     "src": "node_modules/@codemirror/lang-less/dist/index.js",
     "isDynamicEntry": true,
@@ -210,7 +210,7 @@
     ]
   },
   "node_modules/@codemirror/lang-liquid/dist/index.js": {
-    "file": "assets/dist-DM-SumJ4.js",
+    "file": "assets/dist-zo8tJDMk.js",
     "name": "dist",
     "src": "node_modules/@codemirror/lang-liquid/dist/index.js",
     "isDynamicEntry": true,
@@ -220,7 +220,7 @@
     ]
   },
   "node_modules/@codemirror/lang-php/dist/index.js": {
-    "file": "assets/dist-D7NuGJOI.js",
+    "file": "assets/dist-Bc-Rex2T.js",
     "name": "dist",
     "src": "node_modules/@codemirror/lang-php/dist/index.js",
     "isDynamicEntry": true,
@@ -249,7 +249,7 @@
     ]
   },
   "node_modules/@codemirror/lang-sass/dist/index.js": {
-    "file": "assets/dist-BzwlVfw9.js",
+    "file": "assets/dist-Cyjqnq3E.js",
     "name": "dist",
     "src": "node_modules/@codemirror/lang-sass/dist/index.js",
     "isDynamicEntry": true,
@@ -269,7 +269,7 @@
     ]
   },
   "node_modules/@codemirror/lang-vue/dist/index.js": {
-    "file": "assets/dist-Dm2yLzVg.js",
+    "file": "assets/dist-ZXjhU_cY.js",
     "name": "dist",
     "src": "node_modules/@codemirror/lang-vue/dist/index.js",
     "isDynamicEntry": true,
@@ -882,7 +882,7 @@
     "isDynamicEntry": true
   },
   "src/views/NotFoundPage.vue": {
-    "file": "assets/NotFoundPage-VFKntdqo.js",
+    "file": "assets/NotFoundPage-BrJ7d1Ms.js",
     "name": "NotFoundPage",
     "src": "src/views/NotFoundPage.vue",
     "isDynamicEntry": true,

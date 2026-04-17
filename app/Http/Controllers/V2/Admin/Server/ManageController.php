@@ -120,12 +120,17 @@ class ManageController extends Controller
     public function copy(Request $request)
     {
         $server = Server::find($request->input('id'));
-        $server->show = 0;
-        $server->code = null;
         if (!$server) {
             return $this->fail([400202, '服务器不存在']);
         }
-        Server::create($server->toArray());
+
+        $copiedServer = $server->replicate();
+        $copiedServer->show = 0;
+        $copiedServer->code = null;
+        $copiedServer->u = 0;
+        $copiedServer->d = 0;
+        $copiedServer->save();
+
         return $this->success(true);
     }
 }

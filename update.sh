@@ -10,7 +10,10 @@ if ! command -v git &> /dev/null; then
     exit 1
 fi
 
-git config --global --add safe.directory $(pwd)
+REPO_DIR=$(pwd)
+if ! git config --global --get-all safe.directory | grep -qxF "$REPO_DIR"; then
+  git config --global --add safe.directory "$REPO_DIR"
+fi
 git fetch --all && git reset --hard origin/master && git pull origin master
 rm -rf composer.lock composer.phar
 wget https://github.com/composer/composer/releases/latest/download/composer.phar -O composer.phar

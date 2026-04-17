@@ -14,6 +14,7 @@ class Surfboard extends AbstractProtocol
         Server::TYPE_SHADOWSOCKS,
         Server::TYPE_VMESS,
         Server::TYPE_TROJAN,
+        Server::TYPE_ANYTLS,
     ];
     const CUSTOM_TEMPLATE_FILE = 'resources/rules/custom.surfboard.conf';
     const DEFAULT_TEMPLATE_FILE = 'resources/rules/default.surfboard.conf';
@@ -56,6 +57,10 @@ class Surfboard extends AbstractProtocol
                 // [Proxy Group]
                 $proxyGroup .= $item['name'] . ', ';
             }
+            if ($item['type'] === Server::TYPE_ANYTLS) {
+                $proxies .= self::buildAnyTLS($item['password'], $item);
+                $proxyGroup .= $item['name'] . ', ';
+            }
         }
 
         $config = subscribe_template('surfboard');
@@ -89,7 +94,7 @@ class Surfboard extends AbstractProtocol
             "{$server['name']}=ss",
             "{$server['host']}",
             "{$server['port']}",
-            "encrypt-method={$protocol_settings['cipher']}",
+            "encrypt-method=" . data_get($protocol_settings, 'cipher'),
             "password={$password}",
             'tfo=true',
             'udp-relay=true'
@@ -189,5 +194,31 @@ class Surfboard extends AbstractProtocol
         $uri = implode(',', $config);
         $uri .= "\r\n";
         return $uri;
+    }
+
+    public static function buildAnyTLS($password, $server)
+    {
+        $protocol_settings = data_get($server, 'protocol_settings', []);
+
+        $config = [
+            "{$server['name']}=anytls",
+            "{$server['host']}",
+            "{$server['port']}",
+            "password={$password}",
+            "tfo=true",
+            "udp-relay=true"
+        ];
+
+        if ($serverName = data_get($protocol_settings, 'tls.server_name')) {
+            $config[] = "sni={$serverName}";
+        }
+
+        if (data_get($protocol_settings, 'tls.allow_insecure')) {
+            $config[] = "skip-cert-verify=true";
+        }
+
+        $config = array_filter($config);
+
+        return implode(',', $config) . "\r\n";
     }
 }

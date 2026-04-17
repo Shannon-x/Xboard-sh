@@ -230,4 +230,61 @@ class Helper
     {
         return $transfer_enable / 1073741824;
     }
+
+    /**
+     * Normalize and validate ECH settings array.
+     * Returns null if ECH is disabled or settings are missing/invalid.
+     */
+    public static function normalizeEchSettings($ech = null): ?array
+    {
+        if (!is_array($ech) && !is_object($ech)) {
+            return null;
+        }
+
+        if (!data_get($ech, 'enabled')) {
+            return null;
+        }
+
+        return array_filter([
+            'enabled'           => true,
+            'config'            => self::trimToNull(data_get($ech, 'config')),
+            'query_server_name' => self::trimToNull(data_get($ech, 'query_server_name')),
+            'key'               => self::trimToNull(data_get($ech, 'key')),
+            'key_path'          => self::trimToNull(data_get($ech, 'key_path')),
+            'config_path'       => self::trimToNull(data_get($ech, 'config_path')),
+        ], static fn($value) => $value !== null);
+    }
+
+    /**
+     * Convert an ECH config (PEM or raw base64) to a Mihomo-compatible base64 string.
+     * Mihomo (Clash.Meta) expects raw base64-encoded ECHConfigList.
+     */
+    public static function toMihomoEchConfig(?string $config): ?string
+    {
+        $config = self::trimToNull($config);
+        if (!$config) {
+            return null;
+        }
+
+        if (str_starts_with($config, '-----BEGIN')) {
+            if (preg_match('/-----BEGIN ECH CONFIGS-----\s*(.*?)\s*-----END ECH CONFIGS-----/s', $config, $matches)) {
+                return preg_replace('/\s+/', '', $matches[1]);
+            }
+            return null;
+        }
+
+        return preg_replace('/\s+/', '', $config);
+    }
+
+    /**
+     * Trim a value to a non-empty string, returning null if blank/non-string.
+     */
+    public static function trimToNull($value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+        $value = trim($value);
+        return $value === '' ? null : $value;
+    }
 }

@@ -1,23 +1,6 @@
-# Stage 1: Build XBoard-admin frontend
-FROM node:20-alpine AS admin-builder
-
-WORKDIR /build
-
-ARG ADMIN_REPO_URL=https://github.com/Shannon-x/XBoard-admin.git
-ARG ADMIN_BRANCH=main
-ARG CACHEBUST
-
-# Copy patch script first
-COPY scripts/patch-admin.sh /tmp/patch-admin.sh
-
-RUN apk --no-cache add git && \
-    echo "Cache bust: ${CACHEBUST}" && \
-    git clone --depth 1 --branch ${ADMIN_BRANCH} ${ADMIN_REPO_URL} . && \
-    sh /tmp/patch-admin.sh && \
-    npm install && \
-    npm run build
-
-# Stage 2: PHP application
+# Stage 1: PHP application
+# Admin frontend is built natively on x86 in CI and injected via COPY at build time.
+# This avoids QEMU arm64 SIGILL from Node.js 20 using unsupported ARMv8.x CPU instructions.
 FROM phpswoole/swoole:php8.2-alpine
 
 COPY --from=mlocati/php-extension-installer /usr/bin/install-php-extensions /usr/local/bin/
@@ -47,8 +30,9 @@ RUN echo "Attempting to clone branch: ${BRANCH_NAME} from ${REPO_URL} with CACHE
     git config --global --add safe.directory /www && \
     git clone --depth 1 --branch ${BRANCH_NAME} ${REPO_URL} .
 
-# Copy XBoard-admin built assets to replace default admin
-COPY --from=admin-builder /build/dist/ /www/public/assets/admin/
+# Copy prebuilt XBoard-admin assets (built natively on x86 in CI before this stage)
+# The CI workflow downloads the artifact to prebuilt-admin-dist/ and passes it as build context
+COPY prebuilt-admin-dist/ /www/public/assets/admin/
 
 COPY .docker/supervisor/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
@@ -59,11 +43,11 @@ RUN composer install --no-cache --no-dev \
     && chmod -R 775 /www \
     && mkdir -p /data \
     && chown redis:redis /data
-    
+
 ENV ENABLE_WEB=true \
     ENABLE_HORIZON=true \
     ENABLE_REDIS=false \
     ENABLE_WS_SERVER=false
 
 EXPOSE 7001
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"] 
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

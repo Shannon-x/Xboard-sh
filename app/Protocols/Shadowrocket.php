@@ -173,6 +173,7 @@ class Shadowrocket extends AbstractProtocol
             'serviceName' => '',
             'security' => '',
             'flow' => data_get($protocol_settings, 'flow', ''),
+            'tfo' => 1,
         ];
 
         // 处理 TLS

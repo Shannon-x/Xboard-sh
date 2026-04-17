@@ -8,7 +8,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   # ── Job 1: Build admin frontend natively on x86 ───────────────────────────
@@ -17,15 +16,9 @@ jobs:
     steps:
       - name: Checkout Xboard-sh (for patch script)
         uses: actions/checkout@v4
-        with:
-          path: xboard-sh
 
-      - name: Checkout XBoard-admin
-        uses: actions/checkout@v4
-        with:
-          repository: Shannon-x/XBoard-admin
-          ref: main
-          path: xboard-admin
+      - name: Clone XBoard-admin
+        run: git clone --depth 1 --branch main https://github.com/Shannon-x/XBoard-admin.git xboard-admin
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -37,7 +30,7 @@ jobs:
       - name: Patch and build admin frontend
         run: |
           cd xboard-admin
-          sh ${{ github.workspace }}/xboard-sh/scripts/patch-admin.sh
+          sh ${{ github.workspace }}/scripts/patch-admin.sh
           npm install
           npm run build
 
@@ -78,6 +71,12 @@ jobs:
           name: admin-dist
           path: prebuilt-admin-dist/
 
+      # Docker image names must be lowercase
+      - name: Set lowercase image name
+        id: image
+        run: |
+          echo "name=$(echo '${{ env.REGISTRY }}/${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -94,12 +93,6 @@ jobs:
           sed -i "s/'version' => '.*'/'version' => '$VERSION'/g" config/app.php
           echo "Updated version to: $VERSION"
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v5
@@ -107,8 +100,7 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           push: true
-          labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=build-${{ matrix.suffix }}
           cache-to: type=gha,scope=build-${{ matrix.suffix }},mode=max
           build-args: |
@@ -139,6 +131,11 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Checkout code (for metadata)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download amd64 digest
         uses: actions/download-artifact@v4
         with:
@@ -161,16 +158,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Checkout code (for metadata)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      # Docker image names must be lowercase
+      - name: Set lowercase image name
+        id: image
+        run: |
+          echo "name=$(echo '${{ env.REGISTRY }}/${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.image.outputs.name }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -183,13 +181,10 @@ jobs:
 
       - name: Create and push multi-arch manifest
         run: |
-          # Build tag arguments
           TAGS=$(echo "${{ steps.meta.outputs.tags }}" | sed 's/^/--tag /' | tr '\n' ' ')
-          # Build digest arguments from downloaded artifacts
-          DIGESTS=$(ls /tmp/digests | xargs -I {} echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:{}" | tr '\n' ' ')
-          # Create manifest
+          DIGESTS=$(ls /tmp/digests | xargs -I {} echo "${{ steps.image.outputs.name }}@sha256:{}" | tr '\n' ' ')
           docker buildx imagetools create $TAGS $DIGESTS
 
       - name: Inspect manifest
         run: |
-          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          docker buildx imagetools inspect ${{ steps.image.outputs.name }}:latest

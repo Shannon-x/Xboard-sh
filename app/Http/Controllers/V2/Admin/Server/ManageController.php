@@ -62,8 +62,22 @@ class ManageController extends Controller
         }
 
         if ($echRef !== null) {
+            $echRef['enabled'] = true;
             if (($echRef['type'] ?? '') === 'custom') {
                 $outerSni = $echRef['query_server_name'] ?? '';
+                
+                // 从旧配置中恢复 config 和 key
+                if ($request->input('id')) {
+                    $oldServer = Server::find($request->input('id'));
+                    if ($oldServer) {
+                        $oldEch = $oldServer->protocol_settings['tls_settings']['ech'] ?? $oldServer->protocol_settings['tls']['ech'] ?? null;
+                        if ($oldEch && empty($echRef['key'])) {
+                            $echRef['key'] = $oldEch['key'] ?? '';
+                            $echRef['config'] = $oldEch['config'] ?? '';
+                        }
+                    }
+                }
+
                 if ($outerSni && (empty($echRef['key']) || empty($echRef['config']))) {
                     $echPair = \App\Utils\Helper::generateEchKeyPair($outerSni);
                     if (empty($echRef['key'])) $echRef['key'] = $echPair['ech_key'];

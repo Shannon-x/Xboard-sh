@@ -54,14 +54,20 @@ class ManageController extends Controller
         $params = $request->validated();
 
         // 自动生成 ECH 密钥对
+        $echRef = null;
         if (isset($params['protocol_settings']['tls_settings']['ech']) && is_array($params['protocol_settings']['tls_settings']['ech'])) {
-            $ech = &$params['protocol_settings']['tls_settings']['ech'];
-            if (($ech['type'] ?? '') === 'custom') {
-                $outerSni = $ech['query_server_name'] ?? '';
-                if ($outerSni && (empty($ech['key']) || empty($ech['config']))) {
+            $echRef = &$params['protocol_settings']['tls_settings']['ech'];
+        } elseif (isset($params['protocol_settings']['tls']['ech']) && is_array($params['protocol_settings']['tls']['ech'])) {
+            $echRef = &$params['protocol_settings']['tls']['ech'];
+        }
+
+        if ($echRef !== null) {
+            if (($echRef['type'] ?? '') === 'custom') {
+                $outerSni = $echRef['query_server_name'] ?? '';
+                if ($outerSni && (empty($echRef['key']) || empty($echRef['config']))) {
                     $echPair = \App\Utils\Helper::generateEchKeyPair($outerSni);
-                    if (empty($ech['key'])) $ech['key'] = $echPair['ech_key'];
-                    if (empty($ech['config'])) $ech['config'] = $echPair['ech_config'];
+                    if (empty($echRef['key'])) $echRef['key'] = $echPair['ech_key'];
+                    if (empty($echRef['config'])) $echRef['config'] = $echPair['ech_config'];
                 }
             }
         }

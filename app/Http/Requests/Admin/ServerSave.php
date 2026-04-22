@@ -40,6 +40,7 @@ class ServerSave extends FormRequest
             'network_settings' => 'nullable|array',
             'tls_settings.server_name' => 'nullable|string',
             'tls_settings.allow_insecure' => 'nullable|boolean',
+            'tls_settings.ech' => 'nullable|array',
         ],
         'trojan' => [
             'tls' => 'nullable|integer',
@@ -47,6 +48,7 @@ class ServerSave extends FormRequest
             'network_settings' => 'nullable|array',
             'server_name' => 'nullable|string',
             'allow_insecure' => 'nullable|boolean',
+            'tls_settings.ech' => 'nullable|array',
             'reality_settings.allow_insecure' => 'nullable|boolean',
             'reality_settings.server_name' => 'nullable|string',
             'reality_settings.server_port' => 'nullable|integer',
@@ -62,6 +64,7 @@ class ServerSave extends FormRequest
             'obfs.password' => 'string|nullable',
             'tls.server_name' => 'nullable|string',
             'tls.allow_insecure' => 'nullable|boolean',
+            'tls.ech' => 'nullable|array',
             'bandwidth.up' => 'nullable|integer',
             'bandwidth.down' => 'nullable|integer',
             'hop_interval' => 'integer|nullable',
@@ -75,6 +78,7 @@ class ServerSave extends FormRequest
             'encryption_settings' => 'nullable|array',
             'tls_settings.server_name' => 'nullable|string',
             'tls_settings.allow_insecure' => 'nullable|boolean',
+            'tls_settings.ech' => 'nullable|array',
             'reality_settings.allow_insecure' => 'nullable|boolean',
             'reality_settings.server_name' => 'nullable|string',
             'reality_settings.server_port' => 'nullable|integer',
@@ -100,6 +104,7 @@ class ServerSave extends FormRequest
             'tls' => 'nullable|array',
             'alpn' => 'nullable|string',
             'padding_scheme' => 'nullable|array',
+            'tls_settings.ech' => 'nullable|array',
         ],
     ];
 

@@ -52,6 +52,20 @@ class ManageController extends Controller
     public function save(ServerSave $request)
     {
         $params = $request->validated();
+
+        // 自动生成 ECH 密钥对
+        if (isset($params['protocol_settings']['tls_settings']['ech']) && is_array($params['protocol_settings']['tls_settings']['ech'])) {
+            $ech = &$params['protocol_settings']['tls_settings']['ech'];
+            if (($ech['type'] ?? '') === 'custom') {
+                $outerSni = $ech['query_server_name'] ?? '';
+                if ($outerSni && (empty($ech['key']) || empty($ech['config']))) {
+                    $echPair = \App\Utils\Helper::generateEchKeyPair($outerSni);
+                    if (empty($ech['key'])) $ech['key'] = $echPair['ech_key'];
+                    if (empty($ech['config'])) $ech['config'] = $echPair['ech_config'];
+                }
+            }
+        }
+
         if ($request->input('id')) {
             $server = Server::find($request->input('id'));
             if (!$server) {

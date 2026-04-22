@@ -238,11 +238,26 @@ class Helper
     public static function normalizeEchSettings($ech = null): ?array
     {
         if (!is_array($ech) && !is_object($ech)) {
+            if ($ech === 'cloudflare') {
+                return [
+                    'enabled' => true,
+                    'type' => 'cloudflare',
+                    'config' => 'cloudflare-ech.com+https://doh.pub/dns-query'
+                ];
+            }
             return null;
         }
 
         if (!data_get($ech, 'enabled')) {
             return null;
+        }
+
+        if (data_get($ech, 'type') === 'cloudflare') {
+            return [
+                'enabled' => true,
+                'type' => 'cloudflare',
+                'config' => 'cloudflare-ech.com+https://doh.pub/dns-query'
+            ];
         }
 
         return array_filter([
@@ -266,6 +281,10 @@ class Helper
             return null;
         }
 
+        if (str_starts_with($config, 'cloudflare-ech')) {
+            return $config;
+        }
+
         if (str_starts_with($config, '-----BEGIN')) {
             if (preg_match('/-----BEGIN ECH CONFIGS-----\s*(.*?)\s*-----END ECH CONFIGS-----/s', $config, $matches)) {
                 return preg_replace('/\s+/', '', $matches[1]);
@@ -286,5 +305,48 @@ class Helper
         }
         $value = trim($value);
         return $value === '' ? null : $value;
+    }
+
+    /**
+     * Generate ECH (Encrypted Client Hello) key pair for sing-box / Xray.
+     * Produces ech_key (MarshalECHKeys format, for server inbound)
+     * and ech_config (ECHConfigList, for client outbound).
+     *
+     * @param string $outerSni The cover/front domain for the outer ClientHello SNI.
+     */
+    public static function generateEchKeyPair($outerSni)
+    {
+        $privateKey = random_bytes(32);
+        $publicKey = sodium_crypto_scalarmult_base($privateKey);
+
+        $configId = random_int(0, 255);
+
+        // ECHConfig contents per draft-ietf-tls-esni
+        $configData = pack('C', $configId);              // config_id
+        $configData .= pack('n', 0x0020);                // kem_id: DHKEM(X25519, HKDF-SHA256)
+        $configData .= pack('n', 32) . $publicKey;       // public_key with length prefix
+        // cipher suites: {HKDF-SHA256, AES-128-GCM}, {HKDF-SHA256, AES-256-GCM}, {HKDF-SHA256, ChaCha20-Poly1305}
+        $suites = pack('nnnnnn', 0x0001, 0x0001, 0x0001, 0x0002, 0x0001, 0x0003);
+        $configData .= pack('n', strlen($suites)) . $suites;
+        $configData .= pack('C', 0);                     // maximum_name_length
+        $configData .= pack('C', strlen($outerSni)) . $outerSni; // public_name
+        $configData .= pack('n', 0);                     // extensions (empty)
+
+        // ECHConfig = version(0xfe0d) + length + data
+        $echConfig = pack('n', 0xfe0d) . pack('n', strlen($configData)) . $configData;
+
+        // ECHConfigList for client
+        $echConfigList = $echConfig;
+
+        // MarshalECHKeys for server
+        $echKeys = pack('n', strlen($echConfig)) . $echConfig;
+        $echKeys .= pack('n', 1);                        // num_keys = 1
+        $echKeys .= pack('C', $configId);                // config_id
+        $echKeys .= pack('n', 32) . $privateKey;         // private key with length prefix
+
+        return [
+            'ech_key' => base64_encode($echKeys),
+            'ech_config' => base64_encode($echConfigList),
+        ];
     }
 }

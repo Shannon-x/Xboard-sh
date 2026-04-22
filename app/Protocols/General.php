@@ -182,6 +182,11 @@ class General extends AbstractProtocol
                 if (data_get($protocol_settings, 'tls_settings.allow_insecure')) {
                     $config['allowInsecure'] = '1';
                 }
+                if ($ech = Helper::normalizeEchSettings(data_get($protocol_settings, 'tls_settings.ech'))) {
+                    if ($echConfig = Helper::toMihomoEchConfig(data_get($ech, 'config'))) {
+                        $config['ech'] = $echConfig;
+                    }
+                }
                 break;
             case 2: //reality
                 $config['security'] = "reality";
@@ -266,6 +271,11 @@ class General extends AbstractProtocol
                 }
                 if ($fp = Helper::getTlsFingerprint(data_get($protocol_settings, 'utls'))) {
                     $array['fp'] = $fp;
+                }
+                if ($ech = Helper::normalizeEchSettings(data_get($protocol_settings, 'tls_settings.ech'))) {
+                    if ($echConfig = Helper::toMihomoEchConfig(data_get($ech, 'config'))) {
+                        $array['ech'] = $echConfig;
+                    }
                 }
                 break;
         }

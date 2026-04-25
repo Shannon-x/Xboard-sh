@@ -36,6 +36,27 @@ class ClashMeta extends AbstractProtocol
                 'http' => '0.0.0',
                 'h2' => '0.0.0',
                 'httpupgrade' => '0.0.0',
+                'xhttp' => '0.0.0',
+            ],
+            'strict' => true,
+        ],
+        '*.vmess.protocol_settings.network' => [
+            'whitelist' => [
+                'tcp' => '0.0.0',
+                'ws' => '0.0.0',
+                'grpc' => '0.0.0',
+                'http' => '0.0.0',
+                'h2' => '0.0.0',
+                'httpupgrade' => '0.0.0',
+            ],
+            'strict' => true,
+        ],
+        '*.trojan.protocol_settings.network' => [
+            'whitelist' => [
+                'tcp' => '0.0.0',
+                'ws' => '0.0.0',
+                'grpc' => '0.0.0',
+                'httpupgrade' => '0.0.0',
             ],
             'strict' => true,
         ],
@@ -465,6 +486,18 @@ class ClashMeta extends AbstractProtocol
                 if ($host = data_get($protocol_settings, 'network_settings.host'))
                     $array['ws-opts']['headers'] = ['Host' => $host];
                 break;
+            case 'xhttp':
+                $array['network'] = 'xhttp';
+                $xhttpOpts = [];
+                if ($path = data_get($protocol_settings, 'network_settings.path'))
+                    $xhttpOpts['path'] = $path;
+                if ($host = data_get($protocol_settings, 'network_settings.host'))
+                    $xhttpOpts['host'] = $host;
+                if ($mode = data_get($protocol_settings, 'network_settings.mode'))
+                    $xhttpOpts['mode'] = $mode;
+                if (!empty($xhttpOpts))
+                    $array['xhttp-opts'] = $xhttpOpts;
+                break;
             default:
                 break;
         }
@@ -574,9 +607,11 @@ class ClashMeta extends AbstractProtocol
             'up' => data_get($protocol_settings, 'bandwidth.up'),
             'down' => data_get($protocol_settings, 'bandwidth.down'),
             'skip-cert-verify' => (bool) data_get($protocol_settings, 'tls.allow_insecure', false),
+            'udp' => true,
         ];
         if (isset($server['ports'])) {
             $array['ports'] = $server['ports'];
+            $array['mport'] = $server['ports'];
         }
         if ($hopInterval = data_get($protocol_settings, 'hop_interval')) {
             $array['hop-interval'] = (int) $hopInterval;
@@ -780,19 +815,14 @@ class ClashMeta extends AbstractProtocol
         }
     }
 
-    /**
-     * Append ECH (Encrypted Client Hello) configuration to a Clash proxy array.
-     * Only injects when ECH is enabled and a valid config string is present.
-     * Clients on older versions are excluded via $protocolRequirements version gates.
-     */
-    protected static function appendEch(array &$array, $ech): void
+    protected static function appendEch(&$array, $ech): void
     {
-        if (!$normalized = Helper::normalizeEchSettings($ech)) {
-            return;
-        }
-        $config = Helper::toMihomoEchConfig(data_get($normalized, 'config'));
-        if ($config) {
-            $array['ech-config'] = $config;
+        if ($normalized = Helper::normalizeEchSettings($ech)) {
+            $array['ech-opts'] = array_filter([
+                'enable' => true,
+                'config' => Helper::toMihomoEchConfig(data_get($normalized, 'config')),
+                'query-server-name' => data_get($normalized, 'query_server_name'),
+            ], fn($value) => $value !== null);
         }
     }
 }

@@ -16,6 +16,7 @@ dns:
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
   use-hosts: true
+  respect-rules: true
   nameserver-policy:
     "+.google.com": "https://dns.cloudflare.com/dns-query"
     "+.googleapis.com": "https://dns.cloudflare.com/dns-query"
@@ -37,6 +38,9 @@ dns:
     - https://dns.alidns.com/dns-query
     - tls://dot.pub:853
     - tls://dns.alidns.com:853
+  proxy-server-nameserver:
+    - https://doh.pub/dns-query
+    - https://dns.alidns.com/dns-query
   fallback:
     - https://dns.cloudflare.com/dns-query
     - https://dns.google/dns-query

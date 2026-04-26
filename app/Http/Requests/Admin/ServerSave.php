@@ -48,6 +48,8 @@ class ServerSave extends FormRequest
             'network_settings' => 'nullable|array',
             'server_name' => 'nullable|string',
             'allow_insecure' => 'nullable|boolean',
+            'tls_settings.server_name' => 'nullable|string',
+            'tls_settings.allow_insecure' => 'nullable|boolean',
             'tls_settings.ech' => 'nullable|array',
             'reality_settings.allow_insecure' => 'nullable|boolean',
             'reality_settings.server_name' => 'nullable|string',
@@ -96,12 +98,21 @@ class ServerSave extends FormRequest
             'tls' => 'required|integer',
             'tls_settings' => 'nullable|array',
         ],
+        'tuic' => [
+            'version' => 'nullable|integer',
+            'congestion_control' => 'nullable|string',
+            'alpn' => 'nullable|array',
+            'udp_relay_mode' => 'nullable|string',
+            'tls' => 'nullable|array',
+            'tls.ech' => 'nullable|array',
+        ],
         'mieru' => [
             'transport' => 'required|string|in:TCP,UDP',
             'traffic_pattern' => 'string'
         ],
         'anytls' => [
             'tls' => 'nullable|array',
+            'tls.ech' => 'nullable|array',
             'alpn' => 'nullable|string',
             'padding_scheme' => 'nullable|array',
             'tls_settings.ech' => 'nullable|array',

@@ -8,6 +8,7 @@ use App\Http\Requests\Admin\ServerSave;
 use App\Models\Server;
 use App\Models\ServerGroup;
 use App\Services\ServerService;
+use App\Utils\Helper;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -52,42 +53,11 @@ class ManageController extends Controller
     public function save(ServerSave $request)
     {
         $params = $request->validated();
-
-        // 自动生成 ECH 密钥对
-        $echRef = null;
-        if (isset($params['protocol_settings']['tls_settings']['ech']) && is_array($params['protocol_settings']['tls_settings']['ech'])) {
-            $echRef = &$params['protocol_settings']['tls_settings']['ech'];
-        } elseif (isset($params['protocol_settings']['tls']['ech']) && is_array($params['protocol_settings']['tls']['ech'])) {
-            $echRef = &$params['protocol_settings']['tls']['ech'];
-        }
-
-        if ($echRef !== null) {
-            $echRef['enabled'] = true;
-            if (($echRef['type'] ?? '') === 'custom') {
-                $outerSni = $echRef['query_server_name'] ?? '';
-                
-                // 从旧配置中恢复 config 和 key
-                if ($request->input('id')) {
-                    $oldServer = Server::find($request->input('id'));
-                    if ($oldServer) {
-                        $oldEch = $oldServer->protocol_settings['tls_settings']['ech'] ?? $oldServer->protocol_settings['tls']['ech'] ?? null;
-                        if ($oldEch && empty($echRef['key'])) {
-                            $echRef['key'] = $oldEch['key'] ?? '';
-                            $echRef['config'] = $oldEch['config'] ?? '';
-                        }
-                    }
-                }
-
-                if ($outerSni && (empty($echRef['key']) || empty($echRef['config']))) {
-                    $echPair = \App\Utils\Helper::generateEchKeyPair($outerSni);
-                    if (empty($echRef['key'])) $echRef['key'] = $echPair['ech_key'];
-                    if (empty($echRef['config'])) $echRef['config'] = $echPair['ech_config'];
-                }
-            }
-        }
+        $oldServer = $request->input('id') ? Server::find($request->input('id')) : null;
+        $this->normalizeEchPayload($params, $oldServer);
 
         if ($request->input('id')) {
-            $server = Server::find($request->input('id'));
+            $server = $oldServer ?: Server::find($request->input('id'));
             if (!$server) {
                 return $this->fail([400202, '服务器不存在']);
             }
@@ -109,6 +79,122 @@ class ManageController extends Controller
         }
 
 
+    }
+
+    private function normalizeEchPayload(array &$params, ?Server $oldServer): void
+    {
+        if (!isset($params['protocol_settings']) || !is_array($params['protocol_settings'])) {
+            return;
+        }
+
+        $oldSettings = $oldServer?->protocol_settings ?? [];
+
+        foreach (['tls_settings', 'tls'] as $tlsKey) {
+            if (
+                !isset($params['protocol_settings'][$tlsKey]) ||
+                !is_array($params['protocol_settings'][$tlsKey]) ||
+                !array_key_exists('ech', $params['protocol_settings'][$tlsKey])
+            ) {
+                continue;
+            }
+
+            $oldEch = data_get($oldSettings, "{$tlsKey}.ech")
+                ?: data_get($oldSettings, 'tls_settings.ech')
+                ?: data_get($oldSettings, 'tls.ech');
+
+            $params['protocol_settings'][$tlsKey]['ech'] = $this->normalizeSingleEch(
+                $params['protocol_settings'][$tlsKey]['ech'],
+                is_array($oldEch) ? $oldEch : null
+            );
+        }
+    }
+
+    private function normalizeSingleEch($ech, ?array $oldEch): ?array
+    {
+        if ($ech === null || $ech === false || !is_array($ech)) {
+            return null;
+        }
+
+        if (array_key_exists('enabled', $ech) && !$this->toBool($ech['enabled'])) {
+            return null;
+        }
+
+        $type = trim((string) ($ech['type'] ?? data_get($oldEch, 'type', '')));
+        if ($type === '' && $this->hasAnyEchValue($ech)) {
+            $type = $this->hasAnyEchValue($oldEch) ? (string) data_get($oldEch, 'type', 'custom') : 'custom';
+        }
+        if ($type === '') {
+            $type = 'cloudflare';
+        }
+
+        if ($type === 'cloudflare') {
+            return [
+                'enabled' => true,
+                'type' => 'cloudflare',
+                'config' => 'cloudflare-ech.com+https://doh.pub/dns-query',
+                'query_server_name' => null,
+                'key' => null,
+                'key_path' => null,
+                'config_path' => null,
+            ];
+        }
+
+        if ($type !== 'custom') {
+            return null;
+        }
+
+        $queryServerName = $this->trimToNull($ech['query_server_name'] ?? data_get($oldEch, 'query_server_name'));
+        $oldQueryServerName = $this->trimToNull(data_get($oldEch, 'query_server_name'));
+        $queryChanged = $oldQueryServerName && $queryServerName && $oldQueryServerName !== $queryServerName;
+
+        $config = $queryChanged ? null : $this->trimToNull($ech['config'] ?? data_get($oldEch, 'config'));
+        $key = $queryChanged ? null : $this->trimToNull($ech['key'] ?? data_get($oldEch, 'key'));
+
+        if ($queryServerName && (!$config || !$key)) {
+            $echPair = Helper::generateEchKeyPair($queryServerName);
+            $key = $echPair['ech_key'];
+            $config = $echPair['ech_config'];
+        }
+
+        return [
+            'enabled' => true,
+            'type' => 'custom',
+            'config' => $config,
+            'query_server_name' => $queryServerName,
+            'key' => $key,
+            'key_path' => $this->trimToNull($ech['key_path'] ?? data_get($oldEch, 'key_path')),
+            'config_path' => $this->trimToNull($ech['config_path'] ?? data_get($oldEch, 'config_path')),
+        ];
+    }
+
+    private function hasAnyEchValue(?array $ech): bool
+    {
+        if (!$ech) {
+            return false;
+        }
+
+        foreach (['config', 'query_server_name', 'key', 'key_path', 'config_path'] as $field) {
+            if ($this->trimToNull($ech[$field] ?? null) !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function toBool($value): bool
+    {
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? (bool) $value;
+    }
+
+    private function trimToNull($value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+        return $value === '' ? null : $value;
     }
 
     public function update(Request $request)

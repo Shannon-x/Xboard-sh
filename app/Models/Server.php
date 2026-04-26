@@ -177,6 +177,7 @@ class Server extends Model
             'type' => 'object',
             'fields' => [
                 'enabled' => ['type' => 'boolean', 'default' => false],
+                'type' => ['type' => 'string', 'default' => null],
                 'config' => ['type' => 'string', 'default' => null],
                 'query_server_name' => ['type' => 'string', 'default' => null],
                 'key' => ['type' => 'string', 'default' => null],
@@ -331,8 +332,34 @@ class Server extends Model
         foreach ($configs as $key => $config) {
             $value = $settings[$key] ?? null;
             $result[$key] = $this->castValueWithConfig($value, $config);
+            if ($key === 'ech' && is_array($result[$key])) {
+                $result[$key] = $this->normalizeStoredEchConfig($result[$key]);
+            }
         }
         return $result;
+    }
+
+    private function normalizeStoredEchConfig(array $ech): array
+    {
+        if (!($ech['enabled'] ?? false) || !empty($ech['type'])) {
+            return $ech;
+        }
+
+        $config = $ech['config'] ?? null;
+        if (is_string($config) && str_starts_with($config, 'cloudflare-ech')) {
+            $ech['type'] = 'cloudflare';
+            return $ech;
+        }
+
+        foreach (['config', 'query_server_name', 'key', 'key_path', 'config_path'] as $field) {
+            if (isset($ech[$field]) && trim((string) $ech[$field]) !== '') {
+                $ech['type'] = 'custom';
+                return $ech;
+            }
+        }
+
+        $ech['type'] = 'cloudflare';
+        return $ech;
     }
 
     public function getProtocolSettingsAttribute($value)

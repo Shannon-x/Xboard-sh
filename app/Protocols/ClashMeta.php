@@ -104,17 +104,19 @@ class ClashMeta extends AbstractProtocol
         'verge.anytls.protocol_settings.tls.ech.enabled' => [
             1 => '1.19.9',
         ],
+        // FlClash version scheme is 0.8.x (app version), not Mihomo kernel version.
+        // FlClash >= 0.8.0 bundles ECH-capable Mihomo core.
         'flclash.vmess.protocol_settings.tls_settings.ech.enabled' => [
-            1 => '1.19.9',
+            1 => '0.8.0',
         ],
         'flclash.vless.protocol_settings.tls_settings.ech.enabled' => [
-            1 => '1.19.9',
+            1 => '0.8.0',
         ],
         'flclash.trojan.protocol_settings.tls_settings.ech.enabled' => [
-            1 => '1.19.9',
+            1 => '0.8.0',
         ],
         'flclash.anytls.protocol_settings.tls.ech.enabled' => [
-            1 => '1.19.9',
+            1 => '0.8.0',
         ],
         'nekobox.vmess.protocol_settings.tls_settings.ech.enabled' => [
             1 => '1.19.9',
@@ -437,6 +439,11 @@ class ClashMeta extends AbstractProtocol
                     'short-id' => data_get($protocol_settings, 'reality_settings.short_id')
                 ];
                 self::appendUtls($array, $protocol_settings);
+                // Reality requires client-fingerprint for uTLS handshake.
+                // Default to 'chrome' if not explicitly configured via utls settings.
+                if (!isset($array['client-fingerprint'])) {
+                    $array['client-fingerprint'] = 'chrome';
+                }
                 break;
             default:
                 break;
@@ -554,6 +561,10 @@ class ClashMeta extends AbstractProtocol
         }
 
         self::appendUtls($array, $protocol_settings);
+        // Reality requires client-fingerprint for uTLS handshake
+        if ($tlsMode === 2 && !isset($array['client-fingerprint'])) {
+            $array['client-fingerprint'] = 'chrome';
+        }
         self::appendMultiplex($array, $protocol_settings);
 
         switch (data_get($protocol_settings, 'network')) {

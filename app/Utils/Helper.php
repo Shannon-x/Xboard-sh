@@ -281,8 +281,12 @@ class Helper
             return null;
         }
 
+        // Mihomo expects raw base64-encoded ECHConfigList.
+        // The 'cloudflare-ech.com+...' format is sing-box specific and causes
+        // "illegal base64 data" errors in Mihomo. Return null to let Mihomo
+        // auto-fetch ECH configs via DNS HTTPS records.
         if (str_starts_with($config, 'cloudflare-ech')) {
-            return $config;
+            return null;
         }
 
         if (str_starts_with($config, '-----BEGIN')) {

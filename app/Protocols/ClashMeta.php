@@ -413,12 +413,15 @@ class ClashMeta extends AbstractProtocol
             'server' => $server['host'],
             'port' => $server['port'],
             'uuid' => $password,
-            'alterId' => 0,
-            'cipher' => 'auto',
             'udp' => true,
-            'flow' => data_get($protocol_settings, 'flow'),
             'tls' => false
         ];
+
+        // Only set flow when it's a valid value (e.g. xtls-rprx-vision)
+        $flow = data_get($protocol_settings, 'flow');
+        if (!empty($flow) && $flow !== 'none') {
+            $array['flow'] = $flow;
+        }
 
         switch (data_get($protocol_settings, 'tls')) {
             case 1:

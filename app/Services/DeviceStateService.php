@@ -122,21 +122,37 @@ class DeviceStateService
     }
 
     /**
-     * get user device count (deduplicated by IP, filter expired data)
+     * get user device count (filter expired data)
+     *
+     * Respects admin_setting('device_limit_mode'):
+     *   0 = strict:  count connections per-node, then sum (same IP on different nodes = 2)
+     *   1 = loose:   deduplicate by IP across all nodes (same IP on different nodes = 1)
      */
     public function getDeviceCount(int $userId): int
     {
         $data = Redis::hgetall(self::PREFIX . $userId);
         $now = time();
-        $ips = [];
+        $mode = (int) admin_setting('device_limit_mode', 0);
 
-        foreach ($data as $field => $timestamp) {
-            if ($now - $timestamp <= self::TTL) {
-                $ips[] = substr($field, strpos($field, ':') + 1);
+        if ($mode === 1) {
+            // Loose mode: deduplicate by IP across all nodes
+            $ips = [];
+            foreach ($data as $field => $timestamp) {
+                if ($now - $timestamp <= self::TTL) {
+                    $ips[] = substr($field, strpos($field, ':') + 1);
+                }
             }
+            return count(array_unique($ips));
         }
 
-        return count(array_unique($ips));
+        // Strict mode (default): count all active entries (each node×IP pair counts separately)
+        $count = 0;
+        foreach ($data as $field => $timestamp) {
+            if ($now - $timestamp <= self::TTL) {
+                $count++;
+            }
+        }
+        return $count;
     }
 
     /**

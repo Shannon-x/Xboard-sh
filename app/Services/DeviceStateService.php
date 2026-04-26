@@ -134,12 +134,17 @@ class DeviceStateService
         $now = time();
         $mode = (int) admin_setting('device_limit_mode', 0);
 
-        if ($mode === 1) {
-            // Loose mode: deduplicate by IP across all nodes
+        if ($mode === 1 || $mode === 2) {
+            // Loose mode (1): deduplicate by exact IP across all nodes
+            // Subnet mode (2): deduplicate by IP subnet (/24 or /64) across all nodes
             $ips = [];
             foreach ($data as $field => $timestamp) {
                 if ($now - $timestamp <= self::TTL) {
-                    $ips[] = substr($field, strpos($field, ':') + 1);
+                    $ip = substr($field, strpos($field, ':') + 1);
+                    if ($mode === 2) {
+                        $ip = self::getSubnet($ip);
+                    }
+                    $ips[] = $ip;
                 }
             }
             return count(array_unique($ips));
@@ -212,6 +217,31 @@ class DeviceStateService
         // IPv4:port
         if (preg_match('/^(\d+\.\d+\.\d+\.\d+):\d+$/', $ip, $m)) {
             return $m[1];
+        }
+        return $ip;
+    }
+
+    /**
+     * Get /24 subnet for IPv4 or /64 subnet for IPv6
+     */
+    public static function getSubnet(string $ip): string
+    {
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $parts = explode('.', $ip);
+            if (count($parts) === 4) {
+                return "{$parts[0]}.{$parts[1]}.{$parts[2]}.0/24";
+            }
+        } elseif (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+            $packed = inet_pton($ip);
+            if ($packed !== false) {
+                $hex = bin2hex(substr($packed, 0, 8));
+                return sprintf('%x:%x:%x:%x::/64',
+                    hexdec(substr($hex, 0, 4)),
+                    hexdec(substr($hex, 4, 4)),
+                    hexdec(substr($hex, 8, 4)),
+                    hexdec(substr($hex, 12, 4))
+                );
+            }
         }
         return $ip;
     }

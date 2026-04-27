@@ -183,7 +183,7 @@ class General extends AbstractProtocol
                     $config['allowInsecure'] = '1';
                 }
                 if ($ech = Helper::normalizeEchSettings(data_get($protocol_settings, 'tls_settings.ech'))) {
-                    if ($echConfig = Helper::toMihomoEchConfig(data_get($ech, 'config'))) {
+                    if ($echConfig = Helper::toUriEchConfig(data_get($ech, 'config'))) {
                         $config['ech'] = $echConfig;
                     }
                 }
@@ -264,8 +264,10 @@ class General extends AbstractProtocol
                 }
                 break;
             default: // Standard TLS
-                $array['allowInsecure'] = data_get($protocol_settings, 'allow_insecure', false);
-                if ($serverName = data_get($protocol_settings, 'server_name')) {
+                $array['security'] = 'tls';
+                $array['allowInsecure'] = data_get($protocol_settings, 'tls_settings.allow_insecure', data_get($protocol_settings, 'allow_insecure', false)) ? '1' : '0';
+                $array['insecure'] = $array['allowInsecure'];
+                if ($serverName = data_get($protocol_settings, 'tls_settings.server_name', data_get($protocol_settings, 'server_name'))) {
                     $array['peer'] = $serverName;
                     $array['sni'] = $serverName;
                 }
@@ -273,7 +275,7 @@ class General extends AbstractProtocol
                     $array['fp'] = $fp;
                 }
                 if ($ech = Helper::normalizeEchSettings(data_get($protocol_settings, 'tls_settings.ech'))) {
-                    if ($echConfig = Helper::toMihomoEchConfig(data_get($ech, 'config'))) {
+                    if ($echConfig = Helper::toUriEchConfig(data_get($ech, 'config'))) {
                         $array['ech'] = $echConfig;
                     }
                 }

@@ -110,7 +110,7 @@ class Shadowrocket extends AbstractProtocol
                 if (!!data_get($protocol_settings, 'tls_settings.server_name'))
                     $config['peer'] = data_get($protocol_settings, 'tls_settings.server_name');
                 if ($ech = Helper::normalizeEchSettings(data_get($protocol_settings, 'tls_settings.ech'))) {
-                    if ($echConfig = Helper::toMihomoEchConfig(data_get($ech, 'config'))) {
+                    if ($echConfig = Helper::toUriEchConfig(data_get($ech, 'config'))) {
                         $config['ech'] = $echConfig;
                     }
                 }
@@ -209,7 +209,7 @@ class Shadowrocket extends AbstractProtocol
                     $config['fp'] = 'chrome';
                 }
                 if ($ech = Helper::normalizeEchSettings(data_get($protocol_settings, 'tls_settings.ech'))) {
-                    if ($echConfig = Helper::toMihomoEchConfig(data_get($ech, 'config'))) {
+                    if ($echConfig = Helper::toUriEchConfig(data_get($ech, 'config'))) {
                         $config['ech'] = $echConfig;
                     }
                 }
@@ -306,6 +306,11 @@ class Shadowrocket extends AbstractProtocol
                 $params['allowInsecure'] = (int) data_get($protocol_settings, 'tls_settings.allow_insecure');
                 if ($serverName = data_get($protocol_settings, 'tls_settings.server_name')) {
                     $params['peer'] = $serverName;
+                }
+                if ($ech = Helper::normalizeEchSettings(data_get($protocol_settings, 'tls_settings.ech'))) {
+                    if ($echConfig = Helper::toUriEchConfig(data_get($ech, 'config'))) {
+                        $params['ech'] = $echConfig;
+                    }
                 }
                 break;
         }

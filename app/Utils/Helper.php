@@ -242,7 +242,8 @@ class Helper
                 return [
                     'enabled' => true,
                     'type' => 'cloudflare',
-                    'config' => 'cloudflare-ech.com+https://doh.pub/dns-query'
+                    'config' => 'cloudflare-ech.com+https://doh.pub/dns-query',
+                    'query_server_name' => 'cloudflare-ech.com',
                 ];
             }
             return null;
@@ -256,7 +257,8 @@ class Helper
             return [
                 'enabled' => true,
                 'type' => 'cloudflare',
-                'config' => 'cloudflare-ech.com+https://doh.pub/dns-query'
+                'config' => 'cloudflare-ech.com+https://doh.pub/dns-query',
+                'query_server_name' => 'cloudflare-ech.com',
             ];
         }
 
@@ -287,6 +289,31 @@ class Helper
         // auto-fetch ECH configs via DNS HTTPS records.
         if (str_starts_with($config, 'cloudflare-ech')) {
             return null;
+        }
+
+        if (str_starts_with($config, '-----BEGIN')) {
+            if (preg_match('/-----BEGIN ECH CONFIGS-----\s*(.*?)\s*-----END ECH CONFIGS-----/s', $config, $matches)) {
+                return preg_replace('/\s+/', '', $matches[1]);
+            }
+            return null;
+        }
+
+        return preg_replace('/\s+/', '', $config);
+    }
+
+    /**
+     * Convert an ECH config for URI-based clients such as Shadowrocket/V2RayN.
+     * These clients accept the Cloudflare resolver expression directly, unlike Mihomo.
+     */
+    public static function toUriEchConfig(?string $config): ?string
+    {
+        $config = self::trimToNull($config);
+        if (!$config) {
+            return null;
+        }
+
+        if (str_starts_with($config, 'cloudflare-ech')) {
+            return $config;
         }
 
         if (str_starts_with($config, '-----BEGIN')) {

@@ -53,6 +53,12 @@ class ManageController extends Controller
     public function save(ServerSave $request)
     {
         $params = $request->validated();
+
+        $rawContent = json_decode($request->getContent(), false);
+        if (isset($rawContent->protocol_settings->network_settings) && is_object($rawContent->protocol_settings->network_settings)) {
+            $params['protocol_settings']['network_settings'] = (array) $rawContent->protocol_settings->network_settings;
+        }
+
         $oldServer = $request->input('id') ? Server::find($request->input('id')) : null;
         $this->normalizeEchPayload($params, $oldServer);
 

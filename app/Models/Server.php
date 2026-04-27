@@ -365,6 +365,12 @@ class Server extends Model
     public function getProtocolSettingsAttribute($value)
     {
         $settings = json_decode($value, true) ?? [];
+        
+        $rawSettings = json_decode($value, false);
+        if (isset($rawSettings->network_settings) && is_object($rawSettings->network_settings)) {
+            $settings['network_settings'] = (array) $rawSettings->network_settings;
+        }
+
         $configs = self::PROTOCOL_CONFIGURATIONS[$this->type] ?? [];
         return $this->castSettingsWithConfig($settings, $configs);
     }
@@ -372,7 +378,11 @@ class Server extends Model
     public function setProtocolSettingsAttribute($value)
     {
         if (is_string($value)) {
-            $value = json_decode($value, true);
+            $rawValue = json_decode($value, false);
+            $value = json_decode($value, true) ?? [];
+            if (isset($rawValue->network_settings) && is_object($rawValue->network_settings)) {
+                $value['network_settings'] = (array) $rawValue->network_settings;
+            }
         }
 
         $configs = self::PROTOCOL_CONFIGURATIONS[$this->type] ?? [];

@@ -73,6 +73,7 @@
                             </div>
                             <div style="font-family:'Noto Sans SC',sans-serif;font-size:12px;color:#c5beb5;margin-top:2px;">
                                 不希望收到此类邮件？<a href="{{ $url ?? '#' }}#/profile" style="color:#a09890;text-decoration:underline;">管理通知偏好</a>
+                                <span style="display:none !important; visibility:hidden; opacity:0; color:transparent; height:0; width:0; line-height:0; overflow:hidden; mso-hide:all;">{{ time() }}</span>
                             </div>
                         </td>
                     </tr>

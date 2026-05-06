@@ -16,9 +16,10 @@ class CouponService
 
     public function __construct($code)
     {
-        $this->coupon = Coupon::where('code', $code)
-            ->lockForUpdate()
-            ->first();
+        // 不在构造函数里 lockForUpdate：构造常发生在事务外（如 V1 CouponController::check
+        // 仅做预校验），lockForUpdate 在 autocommit 下立即释放，反而给人虚假安全感。
+        // 真正的扣减在 use() 中用条件 UPDATE 原子完成。
+        $this->coupon = Coupon::where('code', $code)->first();
     }
 
     public function use(Order $order): bool
@@ -39,12 +40,15 @@ class CouponService
             $order->discount_amount = $order->total_amount;
         }
         if ($this->coupon->limit_use !== NULL) {
-            if ($this->coupon->limit_use <= 0)
-                return false;
-            $this->coupon->limit_use = $this->coupon->limit_use - 1;
-            if (!$this->coupon->save()) {
+            // 原子条件 UPDATE：只有在 limit_use > 0 时才会真正扣减；
+            // 并发两个请求抢最后一张券，只有一个返回 affected=1，另一个 affected=0 返回 false。
+            $affected = Coupon::where('id', $this->coupon->id)
+                ->where('limit_use', '>', 0)
+                ->decrement('limit_use');
+            if ($affected === 0) {
                 return false;
             }
+            $this->coupon->refresh();
         }
         return true;
     }

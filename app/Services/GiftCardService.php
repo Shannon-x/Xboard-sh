@@ -106,6 +106,23 @@ class GiftCardService
         }
 
         return DB::transaction(function () use ($options) {
+            // 行锁 + 重新校验：构造函数读出的 $this->code 可能在并发兑换中已变更
+            $locked = GiftCardCode::where('id', $this->code->id)
+                ->lockForUpdate()
+                ->first();
+            if (!$locked) {
+                throw new ApiException('兑换码不存在');
+            }
+            // 同步内存模型到加锁后的真实状态
+            $this->code->refresh();
+            if (!$this->code->isAvailable()) {
+                throw new ApiException('兑换码不可用：' . $this->code->status_name);
+            }
+            // 用户级使用次数也需在锁内重查，避免同一用户并发兑换超额
+            if (!$this->template->checkUsageLimit($this->user)) {
+                throw new ApiException('您已达到此礼品卡的使用限制');
+            }
+
             $actualRewards = $this->template->calculateActualRewards($this->user);
 
             if ($this->template->type === GiftCardTemplate::TYPE_MYSTERY) {

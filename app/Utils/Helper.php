@@ -82,12 +82,16 @@ class Helper
 
     public static function multiPasswordVerify($algo, $salt, $password, $hash)
     {
-        switch($algo) {
-            case 'md5': return md5($password) === $hash;
-            case 'sha256': return hash('sha256', $password) === $hash;
-            case 'md5salt': return md5($password . $salt) === $hash;
-            case 'sha256salt': return hash('sha256', $password . $salt) === $hash;
-            default: return password_verify($password, $hash);
+        // 所有 legacy hash 比对统一走 hash_equals，避免 === 的字符串短路造成可观测的时序差异。
+        // legacy 哈希仍保留是为了一次性登录验证后再升级到 bcrypt（见 AuthService），
+        // 这里不能直接拒收 md5/sha256 否则历史用户全部锁死。
+        $hash = (string) $hash;
+        switch ($algo) {
+            case 'md5':         return hash_equals($hash, md5($password));
+            case 'sha256':      return hash_equals($hash, hash('sha256', $password));
+            case 'md5salt':     return hash_equals($hash, md5($password . $salt));
+            case 'sha256salt':  return hash_equals($hash, hash('sha256', $password . $salt));
+            default:            return password_verify($password, $hash);
         }
     }
 

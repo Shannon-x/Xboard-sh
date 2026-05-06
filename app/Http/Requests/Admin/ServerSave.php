@@ -131,6 +131,7 @@ class ServerSave extends FormRequest
             'route_ids' => 'nullable|array',
             'parent_id' => 'nullable|integer',
             'host' => 'required',
+            'listen' => 'nullable|string|max:64',
             'port' => 'required',
             'server_port' => 'required',
             'tags' => 'nullable|array',

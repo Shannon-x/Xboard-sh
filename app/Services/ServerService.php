@@ -175,9 +175,13 @@ class ServerService
         $host = $node->host;
 
         $networkSettings = data_get($protocolSettings, 'network_settings') ?: null;
+        // listen 列在 2026-05 之后才引入，旧库或回填失败时落回 0.0.0.0，与历史硬编码一致。
+        $listenIp = trim((string) ($node->listen ?? '')) !== ''
+            ? trim((string) $node->listen)
+            : '0.0.0.0';
         $baseConfig = [
             'protocol' => $nodeType,
-            'listen_ip' => '0.0.0.0',
+            'listen_ip' => $listenIp,
             'server_port' => (int) $serverPort,
             'network' => data_get($protocolSettings, 'network'),
             'networkSettings' => $networkSettings,

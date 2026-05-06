@@ -9,6 +9,7 @@ use App\Models\Plan;
 use App\Models\TrafficResetLog;
 use App\Models\User;
 use App\Services\Plugin\HookManager;
+use App\Support\PaymentMetrics;
 use App\Utils\Helper;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -283,20 +284,65 @@ class OrderService
         }
     }
 
-    public function paid(string $callbackNo)
+    /**
+     * 标记订单已支付。
+     *
+     * 行锁 + 事务保证同一笔 trade_no 并发 webhook 只会成功翻转状态一次：
+     *   1. lockForUpdate 必须在 DB::transaction 内才真正持锁（autocommit 下立即释放）；
+     *   2. 锁内重新读取 status，已 PROCESSING/COMPLETED 的视为重复回调，幂等返回 true；
+     *   3. 状态翻转 commit 后再 dispatchSync 开通逻辑——保留同步派发避免对队列 worker
+     *      产生硬依赖，升级镜像后即使 Horizon 没起来也不会卡单；
+     *   4. 任何环节抛异常都不向网关暴露，避免 webhook 重投把订单锁死在 PROCESSING。
+     */
+    public function paid(string $callbackNo): bool
     {
-        $order = $this->order;
-        if ($order->status !== Order::STATUS_PENDING)
-            return true;
-        $order->status = Order::STATUS_PROCESSING;
-        $order->paid_at = time();
-        $order->callback_no = $callbackNo;
-        if (!$order->save())
-            return false;
+        $tradeNo = $this->order->trade_no;
+
         try {
-            OrderHandleJob::dispatchSync($order->trade_no);
-        } catch (\Exception $e) {
-            Log::error($e);
+            $action = DB::transaction(function () use ($tradeNo, $callbackNo) {
+                $locked = Order::where('trade_no', $tradeNo)->lockForUpdate()->first();
+                if (!$locked) {
+                    return 'missing';
+                }
+                if ($locked->status !== Order::STATUS_PENDING) {
+                    PaymentMetrics::inc('order.paid.duplicate', [
+                        'status' => (string) $locked->status,
+                    ]);
+                    return 'duplicate';
+                }
+                $locked->status = Order::STATUS_PROCESSING;
+                $locked->paid_at = time();
+                $locked->callback_no = $callbackNo;
+                if (!$locked->save()) {
+                    throw new \RuntimeException('order save failed');
+                }
+                $this->order = $locked;
+                return 'paid';
+            });
+        } catch (\Throwable $e) {
+            Log::error('OrderService::paid transaction failed', [
+                'trade_no' => $tradeNo,
+                'message' => $e->getMessage(),
+            ]);
+            PaymentMetrics::inc('order.paid.exception');
+            return false;
+        }
+
+        if ($action === 'missing') {
+            return false;
+        }
+        if ($action === 'duplicate') {
+            return true;
+        }
+
+        try {
+            OrderHandleJob::dispatchSync($tradeNo);
+        } catch (\Throwable $e) {
+            Log::error('OrderHandleJob dispatchSync failed', [
+                'trade_no' => $tradeNo,
+                'message' => $e->getMessage(),
+            ]);
+            PaymentMetrics::inc('order.dispatch.failed');
             return false;
         }
         return true;

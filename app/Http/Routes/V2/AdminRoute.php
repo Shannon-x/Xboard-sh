@@ -202,6 +202,7 @@ class AdminRoute
                 'prefix' => 'payment'
             ], function ($router) {
                 $router->get('/fetch', [PaymentController::class, 'fetch']);
+                $router->get('/detail', [PaymentController::class, 'detail']);
                 $router->get('/getPaymentMethods', [PaymentController::class, 'getPaymentMethods']);
                 $router->post('/getPaymentForm', [PaymentController::class, 'getPaymentForm']);
                 $router->post('/save', [PaymentController::class, 'save']);

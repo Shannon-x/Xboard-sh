@@ -6,6 +6,7 @@ use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Payment;
 use App\Services\PaymentService;
+use App\Support\FeatureFlag;
 use App\Utils\Helper;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -25,7 +26,13 @@ class PaymentController extends Controller
 
     public function fetch()
     {
-        $payments = Payment::orderBy('sort', 'ASC')->get()->makeVisible('config');
+        $hide = FeatureFlag::enabled('payment_secret_hide');
+
+        $query = Payment::orderBy('sort', 'ASC')->get();
+        // flag=false（默认）保持旧行为，列表直接返回 config（含密钥）；
+        // flag=true 时列表不返回 config，前端需通过 detail 接口拉取脱敏后的 config。
+        $payments = $hide ? $query : $query->makeVisible('config');
+
         foreach ($payments as $k => $v) {
             $notifyUrl = url("/api/v1/guest/payment/notify/{$v->payment}/{$v->uuid}");
             if ($v->notify_domain) {
@@ -35,6 +42,50 @@ class PaymentController extends Controller
             $payments[$k]['notify_url'] = $notifyUrl;
         }
         return $this->success($payments);
+    }
+
+    /**
+     * 拉取单条支付方式详情，对疑似密钥字段做掩码。
+     *
+     * 仅在前端编辑某一条支付方式时调用，避免列表接口把所有网关密钥一次性吐到响应里。
+     */
+    public function detail(Request $request)
+    {
+        $payment = Payment::find($request->input('id'));
+        if (!$payment) {
+            return $this->fail([400202, '支付方式不存在']);
+        }
+        $payment->makeVisible('config');
+        $config = $payment->config ?? [];
+        if (is_array($config)) {
+            foreach ($config as $key => $value) {
+                if ($this->isSecretField((string) $key) && is_string($value) && $value !== '') {
+                    $config[$key] = $this->mask($value);
+                }
+            }
+            $payment->config = $config;
+        }
+        return $this->success($payment);
+    }
+
+    private function isSecretField(string $key): bool
+    {
+        $key = strtolower($key);
+        foreach (['key', 'secret', 'token', 'password', 'private'] as $needle) {
+            if (str_contains($key, $needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function mask(string $value): string
+    {
+        $len = strlen($value);
+        if ($len <= 4) {
+            return str_repeat('*', $len);
+        }
+        return substr($value, 0, 2) . str_repeat('*', max(4, $len - 4)) . substr($value, -2);
     }
 
     public function getPaymentForm(Request $request)

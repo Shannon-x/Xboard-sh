@@ -11,6 +11,7 @@ use App\Models\StatServer;
 use App\Models\StatUser;
 use App\Models\Ticket;
 use App\Models\User;
+use App\Services\ServerService;
 use App\Services\StatisticalService;
 use Illuminate\Http\Request;
 
@@ -24,9 +25,7 @@ class StatController extends Controller
     public function getOverride(Request $request)
     {
         // 获取在线节点数
-        $onlineNodes = Server::all()->filter(function ($server) {
-            return !!$server->is_online;
-        })->count();
+        $onlineNodes = ServerService::getOnlineServerCount();
         // 获取在线设备数和在线用户数
         $onlineDevices = User::where('t', '>=', time() - 600)
             ->sum('online_count');
@@ -266,9 +265,7 @@ class StatController extends Controller
         $yesterdayStart = strtotime('-1 day', $todayStart);
 
         // 获取在线节点数
-        $onlineNodes = Server::all()->filter(function ($server) {
-            return !!$server->is_online;
-        })->count();
+        $onlineNodes = ServerService::getOnlineServerCount();
 
         // 获取在线设备数和在线用户数
         $onlineDevices = User::where('t', '>=', time() - 600)

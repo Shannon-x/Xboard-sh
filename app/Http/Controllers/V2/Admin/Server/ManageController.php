@@ -17,9 +17,31 @@ class ManageController extends Controller
 {
     public function getNodes(Request $request)
     {
-        $servers = ServerService::getAllServers()->map(function ($item) {
-            $item['groups'] = ServerGroup::whereIn('id', $item['group_ids'])->get(['name', 'id']);
-            $item['parent'] = $item->parent;
+        $servers = ServerService::getAllServers();
+
+        // 一次性预取所有用到的 ServerGroup，避免 N+1（每个 server 一次 whereIn 查询）
+        $allGroupIds = $servers->pluck('group_ids')
+            ->flatten()
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+        $groupMap = $allGroupIds
+            ? ServerGroup::whereIn('id', $allGroupIds)->get(['id', 'name'])->keyBy('id')
+            : collect();
+
+        // 同样预取 parent，避免每个子节点单独查 parent_id
+        $parentIds = $servers->pluck('parent_id')->filter()->unique()->values()->all();
+        $parentMap = $parentIds
+            ? Server::whereIn('id', $parentIds)->get()->keyBy('id')
+            : collect();
+
+        $servers = $servers->map(function ($item) use ($groupMap, $parentMap) {
+            $item['groups'] = collect($item['group_ids'] ?? [])
+                ->map(fn ($gid) => $groupMap->get($gid))
+                ->filter()
+                ->values();
+            $item['parent'] = $item->parent_id ? $parentMap->get($item->parent_id) : null;
             return $item;
         });
         return $this->success($servers);

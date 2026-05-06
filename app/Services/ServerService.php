@@ -6,11 +6,43 @@ use App\Models\Server;
 use App\Models\ServerRoute;
 use App\Models\User;
 use App\Services\Plugin\HookManager;
+use App\Utils\CacheKey;
 use App\Utils\Helper;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 
 class ServerService
 {
+    /**
+     * 在线节点数（仪表盘用）。
+     *
+     * 旧实现 Server::all()->filter(is_online) 会把全表 30+ 列拉到内存，再对每条
+     * 走一次 Cache::get(LAST_CHECK_AT)。节点 200+ 时仪表盘单次刷新可触发数百次 Cache 命中。
+     *
+     * 这里只 SELECT 必要列、批量 Cache::many 一次拿完，并对结果做 30s 缓存（仪表盘
+     * 不需要秒级精度）。如需绕过缓存可调 ::flush 配合手动失效。
+     */
+    public static function getOnlineServerCount(int $ttlSeconds = 30): int
+    {
+        $cacheKey = 'stat:online_server_count';
+        return Cache::remember($cacheKey, $ttlSeconds, function () {
+            $servers = Server::select(['id', 'parent_id', 'type'])->get();
+            if ($servers->isEmpty()) {
+                return 0;
+            }
+
+            $cacheKeys = $servers->map(function ($s) {
+                $type = strtoupper((string) $s->type);
+                $sid = $s->parent_id ?: $s->id;
+                return CacheKey::get("SERVER_{$type}_LAST_CHECK_AT", $sid);
+            })->all();
+
+            $checkAts = Cache::many($cacheKeys);
+            $threshold = time() - 300;
+
+            return collect($checkAts)->filter(fn ($ts) => $ts && $ts > $threshold)->count();
+        });
+    }
 
     /**
      * 获取所有服务器列表

@@ -67,12 +67,41 @@ return new class extends Migration {
 
     private function indexExists(string $table, string $indexName): bool
     {
-        $database = DB::connection()->getDatabaseName();
-        $count = DB::selectOne(
-            'SELECT COUNT(1) AS c FROM information_schema.statistics
-             WHERE table_schema = ? AND table_name = ? AND index_name = ?',
-            [$database, $table, $indexName]
-        );
-        return ((int) ($count->c ?? 0)) > 0;
+        $connection = DB::connection();
+        $driver = $connection->getDriverName();
+
+        if ($driver === 'mysql' || $driver === 'mariadb') {
+            $count = $connection->selectOne(
+                'SELECT COUNT(1) AS c FROM information_schema.statistics
+                 WHERE table_schema = ? AND table_name = ? AND index_name = ?',
+                [$connection->getDatabaseName(), $table, $indexName]
+            );
+            return ((int) ($count->c ?? 0)) > 0;
+        }
+
+        if ($driver === 'sqlite') {
+            // PRAGMA 不接受参数绑定，但 $table 来自本迁移内硬编码列表，无注入风险
+            $rows = $connection->select("PRAGMA index_list(" . $connection->getPdo()->quote($table) . ")");
+            foreach ($rows as $row) {
+                if (($row->name ?? '') === $indexName) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        if ($driver === 'pgsql') {
+            $row = $connection->selectOne(
+                'SELECT 1 AS c FROM pg_indexes WHERE tablename = ? AND indexname = ?',
+                [$table, $indexName]
+            );
+            return $row !== null;
+        }
+
+        // 其它驱动（如 sqlsrv）回退到 Laravel 11+ 的内置方法，避免抛错
+        if (method_exists(Schema::class, 'hasIndex')) {
+            return Schema::hasIndex($table, $indexName);
+        }
+        return false;
     }
 };

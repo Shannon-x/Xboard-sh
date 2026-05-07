@@ -19,12 +19,17 @@ return new class extends Migration {
             return;
         }
 
-        if (!$this->hasColumn('v2_server', 'listen')) {
+        if (!Schema::hasColumn('v2_server', 'listen')) {
             Schema::table('v2_server', function (Blueprint $table) {
-                $table->string('listen', 64)
+                $column = $table->string('listen', 64)
                     ->default('0.0.0.0')
-                    ->after('host')
                     ->comment('监听地址，默认 0.0.0.0');
+
+                // SQLite 不支持 ALTER ... AFTER，仅在 MySQL/MariaDB 上指定列序
+                $driver = DB::connection()->getDriverName();
+                if ($driver === 'mysql' || $driver === 'mariadb') {
+                    $column->after('host');
+                }
             });
         }
 
@@ -40,21 +45,10 @@ return new class extends Migration {
             return;
         }
 
-        if ($this->hasColumn('v2_server', 'listen')) {
+        if (Schema::hasColumn('v2_server', 'listen')) {
             Schema::table('v2_server', function (Blueprint $table) {
                 $table->dropColumn('listen');
             });
         }
-    }
-
-    private function hasColumn(string $table, string $column): bool
-    {
-        $database = DB::connection()->getDatabaseName();
-        $exists = DB::selectOne(
-            'SELECT COUNT(*) AS c FROM information_schema.COLUMNS
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
-            [$database, $table, $column]
-        );
-        return ((int) ($exists->c ?? 0)) > 0;
     }
 };

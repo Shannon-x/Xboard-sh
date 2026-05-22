@@ -3,6 +3,7 @@
 namespace App\Services\Auth;
 
 use App\Models\User;
+use App\Services\AuthService;
 use App\Services\Plugin\HookManager;
 use App\Utils\CacheKey;
 use App\Utils\Helper;
@@ -19,6 +20,8 @@ class LoginService
      */
     public function login(string $email, string $password): array
     {
+        $email = strtolower(trim((string) $email));
+
         // 检查密码错误限制
         if ((int) admin_setting('password_limit_enable', true)) {
             $passwordErrorCount = (int) Cache::get(CacheKey::get('PASSWORD_ERROR_LIMIT', $email), 0);
@@ -85,6 +88,13 @@ class LoginService
      */
     public function resetPassword(string $email, string $emailCode, string $password): array
     {
+        $email = strtolower(trim((string) $email));
+        $inputCode = (string) $emailCode;
+
+        if (!preg_match('/^\d{6}$/', $inputCode)) {
+            return [false, [400, __('Incorrect email verification code')]];
+        }
+
         // 检查重置请求限制
         $forgetRequestLimitKey = CacheKey::get('FORGET_REQUEST_LIMIT', $email);
         $forgetRequestLimit = (int) Cache::get($forgetRequestLimitKey);
@@ -93,8 +103,9 @@ class LoginService
         }
 
         // 验证邮箱验证码
-        if ((string) Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', $email)) !== (string) $emailCode) {
-            Cache::put($forgetRequestLimitKey, $forgetRequestLimit ? $forgetRequestLimit + 1 : 1, 300);
+        $cachedCode = Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', $email));
+        if ($cachedCode === null || $cachedCode === '' || !hash_equals((string) $cachedCode, $inputCode)) {
+            Cache::put($forgetRequestLimitKey, $forgetRequestLimit + 1, 300);
             return [false, [400, __('Incorrect email verification code')]];
         }
 
@@ -106,8 +117,8 @@ class LoginService
 
         // 更新密码
         $user->password = password_hash($password, PASSWORD_DEFAULT);
-        $user->password_algo = NULL;
-        $user->password_salt = NULL;
+        $user->password_algo = null;
+        $user->password_salt = null;
 
         if (!$user->save()) {
             return [false, [500, __('Reset failed')]];
@@ -117,6 +128,8 @@ class LoginService
 
         // 清除邮箱验证码
         Cache::forget(CacheKey::get('EMAIL_VERIFY_CODE', $email));
+
+        (new AuthService($user))->removeAllSessions();
 
         return [true, true];
     }

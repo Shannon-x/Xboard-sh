@@ -35,8 +35,8 @@ class AuthController extends Controller
     public function loginWithMailLink(Request $request)
     {
         $params = $request->validate([
-            'email' => 'required|email:strict',
-            'redirect' => 'nullable'
+            'email' => 'required|string|email:strict|max:64',
+            'redirect' => 'nullable|string|max:255'
         ]);
 
         [$success, $result] = $this->mailLinkService->handleMailLink(
@@ -89,9 +89,17 @@ class AuthController extends Controller
      */
     public function token2Login(Request $request)
     {
+        $params = $request->validate([
+            'verify' => 'nullable|string|max:64',
+            'token' => 'nullable|string|max:128',
+            'redirect' => 'nullable|string|max:255',
+        ]);
+
         // 处理直接通过token重定向
-        if ($token = $request->input('token')) {
-            $redirect = '/#/login?verify=' . $token . '&redirect=' . ($request->input('redirect', 'dashboard'));
+        if (!empty($params['token'])) {
+            $token = $params['token'];
+            $redirect = '/#/login?verify=' . rawurlencode((string) $token)
+                . '&redirect=' . rawurlencode((string) ($params['redirect'] ?? 'dashboard'));
 
             return redirect()->to(
                 admin_setting('app_url')
@@ -101,7 +109,8 @@ class AuthController extends Controller
         }
 
         // 处理通过验证码登录
-        if ($verify = $request->input('verify')) {
+        if (!empty($params['verify'])) {
+            $verify = $params['verify'];
             $userId = $this->mailLinkService->handleTokenLogin($verify);
 
             if (!$userId) {

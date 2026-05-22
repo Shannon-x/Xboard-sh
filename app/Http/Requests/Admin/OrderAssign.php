@@ -14,9 +14,9 @@ class OrderAssign extends FormRequest
     public function rules()
     {
         return [
-            'plan_id' => 'required',
-            'email' => 'required',
-            'total_amount' => 'required',
+            'plan_id' => 'required|integer',
+            'email' => 'required|string|email:strict|max:64',
+            'total_amount' => 'required|numeric',
             'period' => 'required|in:month_price,quarter_price,half_year_price,year_price,two_year_price,three_year_price,onetime_price,reset_price'
         ];
     }

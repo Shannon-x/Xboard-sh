@@ -302,22 +302,37 @@ class Plugin extends AbstractPlugin
 
   protected function extractTokenFromUrl(string $url): ?string
   {
+    $url = trim($url);
+    if ($url === '' || strlen($url) > 2048) {
+      return null;
+    }
+
     $parsedUrl = parse_url($url);
+    if ($parsedUrl === false) {
+      return null;
+    }
 
     if (isset($parsedUrl['query'])) {
       parse_str($parsedUrl['query'], $query);
-      if (isset($query['token'])) {
-        return $query['token'];
+      if (isset($query['token']) && is_string($query['token']) && $this->isValidUserToken($query['token'])) {
+        return strtolower($query['token']);
       }
     }
 
     if (isset($parsedUrl['path'])) {
       $pathParts = explode('/', trim($parsedUrl['path'], '/'));
       $lastPart = end($pathParts);
-      return $lastPart ?: null;
+      if (is_string($lastPart) && $this->isValidUserToken($lastPart)) {
+        return strtolower($lastPart);
+      }
     }
 
     return null;
+  }
+
+  protected function isValidUserToken(string $token): bool
+  {
+    return (bool) preg_match('/^[a-f0-9]{32}$/i', $token);
   }
 
   public function handleTrafficCommand(object $msg): void

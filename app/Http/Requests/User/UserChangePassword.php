@@ -14,8 +14,8 @@ class UserChangePassword extends FormRequest
     public function rules()
     {
         return [
-            'old_password' => 'required',
-            'new_password' => 'required|min:8'
+            'old_password' => 'required|string|max:64',
+            'new_password' => 'required|string|min:8|max:64'
         ];
     }
 

@@ -10,12 +10,43 @@ use Illuminate\Http\Request;
 
 class TicketController extends Controller
 {
+    private const FILTERABLE_FIELDS = [
+        'id',
+        'user_id',
+        'subject',
+        'level',
+        'status',
+        'reply_status',
+        'last_reply_user_id',
+        'created_at',
+        'updated_at',
+    ];
+
+    private const SORTABLE_FIELDS = [
+        'id',
+        'user_id',
+        'level',
+        'status',
+        'reply_status',
+        'last_reply_user_id',
+        'created_at',
+        'updated_at',
+    ];
+
     private function applyFiltersAndSorts(Request $request, $builder)
     {
         if ($request->has('filter')) {
             collect($request->input('filter'))->each(function ($filter) use ($builder) {
-                $key = $filter['id'];
-                $value = $filter['value'];
+                if (!is_array($filter) || !isset($filter['id'])) {
+                    return;
+                }
+
+                $key = (string) $filter['id'];
+                if (!in_array($key, self::FILTERABLE_FIELDS, true)) {
+                    return;
+                }
+
+                $value = $filter['value'] ?? '';
                 $builder->where(function ($query) use ($key, $value) {
                     if (is_array($value)) {
                         $query->whereIn($key, $value);
@@ -28,8 +59,16 @@ class TicketController extends Controller
 
         if ($request->has('sort')) {
             collect($request->input('sort'))->each(function ($sort) use ($builder) {
-                $key = $sort['id'];
-                $value = $sort['desc'] ? 'DESC' : 'ASC';
+                if (!is_array($sort) || !isset($sort['id'])) {
+                    return;
+                }
+
+                $key = (string) $sort['id'];
+                if (!in_array($key, self::SORTABLE_FIELDS, true)) {
+                    return;
+                }
+
+                $value = !empty($sort['desc']) ? 'DESC' : 'ASC';
                 $builder->orderBy($key, $value);
             });
         }

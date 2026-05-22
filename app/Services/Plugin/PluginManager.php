@@ -492,13 +492,20 @@ class PluginManager
 
         $extractPath = $tmpPath . '/' . uniqid();
         $zip = new \ZipArchive();
+        $zipOpened = false;
 
-        if ($zip->open($file->path()) !== true) {
-            throw new \Exception('无法打开插件包文件');
+        try {
+            if ($zip->open($file->path()) !== true) {
+                throw new \Exception('无法打开插件包文件');
+            }
+            $zipOpened = true;
+
+            $this->extractZipSafely($zip, $extractPath);
+        } finally {
+            if ($zipOpened) {
+                $zip->close();
+            }
         }
-
-        $zip->extractTo($extractPath);
-        $zip->close();
 
         $configFile = File::glob($extractPath . '/*/config.json');
         if (empty($configFile)) {
@@ -547,6 +554,73 @@ class PluginManager
         }
 
         return true;
+    }
+
+    protected function extractZipSafely(\ZipArchive $zip, string $targetPath): void
+    {
+        File::ensureDirectoryExists($targetPath, 0755, true);
+
+        $targetRoot = realpath($targetPath);
+        if ($targetRoot === false) {
+            throw new \Exception('无效的解压目录');
+        }
+
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $entry = $zip->getNameIndex($i);
+            if ($entry === false) {
+                continue;
+            }
+
+            $normalized = str_replace('\\', '/', $entry);
+            if ($this->isUnsafeZipEntry($zip, $i, $normalized)) {
+                throw new \Exception('插件包包含不安全路径');
+            }
+
+            $destination = $targetRoot . DIRECTORY_SEPARATOR . $normalized;
+            $parent = dirname($destination);
+            File::ensureDirectoryExists($parent, 0755, true);
+
+            $realParent = realpath($parent);
+            $rootPrefix = rtrim($targetRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+            if ($realParent === false || ($realParent !== $targetRoot && !str_starts_with($realParent, $rootPrefix))) {
+                throw new \Exception('插件包包含不安全路径');
+            }
+
+            if (str_ends_with($normalized, '/')) {
+                File::ensureDirectoryExists($destination, 0755, true);
+                continue;
+            }
+
+            if (!$zip->extractTo($targetRoot, $entry)) {
+                throw new \Exception('插件包解压失败');
+            }
+        }
+    }
+
+    protected function isUnsafeZipEntry(\ZipArchive $zip, int $index, string $normalized): bool
+    {
+        if (
+            $normalized === '' ||
+            str_contains($normalized, "\0") ||
+            str_starts_with($normalized, '/') ||
+            preg_match('#^[A-Za-z]:/#', $normalized) ||
+            preg_match('#(^|/)\.\.(/|$)#', $normalized)
+        ) {
+            return true;
+        }
+
+        if (method_exists($zip, 'getExternalAttributesIndex')) {
+            $opsys = 0;
+            $attr = 0;
+            if ($zip->getExternalAttributesIndex($index, $opsys, $attr)) {
+                $mode = ($attr >> 16) & 0170000;
+                if ($mode === 0120000) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

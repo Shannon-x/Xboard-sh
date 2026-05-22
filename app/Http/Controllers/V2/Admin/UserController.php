@@ -27,6 +27,67 @@ class UserController extends Controller
 {
     use QueryOperators;
 
+    private const FILTERABLE_FIELDS = [
+        'id',
+        'email',
+        'transfer_enable',
+        'u',
+        'd',
+        'total_used',
+        'expired_at',
+        'uuid',
+        'token',
+        'invite_user_id',
+        'plan_id',
+        'group_id',
+        'group_ids',
+        'banned',
+        'remarks',
+        'is_admin',
+        'is_staff',
+        'balance',
+        'commission_balance',
+        'commission_rate',
+        'commission_type',
+        'discount',
+        'speed_limit',
+        'device_limit',
+        'created_at',
+        'updated_at',
+        'last_login_at',
+    ];
+
+    private const SORTABLE_FIELDS = [
+        'id',
+        'email',
+        'transfer_enable',
+        'u',
+        'd',
+        'total_used',
+        'expired_at',
+        'invite_user_id',
+        'plan_id',
+        'group_id',
+        'banned',
+        'is_admin',
+        'is_staff',
+        'balance',
+        'commission_balance',
+        'commission_rate',
+        'discount',
+        'speed_limit',
+        'device_limit',
+        'created_at',
+        'updated_at',
+        'last_login_at',
+    ];
+
+    private const FILTERABLE_RELATION_FIELDS = [
+        'plan' => ['name'],
+        'invite_user' => ['email'],
+        'group' => ['name'],
+    ];
+
     public function resetSecret(Request $request)
     {
         $user = User::find($request->input('id'));
@@ -52,8 +113,12 @@ class UserController extends Controller
         }
 
         collect($request->input('filter'))->each(function ($filter) use ($builder) {
-            $field = $filter['id'];
-            $value = $filter['value'];
+            if (!is_array($filter) || !isset($filter['id'])) {
+                return;
+            }
+
+            $field = (string) $filter['id'];
+            $value = $filter['value'] ?? '';
             $logic = strtolower($filter['logic'] ?? 'and');
 
             if ($logic === 'or') {
@@ -76,7 +141,13 @@ class UserController extends Controller
             if (!method_exists($query, 'whereHas')) {
                 return;
             }
-            [$relation, $relationField] = explode('.', $field);
+            [$relation, $relationField] = explode('.', $field, 2);
+            if (
+                !isset(self::FILTERABLE_RELATION_FIELDS[$relation]) ||
+                !in_array($relationField, self::FILTERABLE_RELATION_FIELDS[$relation], true)
+            ) {
+                return;
+            }
             $query->whereHas($relation, function ($q) use ($relationField, $value) {
                 if (is_array($value)) {
                     $q->whereIn($relationField, $value);
@@ -90,9 +161,14 @@ class UserController extends Controller
             return;
         }
 
+        $field = $this->normalizeUserFilterField($field);
+        if ($field === null) {
+            return;
+        }
+
         // 处理数组值的 'in' 操作
         if (is_array($value)) {
-            $query->whereIn($field === 'group_ids' ? 'group_id' : $field, $value);
+            $query->whereIn($field, $value);
             return;
         }
 
@@ -128,10 +204,39 @@ class UserController extends Controller
         }
 
         collect($request->input('sort'))->each(function ($sort) use ($builder) {
-            $field = $sort['id'];
-            $direction = $sort['desc'] ? 'DESC' : 'ASC';
+            if (!is_array($sort) || !isset($sort['id'])) {
+                return;
+            }
+
+            $field = $this->resolveUserSortField((string) $sort['id']);
+            if ($field === null) {
+                return;
+            }
+
+            $direction = !empty($sort['desc']) ? 'DESC' : 'ASC';
             $builder->orderBy($field, $direction);
         });
+    }
+
+    private function normalizeUserFilterField(string $field): ?string
+    {
+        if (!in_array($field, self::FILTERABLE_FIELDS, true)) {
+            return null;
+        }
+
+        return $field === 'group_ids' ? 'group_id' : $field;
+    }
+
+    private function resolveUserSortField(string $field): mixed
+    {
+        if (!in_array($field, self::SORTABLE_FIELDS, true)) {
+            return null;
+        }
+
+        return match ($field) {
+            'total_used' => DB::raw('(u + d)'),
+            default => $field,
+        };
     }
 
     // Resolve bulk operation scope and normalize user_ids.
@@ -473,8 +578,9 @@ class UserController extends Controller
             }
         }
 
-        $sortType = in_array($request->input('sort_type'), ['ASC', 'DESC']) ? $request->input('sort_type') : 'DESC';
-        $sort = $request->input('sort') ? $request->input('sort') : 'created_at';
+        $sortType = strtoupper((string) $request->input('sort_type', 'DESC'));
+        $sortType = in_array($sortType, ['ASC', 'DESC'], true) ? $sortType : 'DESC';
+        $sort = $this->resolveUserSortField((string) $request->input('sort', 'created_at')) ?? 'created_at';
 
         $builder = User::query()
             ->with('plan:id,name')
@@ -543,8 +649,9 @@ class UserController extends Controller
             }
         }
 
-        $sortType = in_array($request->input('sort_type'), ['ASC', 'DESC']) ? $request->input('sort_type') : 'DESC';
-        $sort = $request->input('sort') ? $request->input('sort') : 'created_at';
+        $sortType = strtoupper((string) $request->input('sort_type', 'DESC'));
+        $sortType = in_array($sortType, ['ASC', 'DESC'], true) ? $sortType : 'DESC';
+        $sort = $this->resolveUserSortField((string) $request->input('sort', 'created_at')) ?? 'created_at';
 
         $builder = User::query()->orderBy('id', 'desc');
 

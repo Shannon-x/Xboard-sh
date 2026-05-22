@@ -19,9 +19,11 @@ class Client
     public function handle($request, Closure $next)
     {
         $token = $request->input('token', $request->route('token'));
-        if (empty($token)) {
+        if (!is_string($token) || !preg_match('/^[a-f0-9]{32}$/i', $token)) {
             throw new ApiException('token is null',403);
         }
+        $token = strtolower($token);
+
         $user = User::where('token', $token)->first();
         if (!$user) {
             throw new ApiException('token is error',403);

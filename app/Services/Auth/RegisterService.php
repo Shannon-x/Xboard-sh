@@ -25,6 +25,8 @@ class RegisterService
      */
     public function validateRegister(Request $request): array
     {
+        $email = strtolower(trim((string) $request->input('email')));
+
         // 检查IP注册限制
         if ((int) admin_setting('register_limit_by_ip_enable', 0)) {
             $registerCountByIP = Cache::get(CacheKey::get('REGISTER_IP_RATE_LIMIT', $request->ip())) ?? 0;
@@ -52,7 +54,7 @@ class RegisterService
         if ((int) admin_setting('email_whitelist_enable', 0)) {
             if (
                 !Helper::emailSuffixVerify(
-                    $request->input('email'),
+                    $email,
                     admin_setting('email_whitelist_suffix', Dict::EMAIL_WHITELIST_SUFFIX_DEFAULT)
                 )
             ) {
@@ -62,7 +64,7 @@ class RegisterService
 
         // 检查Gmail限制
         if ((int) admin_setting('email_gmail_limit_enable', 0)) {
-            $prefix = explode('@', $request->input('email'))[0];
+            $prefix = explode('@', $email)[0];
             if (strpos($prefix, '.') !== false || strpos($prefix, '+') !== false) {
                 return [false, [400, __('Gmail alias is not supported')]];
             }
@@ -82,16 +84,19 @@ class RegisterService
 
         // 检查邮箱验证
         if ((int) admin_setting('email_verify', 0)) {
-            if (empty($request->input('email_code'))) {
-                return [false, [422, __('Email verification code cannot be empty')]];
+            $inputCode = (string) $request->input('email_code', '');
+            if (!preg_match('/^\d{6}$/', $inputCode)) {
+                return [false, [400, __('Incorrect email verification code')]];
             }
-            if ((string) Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', $request->input('email'))) !== (string) $request->input('email_code')) {
+
+            $cachedCode = Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', $email));
+            if ($cachedCode === null || $cachedCode === '' || !hash_equals((string) $cachedCode, $inputCode)) {
                 return [false, [400, __('Incorrect email verification code')]];
             }
         }
 
         // 检查邮箱是否存在
-        $exist = User::byEmail($request->input('email'))->first();
+        $exist = User::byEmail($email)->first();
         if ($exist) {
             return [false, [400201, __('Email already exists')]];
         }
@@ -144,7 +149,7 @@ class RegisterService
 
         HookManager::call('user.register.before', $request);
 
-        $email = $request->input('email');
+        $email = strtolower(trim((string) $request->input('email')));
         $password = $request->input('password');
         $inviteCode = $request->input('invite_code');
 

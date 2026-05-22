@@ -24,8 +24,13 @@ class TelegramController extends Controller
 
     public function webhook(Request $request): void
     {
-        $expectedToken = md5(admin_setting('telegram_bot_token'));
-        if ($request->input('access_token') !== $expectedToken) {
+        $params = $request->validate([
+            'access_token' => 'required|string|size:32',
+        ]);
+
+        $botToken = (string) admin_setting('telegram_bot_token', '');
+        $expectedToken = md5($botToken);
+        if ($botToken === '' || !hash_equals($expectedToken, $params['access_token'])) {
             throw new ApiException('access_token is error', 401);
         }
 

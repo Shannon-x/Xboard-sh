@@ -18,21 +18,22 @@ class CommController extends Controller
 
     public function sendEmailVerify(CommSendEmailVerify $request)
     {
-                // 验证人机验证码
+        // 验证人机验证码
         $captchaService = app(CaptchaService::class);
         [$captchaValid, $captchaError] = $captchaService->verify($request);
         if (!$captchaValid) {
             return $this->fail($captchaError);
         }
 
-        $email = $request->input('email');
+        $email = strtolower(trim((string) $request->input('email')));
 
         // 检查白名单后缀限制
         if ((int) admin_setting('email_whitelist_enable', 0)) {
             $isRegisteredEmail = User::byEmail($email)->exists();
             if (!$isRegisteredEmail) {
                 $allowedSuffixes = Helper::getEmailSuffix();
-                $emailSuffix = substr(strrchr($email, '@'), 1);
+                $emailSuffix = strtolower((string) substr(strrchr($email, '@'), 1));
+                $allowedSuffixes = array_map('strtolower', $allowedSuffixes);
 
                 if (!in_array($emailSuffix, $allowedSuffixes)) {
                     return $this->fail([400, __('Email suffix is not in whitelist')]);

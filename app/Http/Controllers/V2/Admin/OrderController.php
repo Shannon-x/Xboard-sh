@@ -19,6 +19,53 @@ use Illuminate\Support\Facades\Log;
 
 class OrderController extends Controller
 {
+    private const FILTERABLE_FIELDS = [
+        'id',
+        'trade_no',
+        'user_id',
+        'plan_id',
+        'payment_id',
+        'period',
+        'total_amount',
+        'handling_amount',
+        'balance_amount',
+        'refund_amount',
+        'surplus_amount',
+        'type',
+        'status',
+        'commission_status',
+        'invite_user_id',
+        'commission_balance',
+        'callback_no',
+        'created_at',
+        'updated_at',
+        'paid_at',
+    ];
+
+    private const SORTABLE_FIELDS = [
+        'id',
+        'trade_no',
+        'user_id',
+        'plan_id',
+        'payment_id',
+        'total_amount',
+        'handling_amount',
+        'balance_amount',
+        'type',
+        'status',
+        'commission_status',
+        'invite_user_id',
+        'commission_balance',
+        'created_at',
+        'updated_at',
+        'paid_at',
+    ];
+
+    private const FILTERABLE_RELATION_FIELDS = [
+        'user' => ['email'],
+        'plan' => ['name'],
+        'invite_user' => ['email'],
+    ];
 
     public function detail(Request $request)
     {
@@ -76,8 +123,12 @@ class OrderController extends Controller
         }
 
         collect($request->input('filter'))->each(function ($filter) use ($builder) {
-            $field = $filter['id'];
-            $value = $filter['value'];
+            if (!is_array($filter) || !isset($filter['id'])) {
+                return;
+            }
+
+            $field = (string) $filter['id'];
+            $value = $filter['value'] ?? '';
 
             $builder->where(function ($query) use ($field, $value) {
                 $this->buildFilterQuery($query, $field, $value);
@@ -87,6 +138,33 @@ class OrderController extends Controller
 
     private function buildFilterQuery(Builder $query, string $field, mixed $value): void
     {
+        if ($field === 'email') {
+            $field = 'user.email';
+        }
+
+        if (str_contains($field, '.')) {
+            [$relation, $relationField] = explode('.', $field, 2);
+            if (
+                !isset(self::FILTERABLE_RELATION_FIELDS[$relation]) ||
+                !in_array($relationField, self::FILTERABLE_RELATION_FIELDS[$relation], true)
+            ) {
+                return;
+            }
+
+            $query->whereHas($relation, function ($q) use ($relationField, $value) {
+                if (is_array($value)) {
+                    $q->whereIn($relationField, $value);
+                } else {
+                    $q->where($relationField, 'like', "%{$value}%");
+                }
+            });
+            return;
+        }
+
+        if (!in_array($field, self::FILTERABLE_FIELDS, true)) {
+            return;
+        }
+
         // Handle array values for 'in' operations
         if (is_array($value)) {
             $query->whereIn($field, $value);
@@ -108,8 +186,7 @@ class OrderController extends Controller
                 : (int) $filterValue;
         }
 
-        // Apply operator
-        $query->where($field, match (strtolower($operator)) {
+        $queryOperator = match (strtolower($operator)) {
             'eq' => '=',
             'gt' => '>',
             'gte' => '>=',
@@ -117,12 +194,23 @@ class OrderController extends Controller
             'lte' => '<=',
             'like' => 'like',
             'notlike' => 'not like',
-            'null' => static fn($q) => $q->whereNull($field),
-            'notnull' => static fn($q) => $q->whereNotNull($field),
+            'null' => 'null',
+            'notnull' => 'notnull',
             default => 'like'
-        }, match (strtolower($operator)) {
+        };
+
+        if ($queryOperator === 'null') {
+            $query->whereNull($field);
+            return;
+        }
+
+        if ($queryOperator === 'notnull') {
+            $query->whereNotNull($field);
+            return;
+        }
+
+        $query->where($field, $queryOperator, match (strtolower($operator)) {
             'like', 'notlike' => "%{$filterValue}%",
-            'null', 'notnull' => null,
             default => $filterValue
         });
     }
@@ -134,8 +222,16 @@ class OrderController extends Controller
         }
 
         collect($request->input('sort'))->each(function ($sort) use ($builder) {
-            $field = $sort['id'];
-            $direction = $sort['desc'] ? 'DESC' : 'ASC';
+            if (!is_array($sort) || !isset($sort['id'])) {
+                return;
+            }
+
+            $field = (string) $sort['id'];
+            if (!in_array($field, self::SORTABLE_FIELDS, true)) {
+                return;
+            }
+
+            $direction = !empty($sort['desc']) ? 'DESC' : 'ASC';
             $builder->orderBy($field, $direction);
         });
     }

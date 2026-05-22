@@ -52,9 +52,16 @@ class AuthService
         return true;
     }
 
-    public static function findUserByBearerToken(string $bearerToken): ?User
+    public static function findUserByBearerToken(mixed $bearerToken): ?User
     {
-        $token = str_replace('Bearer ', '', $bearerToken);
+        if (!is_string($bearerToken)) {
+            return null;
+        }
+
+        $token = trim(str_replace('Bearer ', '', $bearerToken));
+        if ($token === '' || strlen($token) > 255) {
+            return null;
+        }
         
         $accessToken = PersonalAccessToken::findToken($token);
         
@@ -69,7 +76,7 @@ class AuthService
      * @param string $authorization
      * @return array|null 用户数据或null
      */
-    public static function decryptAuthData(string $authorization): ?array
+    public static function decryptAuthData(mixed $authorization): ?array
     {
         $user = self::findUserByBearerToken($authorization);
         

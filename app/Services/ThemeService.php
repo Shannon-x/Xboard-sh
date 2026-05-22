@@ -103,12 +103,14 @@ class ThemeService
     public function upload(UploadedFile $file): bool
     {
         $zip = new ZipArchive;
+        $zipOpened = false;
         $tmpPath = storage_path('tmp/' . uniqid());
 
         try {
             if ($zip->open($file->path()) !== true) {
                 throw new Exception('Invalid theme package');
             }
+            $zipOpened = true;
 
             $configEntry = collect(range(0, $zip->numFiles - 1))
                 ->map(fn($i) => $zip->getNameIndex($i))
@@ -118,8 +120,7 @@ class ThemeService
                 throw new Exception('Theme config file not found');
             }
 
-            $zip->extractTo($tmpPath);
-            $zip->close();
+            $this->extractZipSafely($zip, $tmpPath);
 
             $sourcePath = $tmpPath . '/' . rtrim(dirname($configEntry), '.');
             $configFile = $sourcePath . '/' . self::CONFIG_FILE;
@@ -131,6 +132,10 @@ class ThemeService
             $config = json_decode(File::get($configFile), true);
             if (empty($config['name'])) {
                 throw new Exception('Theme name not configured');
+            }
+
+            if (!$this->isSafeThemeName($config['name'])) {
+                throw new Exception('Invalid theme name');
             }
 
             if (in_array($config['name'], self::SYSTEM_THEMES)) {
@@ -175,6 +180,9 @@ class ThemeService
         } catch (Exception $e) {
             throw $e;
         } finally {
+            if ($zipOpened) {
+                $zip->close();
+            }
             if (File::exists($tmpPath)) {
                 File::deleteDirectory($tmpPath);
             }
@@ -226,6 +234,10 @@ class ThemeService
     public function delete(string $theme): bool
     {
         try {
+            if (!$this->isSafeThemeName($theme)) {
+                throw new Exception('Invalid theme name');
+            }
+
             if (in_array($theme, self::SYSTEM_THEMES)) {
                 throw new Exception('System theme cannot be deleted');
             }
@@ -263,6 +275,10 @@ class ThemeService
      */
     public function getThemePath(string $theme): ?string
     {
+        if (!$this->isSafeThemeName($theme)) {
+            return null;
+        }
+
         $systemPath = base_path(self::SYSTEM_THEME_DIR . $theme);
         if (File::exists($systemPath)) {
             return $systemPath;
@@ -274,6 +290,78 @@ class ThemeService
         }
 
         return null;
+    }
+
+    private function isSafeThemeName(string $theme): bool
+    {
+        return (bool) preg_match('/^[A-Za-z0-9_-]+$/', $theme);
+    }
+
+    private function extractZipSafely(ZipArchive $zip, string $targetPath): void
+    {
+        File::ensureDirectoryExists($targetPath, 0755, true);
+
+        $targetRoot = realpath($targetPath);
+        if ($targetRoot === false) {
+            throw new Exception('Invalid extract path');
+        }
+
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $entry = $zip->getNameIndex($i);
+            if ($entry === false) {
+                continue;
+            }
+
+            $normalized = str_replace('\\', '/', $entry);
+            if ($this->isUnsafeZipEntry($zip, $i, $normalized)) {
+                throw new Exception('Unsafe path in theme package');
+            }
+
+            $destination = $targetRoot . DIRECTORY_SEPARATOR . $normalized;
+            $parent = dirname($destination);
+            File::ensureDirectoryExists($parent, 0755, true);
+
+            $realParent = realpath($parent);
+            $rootPrefix = rtrim($targetRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+            if ($realParent === false || ($realParent !== $targetRoot && !str_starts_with($realParent, $rootPrefix))) {
+                throw new Exception('Unsafe path in theme package');
+            }
+
+            if (str_ends_with($normalized, '/')) {
+                File::ensureDirectoryExists($destination, 0755, true);
+                continue;
+            }
+
+            if (!$zip->extractTo($targetRoot, $entry)) {
+                throw new Exception('Failed to extract theme package');
+            }
+        }
+    }
+
+    private function isUnsafeZipEntry(ZipArchive $zip, int $index, string $normalized): bool
+    {
+        if (
+            $normalized === '' ||
+            str_contains($normalized, "\0") ||
+            str_starts_with($normalized, '/') ||
+            preg_match('#^[A-Za-z]:/#', $normalized) ||
+            preg_match('#(^|/)\.\.(/|$)#', $normalized)
+        ) {
+            return true;
+        }
+
+        if (method_exists($zip, 'getExternalAttributesIndex')) {
+            $opsys = 0;
+            $attr = 0;
+            if ($zip->getExternalAttributesIndex($index, $opsys, $attr)) {
+                $mode = ($attr >> 16) & 0170000;
+                if ($mode === 0120000) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -341,6 +429,10 @@ class ThemeService
     public function cleanupThemeFiles(string $theme): void
     {
         try {
+            if (!$this->isSafeThemeName($theme)) {
+                throw new Exception('Invalid theme name');
+            }
+
             $publicThemePath = public_path('theme/' . $theme);
             if (File::exists($publicThemePath)) {
                 File::deleteDirectory($publicThemePath);

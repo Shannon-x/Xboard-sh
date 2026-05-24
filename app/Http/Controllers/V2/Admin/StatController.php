@@ -246,6 +246,10 @@ class StatController extends Controller
 
     public function getStatRecord(Request $request)
     {
+        $endAt = (int) $request->input('end_at', strtotime('+1 day', strtotime('today')));
+        $startAt = (int) $request->input('start_at', strtotime('-365 day', $endAt));
+        $this->service->setStartAt($startAt);
+        $this->service->setEndAt($endAt);
         return [
             'data' => $this->service->getStatRecord($request->input('type'))
         ];

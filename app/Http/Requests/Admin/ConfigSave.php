@@ -96,6 +96,10 @@ class ConfigSave extends FormRequest
         'recaptcha_v3_score_threshold' => 'numeric|min:0|max:1',
         'turnstile_secret_key' => 'nullable|string|max:255',
         'turnstile_site_key' => 'nullable|string|max:255',
+        'google_login_enable' => 'boolean',
+        'google_client_id' => 'nullable|string|max:255',
+        'google_client_secret' => 'nullable|string|max:255',
+        'google_redirect_uri' => 'nullable|url|max:255',
         'email_verify' => 'bool',
         'safe_mode_enable' => 'boolean',
         'register_limit_by_ip_enable' => 'boolean',
@@ -140,7 +144,8 @@ class ConfigSave extends FormRequest
             'captcha_type.in' => '人机验证类型只能选择 recaptcha、turnstile 或 recaptcha-v3',
             'recaptcha_v3_score_threshold.numeric' => 'reCAPTCHA v3 分数阈值必须为数字',
             'recaptcha_v3_score_threshold.min' => 'reCAPTCHA v3 分数阈值不能小于0',
-            'recaptcha_v3_score_threshold.max' => 'reCAPTCHA v3 分数阈值不能大于1'
+            'recaptcha_v3_score_threshold.max' => 'reCAPTCHA v3 分数阈值不能大于1',
+            'google_redirect_uri.url' => 'Google OAuth 回调地址格式不正确，必须携带 http(s)://'
         ];
     }
 }

@@ -28,6 +28,8 @@ class CommController extends Controller
             'app_description' => admin_setting('app_description'),
             'app_url' => admin_setting('app_url'),
             'logo' => admin_setting('logo'),
+            'google_login_enable' => (int) admin_setting('google_login_enable', 0) ? 1 : 0,
+            'google_login_url' => url('/api/v1/passport/auth/google/redirect'),
             // 保持向后兼容
             'is_recaptcha' => (int) admin_setting('captcha_enable', 0) ? 1 : 0,
         ];

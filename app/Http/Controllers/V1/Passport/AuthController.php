@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Passport\AuthForget;
 use App\Http\Requests\Passport\AuthLogin;
 use App\Http\Requests\Passport\AuthRegister;
+use App\Services\Auth\GoogleLoginService;
 use App\Services\Auth\LoginService;
 use App\Services\Auth\MailLinkService;
 use App\Services\Auth\RegisterService;
@@ -18,15 +19,18 @@ class AuthController extends Controller
     protected MailLinkService $mailLinkService;
     protected RegisterService $registerService;
     protected LoginService $loginService;
+    protected GoogleLoginService $googleLoginService;
 
     public function __construct(
         MailLinkService $mailLinkService,
         RegisterService $registerService,
-        LoginService $loginService
+        LoginService $loginService,
+        GoogleLoginService $googleLoginService
     ) {
         $this->mailLinkService = $mailLinkService;
         $this->registerService = $registerService;
         $this->loginService = $loginService;
+        $this->googleLoginService = $googleLoginService;
     }
 
     /**
@@ -82,6 +86,28 @@ class AuthController extends Controller
 
         $authService = new AuthService($result);
         return $this->success($authService->generateAuthData());
+    }
+
+    /**
+     * 跳转到 Google OAuth 授权页
+     */
+    public function googleRedirect(Request $request)
+    {
+        [$success, $result] = $this->googleLoginService->createRedirectUrl($request);
+
+        if (!$success) {
+            return $this->fail($result);
+        }
+
+        return redirect()->away($result);
+    }
+
+    /**
+     * Google OAuth 回调
+     */
+    public function googleCallback(Request $request)
+    {
+        return redirect()->to($this->googleLoginService->handleCallback($request));
     }
 
     /**

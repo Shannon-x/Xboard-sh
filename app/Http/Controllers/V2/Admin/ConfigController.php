@@ -5,6 +5,7 @@ namespace App\Http\Controllers\V2\Admin;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ConfigSave;
 use App\Models\SubscribeTemplate;
+use App\Services\Auth\GoogleLoginService;
 use App\Services\MailService;
 use App\Services\TelegramService;
 use App\Services\ThemeService;
@@ -186,6 +187,11 @@ class ConfigController extends Controller
                 'recaptcha_v3_score_threshold' => admin_setting('recaptcha_v3_score_threshold', 0.5),
                 'turnstile_secret_key' => admin_setting('turnstile_secret_key', ''),
                 'turnstile_site_key' => admin_setting('turnstile_site_key', ''),
+                'google_login_enable' => (bool) admin_setting('google_login_enable', 0),
+                'google_client_id' => admin_setting('google_client_id', ''),
+                'google_client_secret' => admin_setting('google_client_secret', ''),
+                'google_redirect_uri' => admin_setting('google_redirect_uri', ''),
+                'google_callback_url' => app(GoogleLoginService::class)->callbackUri(request()),
                 'register_limit_by_ip_enable' => (bool) admin_setting('register_limit_by_ip_enable', 0),
                 'register_limit_count' => admin_setting('register_limit_count', 3),
                 'register_limit_expire' => admin_setting('register_limit_expire', 60),

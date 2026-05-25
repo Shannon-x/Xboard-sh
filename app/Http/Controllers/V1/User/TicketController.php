@@ -41,6 +41,10 @@ class TicketController extends Controller
 
     public function save(TicketSave $request)
     {
+        if ((int) admin_setting('ticket_active_subscription_required', 0) && !$request->user()->isActive()) {
+            return $this->fail([400, __('Please purchase an active subscription before opening a ticket')]);
+        }
+
         $ticketService = new TicketService();
         $ticket = $ticketService->createTicket(
             $request->user()->id,

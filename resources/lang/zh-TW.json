@@ -10,6 +10,7 @@
     "Ticket does not exist": "工單不存在",
     "There are other unresolved tickets": "存在其他工單尚未處理",
     "Failed to open ticket": "工單創建失敗",
+    "Please purchase an active subscription before opening a ticket": "請先購買有效訂閱後再提交工單",
     "Message cannot be empty": "消息不能為空",
     "The ticket is closed and cannot be replied": "工單已關閉，無法回復",
     "Please wait for the technical enginneer to reply": "請等待技術支持回復",

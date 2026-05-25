@@ -45,6 +45,7 @@ class ConfigSave extends FormRequest
         'change_order_event_id' => '',
         'show_info_to_server_enable' => '',
         'show_protocol_to_server_enable' => '',
+        'ticket_active_subscription_required' => '',
         'subscribe_path' => '',
         // server
         'server_token' => 'nullable|string|min:16|max:128',

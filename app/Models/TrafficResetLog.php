@@ -57,6 +57,7 @@ class TrafficResetLog extends Model
     public const TYPE_FIRST_DAY_YEAR = 'first_day_year';
     public const TYPE_MANUAL = 'manual';
     public const TYPE_PURCHASE = 'purchase';
+    public const TYPE_ADVANCE_CYCLE = 'advance_cycle';
 
     // 触发来源常量
     public const SOURCE_AUTO = 'auto';
@@ -66,6 +67,7 @@ class TrafficResetLog extends Model
     public const SOURCE_USER_ACCESS = 'user_access';
     public const SOURCE_ORDER = 'order';
     public const SOURCE_GIFT_CARD = 'gift_card';
+    public const SOURCE_ADVANCE_CYCLE = 'advance_cycle';
 
     /**
      * 获取重置类型的多语言名称
@@ -79,6 +81,7 @@ class TrafficResetLog extends Model
             self::TYPE_FIRST_DAY_YEAR => __('traffic_reset.reset_type.first_day_year'),
             self::TYPE_MANUAL => __('traffic_reset.reset_type.manual'),
             self::TYPE_PURCHASE => __('traffic_reset.reset_type.purchase'),
+            self::TYPE_ADVANCE_CYCLE => __('traffic_reset.reset_type.advance_cycle'),
         ];
     }
 
@@ -93,6 +96,9 @@ class TrafficResetLog extends Model
             self::SOURCE_API => __('traffic_reset.source.api'),
             self::SOURCE_CRON => __('traffic_reset.source.cron'),
             self::SOURCE_USER_ACCESS => __('traffic_reset.source.user_access'),
+            self::SOURCE_ORDER => __('traffic_reset.source.order'),
+            self::SOURCE_GIFT_CARD => __('traffic_reset.source.gift_card'),
+            self::SOURCE_ADVANCE_CYCLE => __('traffic_reset.source.advance_cycle'),
         ];
     }
 

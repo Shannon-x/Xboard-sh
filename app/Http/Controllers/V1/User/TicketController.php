@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\User\TicketSave;
 use App\Http\Requests\User\TicketWithdraw;
 use App\Http\Resources\TicketResource;
+use App\Models\Order;
 use App\Models\Ticket;
 use App\Models\TicketMessage;
 use App\Models\User;
@@ -41,8 +42,8 @@ class TicketController extends Controller
 
     public function save(TicketSave $request)
     {
-        if ((int) admin_setting('ticket_active_subscription_required', 0) && !$request->user()->isActive()) {
-            return $this->fail([400, __('Please purchase an active subscription before opening a ticket')]);
+        if ((int) admin_setting('ticket_active_subscription_required', 0) && !$this->canOpenTicket($request)) {
+            return $this->fail([400, __('Please purchase a subscription or submit a recent payment order before opening a ticket')]);
         }
 
         $ticketService = new TicketService();
@@ -115,6 +116,36 @@ class TicketController extends Controller
         return TicketMessage::where('ticket_id', $ticketId)
             ->orderBy('id', 'DESC')
             ->first();
+    }
+
+    private function canOpenTicket(Request $request): bool
+    {
+        $user = $request->user();
+
+        if ($user->isActive()) {
+            return true;
+        }
+
+        $recentOrderDays = max(1, (int) admin_setting('ticket_recent_order_days', 7));
+        $recentCancelledOrderHours = max(1, (int) admin_setting('ticket_recent_cancelled_order_hours', 24));
+
+        return Order::query()
+            ->where('user_id', $user->id)
+            ->where('total_amount', '>', 0)
+            ->whereNotNull('payment_id')
+            ->where(function ($query) use ($recentOrderDays, $recentCancelledOrderHours) {
+                $query->where(function ($query) use ($recentOrderDays) {
+                    $query->whereIn('status', [
+                        Order::STATUS_PENDING,
+                        Order::STATUS_PROCESSING,
+                        Order::STATUS_COMPLETED,
+                    ])->where('created_at', '>=', time() - ($recentOrderDays * 86400));
+                })->orWhere(function ($query) use ($recentCancelledOrderHours) {
+                    $query->where('status', Order::STATUS_CANCELLED)
+                        ->where('created_at', '>=', time() - ($recentCancelledOrderHours * 3600));
+                });
+            })
+            ->exists();
     }
 
     public function withdraw(TicketWithdraw $request)

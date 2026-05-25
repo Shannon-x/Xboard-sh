@@ -11,6 +11,7 @@
     "There are other unresolved tickets": "存在其它工单尚未处理",
     "Failed to open ticket": "工单创建失败",
     "Please purchase an active subscription before opening a ticket": "请先购买有效订阅后再提交工单",
+    "Please purchase a subscription or submit a recent payment order before opening a ticket": "请先购买套餐或提交近期支付订单后再提交工单",
     "Message cannot be empty": "消息不能为空",
     "The ticket is closed and cannot be replied": "工单已关闭，无法回复",
     "Please wait for the technical enginneer to reply": "请等待技术支持回复",

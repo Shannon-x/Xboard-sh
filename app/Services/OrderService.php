@@ -75,11 +75,14 @@ class OrderService
 
             $orderService->setVipDiscount($user);
             $orderService->setOrderType($user);
-            $orderService->setInvite(user: $user);
 
             if ($user->balance && $order->total_amount > 0) {
                 $orderService->handleUserBalance($user, $userService);
             }
+
+            // 必须在 handleUserBalance 之后调用：佣金基数为净现金应付额，
+            // 余额抵扣部分（含来自佣金转入的余额）不计入返佣，防止套利环路。
+            $orderService->setInvite(user: $user);
 
             if (!$order->save()) {
                 throw new ApiException(__('Failed to create order'));

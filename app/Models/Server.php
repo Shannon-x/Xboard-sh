@@ -35,10 +35,10 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
  * @property array|null $protocol_settings 协议设置
  * @property int $created_at
  * @property int $updated_at
- *
+ * 
  * @property-read Server|null $parent 父节点
  * @property-read \Illuminate\Database\Eloquent\Collection<int, StatServer> $stats 节点统计
- *
+ * 
  * @property-read int|null $last_check_at 最后检查时间（Unix时间戳）
  * @property-read int|null $last_push_at 最后推送时间（Unix时间戳）
  * @property-read int $online 在线用户数
@@ -366,7 +366,7 @@ class Server extends Model
     public function getProtocolSettingsAttribute($value)
     {
         $settings = json_decode($value, true) ?? [];
-
+        
         $rawSettings = json_decode($value, false);
         if (isset($rawSettings->network_settings) && is_object($rawSettings->network_settings)) {
             $settings['network_settings'] = (array) $rawSettings->network_settings;
@@ -416,7 +416,7 @@ class Server extends Model
     {
         return $type ? strtolower(self::TYPE_ALIASES[$type] ?? $type) : null;
     }
-
+    
     public static function isValidType(?string $type): bool
     {
         return $type ? in_array(self::normalizeType($type), self::VALID_TYPES, true) : true;
@@ -451,18 +451,7 @@ class Server extends Model
 
     public function routes()
     {
-        $orderedRouteIds = collect($this->route_ids ?? [])
-            ->map(fn ($id) => (int) $id)
-            ->filter(fn ($id) => $id > 0)
-            ->values();
-
-        if ($orderedRouteIds->isEmpty()) {
-            return collect();
-        }
-
-        return ServerRoute::whereIn('id', $orderedRouteIds)
-            ->orderByRaw('FIELD(id, ' . $orderedRouteIds->implode(',') . ')')
-            ->get();
+        return ServerRoute::whereIn('id', $this->route_ids)->get();
     }
 
     /**
@@ -596,7 +585,7 @@ class Server extends Model
         $ranges = $this->rate_time_ranges ?? [];
         $matchedRange = collect($ranges)
             ->first(fn($range) => $now >= $range['start'] && $now <= $range['end']);
-
+        
         return $matchedRange ? (float) $matchedRange['rate'] : (float) $this->rate;
     }
 }

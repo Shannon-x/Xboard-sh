@@ -128,7 +128,8 @@ class ServerService
     public static function getRoutes(array $routeIds)
     {
         $routes = ServerRoute::select(['id', 'match', 'action', 'action_value'])->whereIn('id', $routeIds)->get();
-        return $routes;
+        $order = array_flip($routeIds);
+        return $routes->sortBy(fn($route) => $order[$route->id] ?? PHP_INT_MAX)->values();
     }
 
     /**

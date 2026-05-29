@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Admin;
 
+use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 
 class CouponGenerate extends FormRequest
@@ -17,15 +18,24 @@ class CouponGenerate extends FormRequest
             'generate_count' => 'nullable|integer|max:500',
             'name' => 'required|string|max:255',
             'type' => 'required|in:1,2',
-            'value' => 'required|integer',
+            'value' => 'required|integer|min:1',
             'started_at' => 'required|integer',
             'ended_at' => 'required|integer',
-            'limit_use' => 'nullable|integer',
-            'limit_use_with_user' => 'nullable|integer',
+            'limit_use' => 'nullable|integer|min:0',
+            'limit_use_with_user' => 'nullable|integer|min:0',
             'limit_plan_ids' => 'nullable|array',
             'limit_period' => 'nullable|array',
             'code' => 'nullable|string|max:255'
         ];
+    }
+
+    public function withValidator(Validator $validator): void
+    {
+        $validator->after(function (Validator $validator) {
+            if ((int) $this->input('type') === 2 && (int) $this->input('value') > 100) {
+                $validator->errors()->add('value', '比例优惠不能超过 100');
+            }
+        });
     }
 
     public function messages()
@@ -38,6 +48,7 @@ class CouponGenerate extends FormRequest
             'type.in' => '类型格式有误',
             'value.required' => '金额或比例不能为空',
             'value.integer' => '金额或比例格式有误',
+            'value.min' => '金额或比例必须大于0',
             'started_at.required' => '开始时间不能为空',
             'started_at.integer' => '开始时间格式有误',
             'ended_at.required' => '结束时间不能为空',

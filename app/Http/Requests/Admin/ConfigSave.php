@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Admin;
 
+use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 
 class ConfigSave extends FormRequest
@@ -9,7 +10,7 @@ class ConfigSave extends FormRequest
     const RULES = [
         // invite & commission
         'invite_force' => '',
-        'invite_commission' => 'integer|nullable',
+        'invite_commission' => 'integer|nullable|min:0|max:100',
         'invite_gen_limit' => 'integer|nullable',
         'invite_never_expire' => '',
         'commission_first_time_enable' => '',
@@ -18,9 +19,9 @@ class ConfigSave extends FormRequest
         'commission_withdraw_method' => 'nullable|array',
         'withdraw_close_enable' => '',
         'commission_distribution_enable' => '',
-        'commission_distribution_l1' => 'nullable|numeric',
-        'commission_distribution_l2' => 'nullable|numeric',
-        'commission_distribution_l3' => 'nullable|numeric',
+        'commission_distribution_l1' => 'nullable|numeric|min:0|max:100',
+        'commission_distribution_l2' => 'nullable|numeric|min:0|max:100',
+        'commission_distribution_l3' => 'nullable|numeric|min:0|max:100',
         // site
         'logo' => 'nullable|url',
         'force_https' => '',
@@ -127,6 +128,25 @@ class ConfigSave extends FormRequest
     public function rules()
     {
         return self::RULES;
+    }
+
+    public function withValidator(Validator $validator): void
+    {
+        $validator->after(function (Validator $validator) {
+            if (!(int) $this->input('commission_distribution_enable', 0)) {
+                return;
+            }
+
+            $total = collect([
+                $this->input('commission_distribution_l1', 0),
+                $this->input('commission_distribution_l2', 0),
+                $this->input('commission_distribution_l3', 0),
+            ])->sum(fn($value) => (float) ($value ?? 0));
+
+            if ($total > 100) {
+                $validator->errors()->add('commission_distribution_l1', '三级分销比例合计不能超过 100%');
+            }
+        });
     }
 
     public function messages()

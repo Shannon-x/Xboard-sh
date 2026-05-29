@@ -62,22 +62,33 @@ class CheckCommission extends Command
     {
         $orders = Order::where('commission_status', 1)
             ->where('invite_user_id', '!=', NULL)
+            ->select('id')
             ->get();
         foreach ($orders as $order) {
             try{
-                DB::beginTransaction();
-                if (!$this->payHandle($order->invite_user_id, $order)) {
-                    DB::rollBack();
-                    continue;
-                }
-                $order->commission_status = 2;
-                if (!$order->save()) {
-                    DB::rollBack();
-                    continue;
-                }
-                DB::commit();
+                DB::transaction(function () use ($order) {
+                    $lockedOrder = Order::where('id', $order->id)
+                        ->lockForUpdate()
+                        ->first();
+
+                    if (
+                        !$lockedOrder
+                        || (int) $lockedOrder->commission_status !== 1
+                        || !$lockedOrder->invite_user_id
+                    ) {
+                        return;
+                    }
+
+                    if (!$this->payHandle($lockedOrder->invite_user_id, $lockedOrder)) {
+                        throw new \RuntimeException('Failed to pay commission');
+                    }
+
+                    $lockedOrder->commission_status = 2;
+                    if (!$lockedOrder->save()) {
+                        throw new \RuntimeException('Failed to save commission status');
+                    }
+                });
             } catch (\Exception $e){
-                DB::rollBack();
                 throw $e;
             }
         }
@@ -85,31 +96,21 @@ class CheckCommission extends Command
 
     public function payHandle($inviteUserId, Order $order)
     {
-        $level = 3;
-        if ((int)admin_setting('commission_distribution_enable', 0)) {
-            $commissionShareLevels = [
-                0 => (int)admin_setting('commission_distribution_l1'),
-                1 => (int)admin_setting('commission_distribution_l2'),
-                2 => (int)admin_setting('commission_distribution_l3')
-            ];
-        } else {
-            $commissionShareLevels = [
-                0 => 100
-            ];
-        }
-        for ($l = 0; $l < $level; $l++) {
-            $inviter = User::find($inviteUserId);
+        $commissionShareLevels = $this->getCommissionShareLevels();
+        for ($l = 0; $l < 3; $l++) {
+            $inviter = User::where('id', $inviteUserId)
+                ->lockForUpdate()
+                ->first();
             if (!$inviter) continue;
             if (!isset($commissionShareLevels[$l])) continue;
-            $commissionBalance = $order->commission_balance * ($commissionShareLevels[$l] / 100);
+            $commissionBalance = (int) floor($order->commission_balance * ($commissionShareLevels[$l] / 100));
             if (!$commissionBalance) continue;
             if ((int)admin_setting('withdraw_close_enable', 0)) {
-                $inviter->increment('balance', $commissionBalance);
+                $inviter->balance = (int) ($inviter->balance ?? 0) + $commissionBalance;
             } else {
-                $inviter->increment('commission_balance', $commissionBalance);
+                $inviter->commission_balance = (int) ($inviter->commission_balance ?? 0) + $commissionBalance;
             }
             if (!$inviter->save()) {
-                DB::rollBack();
                 return false;
             }
             CommissionLog::create([
@@ -121,9 +122,32 @@ class CheckCommission extends Command
             ]);
             $inviteUserId = $inviter->invite_user_id;
             // update order actual commission balance
-            $order->actual_commission_balance = $order->actual_commission_balance + $commissionBalance;
+            $order->actual_commission_balance = (int) ($order->actual_commission_balance ?? 0) + $commissionBalance;
         }
         return true;
+    }
+
+    private function getCommissionShareLevels(): array
+    {
+        if (!(int)admin_setting('commission_distribution_enable', 0)) {
+            return [0 => 100];
+        }
+
+        $remaining = 100;
+        $levels = [];
+        foreach (['commission_distribution_l1', 'commission_distribution_l2', 'commission_distribution_l3'] as $index => $key) {
+            $share = max(0, min(100, (int)admin_setting($key, 0)));
+            $share = min($share, $remaining);
+            if ($share > 0) {
+                $levels[$index] = $share;
+            }
+            $remaining -= $share;
+            if ($remaining <= 0) {
+                break;
+            }
+        }
+
+        return $levels;
     }
 
 }

@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Exceptions\ApiException;
 use App\Jobs\OrderHandleJob;
+use App\Models\Coupon;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\TrafficResetLog;
@@ -18,6 +19,8 @@ use App\Services\PlanService;
 
 class OrderService
 {
+    private const BYTES_PER_GB = 1073741824;
+
     const STR_TO_TIME = [
         Plan::PERIOD_MONTHLY => 1,
         Plan::PERIOD_QUARTERLY => 3,
@@ -56,7 +59,16 @@ class OrderService
         $planService->validatePurchase($user, $period);
         HookManager::call('order.create.before', [$user, $plan, $period, $couponCode]);
 
-        return DB::transaction(function () use ($user, $plan, $period, $couponCode, $userService) {
+        return DB::transaction(function () use ($user, $plan, $period, $couponCode, $userService, $planService) {
+            $user = User::lockForUpdate()->find($user->id);
+            if (!$user) {
+                throw new ApiException(__('The user does not exist'));
+            }
+            if ($userService->isNotCompleteOrderByUserId($user->id)) {
+                throw new ApiException(__('You have an unpaid or pending order, please try again later or cancel it'));
+            }
+            $planService->validatePurchase($user, $period);
+
             $newPeriod = PlanService::getPeriodKey($period);
 
             $order = new Order([
@@ -119,10 +131,6 @@ class OrderService
                 $preserveNextResetAt = $this->user->next_reset_at;
             }
 
-            if ($order->refund_amount) {
-                $this->user->balance += $order->refund_amount;
-            }
-
             if ($order->surplus_order_ids) {
                 Order::whereIn('id', $order->surplus_order_ids)
                     ->update(['status' => Order::STATUS_DISCOUNTED]);
@@ -136,6 +144,11 @@ class OrderService
 
             $this->setSpeedLimit($plan->speed_limit);
             $this->setDeviceLimit($plan->device_limit);
+
+            // 套餐变更产生的剩余价值退款回到 user.balance，仅站内消费、不可提现。
+            if ((int) ($order->refund_amount ?? 0) > 0) {
+                $this->user->balance = (int) ($this->user->balance ?? 0) + (int) $order->refund_amount;
+            }
 
             if (!$this->user->save()) {
                 throw new \RuntimeException('用户信息保存失败');
@@ -154,12 +167,7 @@ class OrderService
             }
         });
 
-        $eventId = match ((int) $order->type) {
-            Order::STATUS_PROCESSING => admin_setting('new_order_event_id', 0),
-            Order::TYPE_RENEWAL => admin_setting('renew_order_event_id', 0),
-            Order::TYPE_UPGRADE => admin_setting('change_order_event_id', 0),
-            default => 0,
-        };
+        $eventId = $this->getOpenEventId($order);
 
         if ($eventId) {
             $this->openEvent($eventId);
@@ -180,12 +188,7 @@ class OrderService
             $order->type = Order::TYPE_UPGRADE;
             if ((int) admin_setting('surplus_enable', 1))
                 $this->getSurplusValue($user, $order);
-            if ($order->surplus_amount >= $order->total_amount) {
-                $order->refund_amount = (int) ($order->surplus_amount - $order->total_amount);
-                $order->total_amount = 0;
-            } else {
-                $order->total_amount = (int) ($order->total_amount - $order->surplus_amount);
-            }
+            $this->applySurplusDiscount($order);
         } else if (($user->expired_at === null || $user->expired_at > time()) && $order->plan_id == $user->plan_id) { // 用户订阅未过期或按流量订阅 且购买订阅与当前订阅相同 === 续费
             $order->type = Order::TYPE_RENEWAL;
         } else { // 新购
@@ -196,10 +199,34 @@ class OrderService
     public function setVipDiscount(User $user)
     {
         $order = $this->order;
+        $orderAmount = max(0, (int) $order->total_amount);
+        $discountAmount = max(0, (int) round((float) ($order->discount_amount ?? 0)));
         if ($user->discount) {
-            $order->discount_amount = $order->discount_amount + ($order->total_amount * ($user->discount / 100));
+            $discountAmount += (int) round($orderAmount * ($user->discount / 100));
         }
-        $order->total_amount = $order->total_amount - $order->discount_amount;
+        $order->discount_amount = min($discountAmount, $orderAmount);
+        $order->total_amount = $orderAmount - $order->discount_amount;
+    }
+
+    private function applySurplusDiscount(Order $order): void
+    {
+        $orderAmount = max(0, (int) $order->total_amount);
+        $surplusAmount = max(0, (int) ($order->surplus_amount ?? 0));
+
+        // 折抵新订单金额；剩余价值大于新订单时，多出部分作为退款，开通时归还到
+        // user.balance（不进 commission_balance，无法直接提现，仅站内消费）。
+        // 安全性：surplus_amount 已经被 cap 在 orderAmountSum（历史实际投入额）以内，
+        // 因此 refund_amount 不会凭空创造价值；同时余额复购走 handleUserBalance →
+        // setInvite，余额抵扣部分不计入佣金基数，不会形成"换-退-刷佣金"回路。
+        if ($surplusAmount >= $orderAmount) {
+            $order->surplus_amount = $orderAmount;
+            $order->refund_amount = $surplusAmount - $orderAmount;
+            $order->total_amount = 0;
+        } else {
+            $order->surplus_amount = $surplusAmount;
+            $order->refund_amount = 0;
+            $order->total_amount = $orderAmount - $surplusAmount;
+        }
     }
 
     public function setInvite(User $user): void
@@ -227,11 +254,9 @@ class OrderService
 
         if (!$isCommission)
             return;
-        if ($inviter->commission_rate) {
-            $order->commission_balance = $order->total_amount * ($inviter->commission_rate / 100);
-        } else {
-            $order->commission_balance = $order->total_amount * (admin_setting('invite_commission', 10) / 100);
-        }
+        $commissionRate = $inviter->commission_rate ?: admin_setting('invite_commission', 10);
+        $commissionRate = max(0, min(100, (float) $commissionRate));
+        $order->commission_balance = (int) floor($order->total_amount * ($commissionRate / 100));
     }
 
     private function haveValidOrder(User $user): Order|null
@@ -251,7 +276,7 @@ class OrderService
                 ->first();
             if (!$lastOneTimeOrder)
                 return;
-            $nowUserTraffic = Helper::transferToGB($user->transfer_enable);
+            $nowUserTraffic = Helper::transferToGB($this->getSurplusTrafficLimit($user));
             if (!$nowUserTraffic)
                 return;
             $paidTotalAmount = ($lastOneTimeOrder->total_amount + $lastOneTimeOrder->balance_amount);
@@ -323,13 +348,27 @@ class OrderService
 
     private function getCurrentCycleTrafficRatio(User $user): float
     {
-        $totalTraffic = (int) ($user->transfer_enable ?? 0);
+        $totalTraffic = $this->getSurplusTrafficLimit($user);
         if ($totalTraffic <= 0) {
             return 0;
         }
 
         $usedTraffic = (int) ($user->u ?? 0) + (int) ($user->d ?? 0);
         return max(0, min(1, ($totalTraffic - $usedTraffic) / $totalTraffic));
+    }
+
+    private function getSurplusTrafficLimit(User $user): int
+    {
+        $userTraffic = max(0, (int) ($user->transfer_enable ?? 0));
+        $planTraffic = $user->plan
+            ? max(0, (int) $user->plan->transfer_enable * self::BYTES_PER_GB)
+            : 0;
+
+        if ($userTraffic > 0 && $planTraffic > 0) {
+            return min($userTraffic, $planTraffic);
+        }
+
+        return max($userTraffic, $planTraffic);
     }
 
     private function getRemainingCycleRatios(User $user, int $now, int $expiredAt): array
@@ -426,6 +465,15 @@ class OrderService
         HookManager::call('order.cancel.before', $order);
         try {
             DB::beginTransaction();
+            $order = Order::where('id', $order->id)
+                ->lockForUpdate()
+                ->first();
+            if (!$order || (int) $order->status !== Order::STATUS_PENDING) {
+                DB::rollBack();
+                return false;
+            }
+            $this->order = $order;
+
             $order->status = Order::STATUS_CANCELLED;
             if (!$order->save()) {
                 throw new \Exception('Failed to save order status.');
@@ -436,6 +484,7 @@ class OrderService
                     throw new \Exception('Failed to add balance.');
                 }
             }
+            $this->restoreCouponUsage($order);
             DB::commit();
             HookManager::call('order.cancel.after', $order);
             return true;
@@ -462,7 +511,7 @@ class OrderService
         if ((int) $order->type === Order::TYPE_UPGRADE) {
             $this->user->expired_at = time();
         }
-        $this->user->transfer_enable = $plan->transfer_enable * 1073741824;
+        $this->user->transfer_enable = $plan->transfer_enable * self::BYTES_PER_GB;
         // 从一次性转换到循环或者新购的时候，重置流量
         if ($this->user->expired_at === NULL || $order->type === Order::TYPE_NEW_PURCHASE)
             app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER);
@@ -473,14 +522,24 @@ class OrderService
 
     private function shouldPreserveResetSchedule(Order $order): bool
     {
-        return (int) $order->type === Order::TYPE_UPGRADE
-            && (int) admin_setting('change_order_event_id', 0) === 0;
+        return (int) $order->type === Order::TYPE_UPGRADE;
+    }
+
+    private function getOpenEventId(Order $order): int
+    {
+        return match ((int) $order->type) {
+            Order::TYPE_NEW_PURCHASE => (int) admin_setting('new_order_event_id', 0),
+            Order::TYPE_RENEWAL => (int) admin_setting('renew_order_event_id', 0),
+            // 套餐变更只调整当前周期流量上限，不触发额外清零，避免换套餐刷流量。
+            Order::TYPE_UPGRADE => 0,
+            default => 0,
+        };
     }
 
     private function buyByOneTime(Plan $plan)
     {
         app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER);
-        $this->user->transfer_enable = $plan->transfer_enable * 1073741824;
+        $this->user->transfer_enable = $plan->transfer_enable * self::BYTES_PER_GB;
         $this->user->plan_id = $plan->id;
         $this->user->group_id = $plan->group_id;
         $this->user->expired_at = NULL;
@@ -515,6 +574,20 @@ class OrderService
                 app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER);
                 break;
         }
+    }
+
+    private function restoreCouponUsage(Order $order): void
+    {
+        if (!$order->coupon_id) {
+            return;
+        }
+
+        $coupon = Coupon::lockForUpdate()->find($order->coupon_id);
+        if (!$coupon || $coupon->limit_use === null) {
+            return;
+        }
+
+        $coupon->increment('limit_use');
     }
 
     protected function applyCoupon(string $couponCode): void

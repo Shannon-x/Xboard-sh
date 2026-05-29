@@ -30,10 +30,11 @@ class CouponService
         $this->check();
         switch ($this->coupon->type) {
             case 1:
-                $order->discount_amount = $this->coupon->value;
+                $order->discount_amount = max(0, (int) $this->coupon->value);
                 break;
             case 2:
-                $order->discount_amount = $order->total_amount * ($this->coupon->value / 100);
+                $discountRate = max(0, min(100, (int) $this->coupon->value));
+                $order->discount_amount = $order->total_amount * ($discountRate / 100);
                 break;
         }
         if ($order->discount_amount > $order->total_amount) {

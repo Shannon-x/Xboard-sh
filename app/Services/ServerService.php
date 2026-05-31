@@ -124,11 +124,32 @@ class ServerService
         return HookManager::filter('server.users.get', $users, $node);
     }
 
-    // 获取路由规则
+    /**
+     * 获取路由规则，并按 $routeIds 数组中给出的顺序返回。
+     *
+     * 关键点：v2node / Xray 的 RouterConfig.RuleList 是 first-match-wins，
+     * 规则的生效优先级 = $routeIds 数组中的下标。MySQL `WHERE id IN (...)` 默认按
+     * 主键升序返回，会把管理员在前端拖拽排定的优先级抹平。这里必须按入参顺序
+     * 重排，并顺便清掉重复 / 非整型 / 已被删除的脏 ID。
+     */
     public static function getRoutes(array $routeIds)
     {
-        $routes = ServerRoute::select(['id', 'match', 'action', 'action_value'])->whereIn('id', $routeIds)->get();
-        return $routes;
+        $orderedIds = array_values(array_unique(
+            array_map('intval', array_filter($routeIds, 'is_numeric'))
+        ));
+        if (empty($orderedIds)) {
+            return collect();
+        }
+
+        $byId = ServerRoute::select(['id', 'match', 'action', 'action_value'])
+            ->whereIn('id', $orderedIds)
+            ->get()
+            ->keyBy('id');
+
+        return collect($orderedIds)
+            ->map(fn ($id) => $byId->get($id))
+            ->filter()
+            ->values();
     }
 
     /**

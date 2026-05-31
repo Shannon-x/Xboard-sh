@@ -451,7 +451,9 @@ class Server extends Model
 
     public function routes()
     {
-        return ServerRoute::whereIn('id', $this->route_ids)->get();
+        // 委托给 ServerService::getRoutes，确保返回顺序与 route_ids 一致——
+        // 否则后台展示和实际下发给 v2node 的优先级会对不上。
+        return \App\Services\ServerService::getRoutes($this->route_ids ?? []);
     }
 
     /**

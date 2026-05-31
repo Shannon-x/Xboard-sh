@@ -150,6 +150,34 @@ class ServerSave extends FormRequest
         ];
     }
 
+    /**
+     * 在校验之前归一化 route_ids：
+     *   - 元素整型化（前端可能传 "3" 这种字符串）
+     *   - 去重但保留顺序（顺序 = 管理员在前端拖拽排定的路由优先级）
+     *   - 丢弃非数字 / 空值
+     * 已被删除的路由 ID 不在这里清理——交给 ServerService::getRoutes 下发时过滤，
+     * 避免在保存阶段额外查库。
+     */
+    protected function prepareForValidation(): void
+    {
+        $routeIds = $this->input('route_ids');
+        if (!is_array($routeIds)) {
+            return;
+        }
+        $normalized = [];
+        foreach ($routeIds as $id) {
+            if (!is_numeric($id)) {
+                continue;
+            }
+            $intId = (int) $id;
+            if ($intId <= 0 || in_array($intId, $normalized, true)) {
+                continue;
+            }
+            $normalized[] = $intId;
+        }
+        $this->merge(['route_ids' => $normalized]);
+    }
+
     public function rules(): array
     {
         $type = $this->input('type');

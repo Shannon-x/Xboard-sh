@@ -19,8 +19,8 @@
 1. **代码逻辑与上游差异巨大**
    控制器、模型、迁移、路由、定时任务、缓存策略、配置项默认值等多处都做了非兼容修改。**不要**期望它能与原版 Xboard 的文档/插件/迁移脚本无缝对应。
 
-2. **配套的后端节点（xrayR / 节点端）只支持 [v2node](https://github.com/wyx2685/V2bX/tree/v2node)，完全不支持 [XrayR-Project/XrayR](https://github.com/XrayR-project/XrayR) 系/原版 Xboard 的 xbnode 协议**
-   面板内的协议字段、节点对接 API、推送格式、在线汇报、用户流量上报全部按 v2node 的接口契约对接。如果你用的是 XrayR、xbnode、V2bX 主线分支等其他节点端，**接不上就是接不上**，请不要在 Issue 里问"为什么连不上"。
+2. **节点端支持 [v2node](https://github.com/wyx2685/V2bX/tree/v2node) 与 [V2bX](https://github.com/wyx2685/V2bX) 主线，完全不支持原版 Xboard 的 xbnode 协议**
+   面板内的协议字段、节点对接 API、推送格式、在线汇报、用户流量上报全部按 v2node / V2bX 的接口契约对接（**全面适配 v2node**，V2bX 主线一并兼容）。如果你用的是 xbnode、[XrayR-Project/XrayR](https://github.com/XrayR-project/XrayR) 等其他节点端，**接不上就是接不上**，请不要在 Issue 里问"为什么连不上"。
 
 3. **配套前端是另一个魔改项目**
    推荐搭配 [XBoard-admin](https://github.com/Shannon-x/XBoard-admin)（个人重写的 Vue3 + Element Plus 后台），原版 Xboard 的 React 后台与本仓库部分接口不兼容，可能出现字段缺失/接口 404/行为不一致。
@@ -40,9 +40,9 @@
 
 | 维度 | 原版 Xboard | 本仓库 (Xboard-sh) |
 | --- | --- | --- |
-| 后端节点端 | 支持 xbnode / V2bX / XrayR 等多种 | **只适配 [v2node](https://github.com/wyx2685/V2bX/tree/v2node)** |
+| 后端节点端 | 支持 xbnode / V2bX / XrayR 等多种 | **全面适配 [v2node](https://github.com/wyx2685/V2bX/tree/v2node)，同时兼容 [V2bX](https://github.com/wyx2685/V2bX) 主线** |
 | xbnode 协议兼容性 | 原生支持 | **完全不支持，已移除/改写相关字段** |
-| 节点协议字段 | 上游字段 | 按 v2node 重新定义（routes / 标签 / 优先级等） |
+| 节点协议字段 | 上游字段 | 按 v2node / V2bX 重新定义（routes / 标签 / 优先级等） |
 | 配套后台 | 内置 React 后台 | 推荐使用 [XBoard-admin](https://github.com/Shannon-x/XBoard-admin) |
 | 公告 / 节点 / 套餐 / 路由 | 上游字段 | 多处增删字段、改默认值、加新表迁移 |
 | 定时任务与缓存 | 上游策略 | 按自身需求调整 |
@@ -73,19 +73,24 @@ php artisan xboard:install
 php artisan octane:start --host=0.0.0.0 --port=7001
 ```
 
-节点端必须用 v2node 分支：
+节点端必须用 v2node 或 V2bX：
 
 ```bash
-# v2node 仓库
+# v2node 仓库（推荐，全面适配）
 https://github.com/wyx2685/V2bX/tree/v2node
+
+# V2bX 主线（也兼容）
+https://github.com/wyx2685/V2bX
 ```
+
+> 不支持 xbnode、XrayR 等其他节点端。
 
 ---
 
 ## 🛠️ 技术栈
 
 - **后端**：Laravel 11 + Octane
-- **节点端**：仅适配 **v2node**
+- **节点端**：全面适配 **v2node**，同时兼容 **V2bX 主线**；**不支持 xbnode**
 - **数据库**：MySQL 5.7+ / SQLite
 - **缓存**：Redis / Octane Cache
 - **部署**：可选 Docker、aaPanel、1Panel（需自行调整脚本）
@@ -96,7 +101,7 @@ https://github.com/wyx2685/V2bX/tree/v2node
 
 - 后端：**本仓库** ([Shannon-x/Xboard-sh](https://github.com/Shannon-x/Xboard-sh))
 - 后台前端：[Shannon-x/XBoard-admin](https://github.com/Shannon-x/XBoard-admin)（推荐）
-- 节点端：[V2bX v2node 分支](https://github.com/wyx2685/V2bX/tree/v2node)
+- 节点端：[V2bX v2node 分支](https://github.com/wyx2685/V2bX/tree/v2node)（推荐） / [V2bX 主线](https://github.com/wyx2685/V2bX)
 
 三件套绑定使用，混搭其他节点/后台后果自负。
 
@@ -124,7 +129,8 @@ https://github.com/wyx2685/V2bX/tree/v2node
 
 - [cedar2025/Xboard](https://github.com/cedar2025/Xboard) — 上游项目
 - [v2board/v2board](https://github.com/v2board/v2board) — 项目起源
-- [wyx2685/V2bX (v2node)](https://github.com/wyx2685/V2bX/tree/v2node) — 节点端
+- [wyx2685/V2bX (v2node 分支)](https://github.com/wyx2685/V2bX/tree/v2node) — 主要适配的节点端
+- [wyx2685/V2bX (主线)](https://github.com/wyx2685/V2bX) — 同时兼容
 
 ---
 

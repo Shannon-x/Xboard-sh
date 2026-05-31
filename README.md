@@ -1,100 +1,133 @@
-# Xboard
+# Xboard-sh
+
+> 🛠️ 个人魔改版后端面板 · Fork of [cedar2025/Xboard](https://github.com/cedar2025/Xboard)
 
 <div align="center">
 
-[![Telegram](https://img.shields.io/badge/Telegram-Channel-blue)](https://t.me/XboardOfficial)
 ![PHP](https://img.shields.io/badge/PHP-8.2+-green.svg)
 ![MySQL](https://img.shields.io/badge/MySQL-5.7+-blue.svg)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 </div>
 
-## 📖 Introduction
+---
 
-Xboard is a modern panel system built on Laravel 11, focusing on providing a clean and efficient user experience.
+## ⚠️ 重要说明（请先看完再决定是否使用）
 
-## ✨ Features
+**本仓库是个人基于 Xboard 的深度魔改版本，已经不是原版 Xboard。** 在使用前你必须知道以下事实：
 
-- 🚀 Built with Laravel 12 + Octane for significant performance gains
-- 🎨 Redesigned admin interface (React + Shadcn UI)
-- 📱 Modern user frontend (Vue3 + TypeScript)
-- 🐳 Ready-to-use Docker deployment solution
-- 🎯 Optimized system architecture for better maintainability
+1. **代码逻辑与上游差异巨大**
+   控制器、模型、迁移、路由、定时任务、缓存策略、配置项默认值等多处都做了非兼容修改。**不要**期望它能与原版 Xboard 的文档/插件/迁移脚本无缝对应。
 
-## 🚀 Quick Start
+2. **配套的后端节点（xrayR / 节点端）只支持 [v2node](https://github.com/wyx2685/V2bX/tree/v2node)，完全不支持 [XrayR-Project/XrayR](https://github.com/XrayR-project/XrayR) 系/原版 Xboard 的 xbnode 协议**
+   面板内的协议字段、节点对接 API、推送格式、在线汇报、用户流量上报全部按 v2node 的接口契约对接。如果你用的是 XrayR、xbnode、V2bX 主线分支等其他节点端，**接不上就是接不上**，请不要在 Issue 里问"为什么连不上"。
+
+3. **配套前端是另一个魔改项目**
+   推荐搭配 [XBoard-admin](https://github.com/Shannon-x/XBoard-admin)（个人重写的 Vue3 + Element Plus 后台），原版 Xboard 的 React 后台与本仓库部分接口不兼容，可能出现字段缺失/接口 404/行为不一致。
+
+4. **不接受"与原版行为不一致"的 Bug 报告**
+   行为不一致就是本项目的设计目标，不是 Bug。
+
+5. **没有维护承诺**
+   纯个人按需修改，可能随时引入 Breaking Change。生产环境使用请自行做好版本锁定和数据库备份。
+
+6. **本项目仅供学习交流**
+   一切因使用本项目造成的后果（违法、被封、被攻击、数据丢失等）由使用者自行承担，与作者无关。
+
+---
+
+## 🎯 与原版 Xboard 的主要差异
+
+| 维度 | 原版 Xboard | 本仓库 (Xboard-sh) |
+| --- | --- | --- |
+| 后端节点端 | 支持 xbnode / V2bX / XrayR 等多种 | **只适配 [v2node](https://github.com/wyx2685/V2bX/tree/v2node)** |
+| xbnode 协议兼容性 | 原生支持 | **完全不支持，已移除/改写相关字段** |
+| 节点协议字段 | 上游字段 | 按 v2node 重新定义（routes / 标签 / 优先级等） |
+| 配套后台 | 内置 React 后台 | 推荐使用 [XBoard-admin](https://github.com/Shannon-x/XBoard-admin) |
+| 公告 / 节点 / 套餐 / 路由 | 上游字段 | 多处增删字段、改默认值、加新表迁移 |
+| 定时任务与缓存 | 上游策略 | 按自身需求调整 |
+
+如果你的目标是"标准 Xboard 体验"，**请去用上游 [cedar2025/Xboard](https://github.com/cedar2025/Xboard)，不要用这个仓库**。
+
+---
+
+## 🚀 快速开始
+
+> 注意：上游的 docker compose 一键脚本不保证在本仓库可用，建议手动部署。
 
 ```bash
-git clone -b compose --depth 1 https://github.com/cedar2025/Xboard && \
-cd Xboard && \
-docker compose run -it --rm \
-    -e ENABLE_SQLITE=true \
-    -e ENABLE_REDIS=true \
-    -e ADMIN_ACCOUNT=admin@demo.com \
-    web php artisan xboard:install && \
-docker compose up -d
+git clone https://github.com/Shannon-x/Xboard-sh.git
+cd Xboard-sh
+
+# 安装依赖
+composer install --no-dev --optimize-autoloader
+
+# 配置 .env
+cp .env.example .env
+php artisan key:generate
+
+# 数据库迁移 + 安装
+php artisan xboard:install
+
+# 启动 Octane
+php artisan octane:start --host=0.0.0.0 --port=7001
 ```
 
-> After installation, visit: http://SERVER_IP:7001  
-> ⚠️ Make sure to save the admin credentials shown during installation
+节点端必须用 v2node 分支：
 
-## 📖 Documentation
-
-### 🔄 Upgrade Notice
-> 🚨 **Important:** This version involves significant changes. Please strictly follow the upgrade documentation and backup your database before upgrading. Note that upgrading and migration are different processes, do not confuse them.
-
-### Development Guides
-- [Plugin Development Guide](./docs/en/development/plugin-development-guide.md) - Complete guide for developing XBoard plugins
-
-### Deployment Guides
-- [Deploy with 1Panel](./docs/en/installation/1panel.md)
-- [Deploy with Docker Compose](./docs/en/installation/docker-compose.md)
-- [Deploy with aaPanel](./docs/en/installation/aapanel.md)
-- [Deploy with aaPanel + Docker](./docs/en/installation/aapanel-docker.md) (Recommended)
-
-### Migration Guides
-- [Migrate from v2board dev](./docs/en/migration/v2board-dev.md)
-- [Migrate from v2board 1.7.4](./docs/en/migration/v2board-1.7.4.md)
-- [Migrate from v2board 1.7.3](./docs/en/migration/v2board-1.7.3.md)
-
-## 🛠️ Tech Stack
-
-- Backend: Laravel 11 + Octane
-- Admin Panel: React + Shadcn UI + TailwindCSS
-- User Frontend: Vue3 + TypeScript + NaiveUI
-- Deployment: Docker + Docker Compose
-- Caching: Redis + Octane Cache
-
-## 📷 Preview
-![Admin Preview](./docs/images/admin.png)
-
-![User Preview](./docs/images/user.png)
-
-## ⚠️ Disclaimer
-
-This project is for learning and communication purposes only. Users are responsible for any consequences of using this project.
-
-## 🌟 Maintenance Notice
-
-This project is currently under light maintenance. We will:
-- Fix critical bugs and security issues
-- Review and merge important pull requests
-- Provide necessary updates for compatibility
-
-However, new feature development may be limited.
-
-## 🔔 Important Notes
-
-1. Restart required after modifying admin path:
 ```bash
-docker compose restart
+# v2node 仓库
+https://github.com/wyx2685/V2bX/tree/v2node
 ```
 
-2. For aaPanel installations, restart the Octane daemon process
+---
 
-## 🤝 Contributing
+## 🛠️ 技术栈
 
-Issues and Pull Requests are welcome to help improve the project.
+- **后端**：Laravel 11 + Octane
+- **节点端**：仅适配 **v2node**
+- **数据库**：MySQL 5.7+ / SQLite
+- **缓存**：Redis / Octane Cache
+- **部署**：可选 Docker、aaPanel、1Panel（需自行调整脚本）
+
+---
+
+## 📦 配套生态
+
+- 后端：**本仓库** ([Shannon-x/Xboard-sh](https://github.com/Shannon-x/Xboard-sh))
+- 后台前端：[Shannon-x/XBoard-admin](https://github.com/Shannon-x/XBoard-admin)（推荐）
+- 节点端：[V2bX v2node 分支](https://github.com/wyx2685/V2bX/tree/v2node)
+
+三件套绑定使用，混搭其他节点/后台后果自负。
+
+---
+
+## 📖 文档
+
+- 上游开发文档（部分仍可参考）：[docs/](./docs/)
+- 插件开发（行为可能与上游不同）：[Plugin Development Guide](./docs/en/development/plugin-development-guide.md)
+- 部署相关文档在 [docs/en/installation/](./docs/en/installation/)，但**请视为参考，不保证对本仓库 100% 适用**
+
+---
+
+## ⚠️ 免责声明
+
+1. 本项目为 [cedar2025/Xboard](https://github.com/cedar2025/Xboard) 的个人魔改 Fork，**与上游官方无关**，不代表上游立场。
+2. 本项目仅供个人学习、技术研究交流。
+3. **严禁**用于任何违反所在国家或地区法律法规的用途。
+4. 一切因使用本项目产生的法律责任、数据安全问题、服务中断、资产损失等，**均由使用者自行承担**，作者不承担任何责任。
+5. 使用即视为已阅读并同意本声明。
+
+---
+
+## 🌟 致谢
+
+- [cedar2025/Xboard](https://github.com/cedar2025/Xboard) — 上游项目
+- [v2board/v2board](https://github.com/v2board/v2board) — 项目起源
+- [wyx2685/V2bX (v2node)](https://github.com/wyx2685/V2bX/tree/v2node) — 节点端
+
+---
 
 ## 📈 Star History
 
-[![Stargazers over time](https://starchart.cc/cedar2025/Xboard.svg)](https://starchart.cc/cedar2025/Xboard)
+[![Stargazers over time](https://starchart.cc/Shannon-x/Xboard-sh.svg)](https://starchart.cc/Shannon-x/Xboard-sh)

@@ -81,12 +81,17 @@ class OrderService
 
             $orderService = new self($order);
 
-            if ($couponCode) {
+            $orderService->setOrderType($user);
+
+            // 套餐折抵必须先于优惠券/VIP 折扣计算。优惠券只能减少剩余应付额，
+            // 不能把旧套餐剩余价值挤出为可继续消费的余额。
+            if ($couponCode && $order->total_amount > 0) {
                 $orderService->applyCoupon($couponCode);
             }
 
-            $orderService->setVipDiscount($user);
-            $orderService->setOrderType($user);
+            if ($order->total_amount > 0) {
+                $orderService->setVipDiscount($user);
+            }
 
             if ($user->balance && $order->total_amount > 0) {
                 $orderService->handleUserBalance($user, $userService);
@@ -131,11 +136,6 @@ class OrderService
                 $preserveNextResetAt = $this->user->next_reset_at;
             }
 
-            if ($order->surplus_order_ids) {
-                Order::whereIn('id', $order->surplus_order_ids)
-                    ->update(['status' => Order::STATUS_DISCOUNTED]);
-            }
-
             match ((string) $order->period) {
                 Plan::PERIOD_ONETIME => $this->buyByOneTime($plan),
                 Plan::PERIOD_RESET_TRAFFIC => app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER),
@@ -144,11 +144,6 @@ class OrderService
 
             $this->setSpeedLimit($plan->speed_limit);
             $this->setDeviceLimit($plan->device_limit);
-
-            // 套餐变更产生的剩余价值退款回到 user.balance，仅站内消费、不可提现。
-            if ((int) ($order->refund_amount ?? 0) > 0) {
-                $this->user->balance = (int) ($this->user->balance ?? 0) + (int) $order->refund_amount;
-            }
 
             if (!$this->user->save()) {
                 throw new \RuntimeException('用户信息保存失败');
@@ -183,12 +178,16 @@ class OrderService
         if ($order->period === Plan::PERIOD_RESET_TRAFFIC) {
             $order->type = Order::TYPE_RESET_TRAFFIC;
         } else if ($user->plan_id !== NULL && $order->plan_id !== $user->plan_id && ($user->expired_at > time() || $user->expired_at === NULL)) {
+            // 套餐变更：不再计算"剩余价值折抵"，改为保留旧到期时间。
+            // expired_at = max(old_expired_at, now) + new_period 在 buyByPeriod 中实现。
+            // 这条规则一次性消除三类问题：
+            //   - 942 类同档位换套餐丢时间
+            //   - 烧流量后降级套现（无 refund_amount 路径）
+            //   - pending 机制的双重权益/年付被砍 11 个月等坑
+            // surplus_enable 后台设置对套餐变更不再生效（保留兼容，但不再触发计算）。
             if (!(int) admin_setting('plan_change_enable', 1))
                 throw new ApiException('目前不允许更改订阅，请联系客服或提交工单操作');
             $order->type = Order::TYPE_UPGRADE;
-            if ((int) admin_setting('surplus_enable', 1))
-                $this->getSurplusValue($user, $order);
-            $this->applySurplusDiscount($order);
         } else if (($user->expired_at === null || $user->expired_at > time()) && $order->plan_id == $user->plan_id) { // 用户订阅未过期或按流量订阅 且购买订阅与当前订阅相同 === 续费
             $order->type = Order::TYPE_RENEWAL;
         } else { // 新购
@@ -206,27 +205,6 @@ class OrderService
         }
         $order->discount_amount = min($discountAmount, $orderAmount);
         $order->total_amount = $orderAmount - $order->discount_amount;
-    }
-
-    private function applySurplusDiscount(Order $order): void
-    {
-        $orderAmount = max(0, (int) $order->total_amount);
-        $surplusAmount = max(0, (int) ($order->surplus_amount ?? 0));
-
-        // 折抵新订单金额；剩余价值大于新订单时，多出部分作为退款，开通时归还到
-        // user.balance（不进 commission_balance，无法直接提现，仅站内消费）。
-        // 安全性：surplus_amount 已经被 cap 在 orderAmountSum（历史实际投入额）以内，
-        // 因此 refund_amount 不会凭空创造价值；同时余额复购走 handleUserBalance →
-        // setInvite，余额抵扣部分不计入佣金基数，不会形成"换-退-刷佣金"回路。
-        if ($surplusAmount >= $orderAmount) {
-            $order->surplus_amount = $orderAmount;
-            $order->refund_amount = $surplusAmount - $orderAmount;
-            $order->total_amount = 0;
-        } else {
-            $order->surplus_amount = $surplusAmount;
-            $order->refund_amount = 0;
-            $order->total_amount = $orderAmount - $surplusAmount;
-        }
     }
 
     public function setInvite(User $user): void
@@ -264,135 +242,6 @@ class OrderService
         return Order::where('user_id', $user->id)
             ->whereNotIn('status', [Order::STATUS_PENDING, Order::STATUS_CANCELLED])
             ->first();
-    }
-
-    private function getSurplusValue(User $user, Order $order)
-    {
-        if ($user->expired_at === NULL) {
-            $lastOneTimeOrder = Order::where('user_id', $user->id)
-                ->where('period', Plan::PERIOD_ONETIME)
-                ->where('status', Order::STATUS_COMPLETED)
-                ->orderBy('id', 'DESC')
-                ->first();
-            if (!$lastOneTimeOrder)
-                return;
-            $nowUserTraffic = Helper::transferToGB($this->getSurplusTrafficLimit($user));
-            if (!$nowUserTraffic)
-                return;
-            $paidTotalAmount = ($lastOneTimeOrder->total_amount + $lastOneTimeOrder->balance_amount);
-            if (!$paidTotalAmount)
-                return;
-            $trafficUnitPrice = $paidTotalAmount / $nowUserTraffic;
-            $notUsedTraffic = $nowUserTraffic - Helper::transferToGB($user->u + $user->d);
-            $result = $trafficUnitPrice * $notUsedTraffic;
-            $order->surplus_amount = (int) ($result > 0 ? $result : 0);
-            $order->surplus_order_ids = Order::where('user_id', $user->id)
-                ->where('period', '!=', Plan::PERIOD_RESET_TRAFFIC)
-                ->where('status', Order::STATUS_COMPLETED)
-                ->pluck('id')
-                ->all();
-        } else {
-            $this->getSurplusValueByPeriod($user, $order);
-        }
-    }
-
-    private function getSurplusValueByPeriod(User $user, Order $order): void
-    {
-        $orders = Order::query()
-            ->where('user_id', $user->id)
-            ->whereNotIn('period', [Plan::PERIOD_RESET_TRAFFIC, Plan::PERIOD_ONETIME])
-            ->where('status', Order::STATUS_COMPLETED)
-            ->get()
-            ->filter(function (Order $item) {
-                $months = self::STR_TO_TIME[PlanService::getPeriodKey((string) $item->period)] ?? 0;
-                if ($months <= 0) {
-                    return false;
-                }
-
-                return Carbon::createFromTimestamp($item->created_at)->addMonths($months)->timestamp > time();
-            });
-
-        if ($orders->isEmpty()) {
-            $order->surplus_amount = 0;
-            $order->surplus_order_ids = [];
-            return;
-        }
-
-        $orderAmountSum = (int) $orders->sum(fn(Order $item) => max(0, ($item->total_amount ?? 0) + ($item->balance_amount ?? 0) + ($item->surplus_amount ?? 0) - ($item->refund_amount ?? 0)));
-        $orderMonthSum = (int) $orders->sum(fn(Order $item) => self::STR_TO_TIME[PlanService::getPeriodKey((string) $item->period)] ?? 0);
-        if ($orderAmountSum <= 0 || $orderMonthSum <= 0) {
-            $order->surplus_amount = 0;
-            $order->surplus_order_ids = $orders->pluck('id')->all();
-            return;
-        }
-
-        $now = time();
-        $expiredAt = (int) $user->expired_at;
-        if ($expiredAt <= $now) {
-            $order->surplus_amount = 0;
-            $order->surplus_order_ids = $orders->pluck('id')->all();
-            return;
-        }
-
-        $monthlyAmount = $orderAmountSum / $orderMonthSum;
-        $trafficRatio = $this->getCurrentCycleTrafficRatio($user);
-        [$currentCycleTimeRatio, $futureCycleRatio] = $this->getRemainingCycleRatios($user, $now, $expiredAt);
-
-        $currentCycleValue = $monthlyAmount * min($currentCycleTimeRatio, $trafficRatio);
-        $futureCycleValue = $monthlyAmount * $futureCycleRatio;
-        $surplusAmount = min($orderAmountSum, $currentCycleValue + $futureCycleValue);
-
-        $order->surplus_amount = (int) max(0, $surplusAmount);
-        $order->surplus_order_ids = $orders->pluck('id')->all();
-    }
-
-    private function getCurrentCycleTrafficRatio(User $user): float
-    {
-        $totalTraffic = $this->getSurplusTrafficLimit($user);
-        if ($totalTraffic <= 0) {
-            return 0;
-        }
-
-        $usedTraffic = (int) ($user->u ?? 0) + (int) ($user->d ?? 0);
-        return max(0, min(1, ($totalTraffic - $usedTraffic) / $totalTraffic));
-    }
-
-    private function getSurplusTrafficLimit(User $user): int
-    {
-        $userTraffic = max(0, (int) ($user->transfer_enable ?? 0));
-        $planTraffic = $user->plan
-            ? max(0, (int) $user->plan->transfer_enable * self::BYTES_PER_GB)
-            : 0;
-
-        if ($userTraffic > 0 && $planTraffic > 0) {
-            return min($userTraffic, $planTraffic);
-        }
-
-        return max($userTraffic, $planTraffic);
-    }
-
-    private function getRemainingCycleRatios(User $user, int $now, int $expiredAt): array
-    {
-        $monthSeconds = 30 * 86400;
-        $cycleEnd = (int) ($user->next_reset_at ?: 0);
-
-        if ($cycleEnd <= $now || $cycleEnd > $expiredAt) {
-            $cycleEnd = min($expiredAt, $now + $monthSeconds);
-        }
-
-        $cycleStart = (int) ($user->last_reset_at ?: 0);
-        if ($cycleStart <= 0 || $cycleStart >= $cycleEnd) {
-            $cycleStart = max($now - $monthSeconds, $cycleEnd - $monthSeconds);
-        }
-
-        $cycleSeconds = max(1, $cycleEnd - $cycleStart);
-        $currentRemainSeconds = max(0, $cycleEnd - $now);
-        $futureSeconds = max(0, $expiredAt - $cycleEnd);
-
-        return [
-            min(1, $currentRemainSeconds / $cycleSeconds),
-            $futureSeconds / $monthSeconds,
-        ];
     }
 
     /**
@@ -507,14 +356,29 @@ class OrderService
 
     private function buyByPeriod(Order $order, Plan $plan)
     {
-        // change plan process
-        if ((int) $order->type === Order::TYPE_UPGRADE) {
-            $this->user->expired_at = time();
+        $oldExpiredAt = $this->user->expired_at;
+        $isPlanChange = (int) $order->type === Order::TYPE_UPGRADE;
+
+        if ($isPlanChange) {
+            // 套餐变更：保留旧到期时间，从 max(旧到期日, now) 起叠加新周期。
+            //   - 同档位变更不丢时间（修复 942：max(6/23, 5/30) + 1 月 = 7/23）
+            //   - 升级立刻拿到新档位 transfer_enable（u/d 不重置，已用计入新桶）
+            //   - 降级保留剩余时间，用户在剩余时间内继续用新档位
+            // 不重置流量、不动 next_reset_at；这两件事由 open() 的 shouldPreserveResetSchedule 兜底。
+            $base = max((int) ($oldExpiredAt ?? 0), time());
+            $this->user->plan_id = $plan->id;
+            $this->user->group_id = $plan->group_id;
+            $this->user->transfer_enable = $plan->transfer_enable * self::BYTES_PER_GB;
+            $this->user->expired_at = $this->getTime((string) $order->period, $base);
+            return;
         }
+
+        // 续费 / 新购原有逻辑
         $this->user->transfer_enable = $plan->transfer_enable * self::BYTES_PER_GB;
         // 从一次性转换到循环或者新购的时候，重置流量
-        if ($this->user->expired_at === NULL || $order->type === Order::TYPE_NEW_PURCHASE)
+        if ($oldExpiredAt === NULL || $order->type === Order::TYPE_NEW_PURCHASE) {
             app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER);
+        }
         $this->user->plan_id = $plan->id;
         $this->user->group_id = $plan->group_id;
         $this->user->expired_at = $this->getTime($order->period, $this->user->expired_at);
@@ -522,7 +386,12 @@ class OrderService
 
     private function shouldPreserveResetSchedule(Order $order): bool
     {
-        return (int) $order->type === Order::TYPE_UPGRADE;
+        // 套餐变更：保留用户已存在的流量重置日，避免换套餐导致额外重置或重置日漂移。
+        // 一次性套餐用户（expired_at = null）以及新购/续费不属于"变更"，不需要保留。
+        if ((int) $order->type !== Order::TYPE_UPGRADE || !$this->user) {
+            return false;
+        }
+        return $this->user->expired_at !== null;
     }
 
     private function getOpenEventId(Order $order): int

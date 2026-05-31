@@ -45,7 +45,7 @@ class TrafficResetService
           'u' => 0,
           'd' => 0,
           'last_reset_at' => time(),
-          'reset_count' => $user->reset_count + 1,
+          'reset_count' => (int) $user->reset_count + 1,
           'next_reset_at' => $nextResetTime ? $nextResetTime->timestamp : null,
         ]);
 

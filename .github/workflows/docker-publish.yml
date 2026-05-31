@@ -15,13 +15,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Xboard-sh (for patch script)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Clone XBoard-admin
         run: git clone --depth 1 --branch main https://github.com/Shannon-x/XBoard-admin.git xboard-admin
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: 'npm'
@@ -35,7 +35,7 @@ jobs:
           npm run build
 
       - name: Upload admin dist artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: admin-dist
           path: xboard-admin/dist/
@@ -61,12 +61,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Download prebuilt admin dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: admin-dist
           path: prebuilt-admin-dist/
@@ -116,7 +116,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: digest-${{ matrix.suffix }}
           path: /tmp/digests/*
@@ -132,18 +132,18 @@ jobs:
       packages: write
     steps:
       - name: Checkout code (for metadata)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Download amd64 digest
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: digest-amd64
           path: /tmp/digests
 
       - name: Download arm64 digest
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: digest-arm64
           path: /tmp/digests

@@ -122,8 +122,11 @@ class SystemController extends Controller
 
     public function getHorizonFailedJobs(Request $request, JobRepository $jobRepository)
     {
-        $current = max(1, (int) $request->input('current', 1));
-        $pageSize = max(10, (int) $request->input('page_size', 20));
+        // page_size 加硬上限 100，避免 admin 误传 page_size=99999 时拖死 Horizon Redis。
+        // 同时 current 也加硬上限：当前实现仍依赖 collect(...)->slice() 拿到当页，
+        // Horizon JobRepository::getFailed 不暴露 cursor pagination，跳过太深的页代价随线性增长。
+        $current = max(1, min(1000, (int) $request->input('current', 1)));
+        $pageSize = max(10, min(100, (int) $request->input('page_size', 20)));
         $offset = ($current - 1) * $pageSize;
 
         $failedJobs = collect($jobRepository->getFailed())

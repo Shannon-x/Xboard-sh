@@ -14,9 +14,10 @@ class TicketSave extends FormRequest
     public function rules()
     {
         return [
-            'subject' => 'required',
+            // 之前 `required` 允许数组/超长串/控制字符。这里收敛为字符串+长度上限
+            'subject' => 'required|string|max:200',
             'level' => 'required|in:0,1,2',
-            'message' => 'required'
+            'message' => 'required|string|max:10000',
         ];
     }
 

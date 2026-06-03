@@ -17,13 +17,15 @@ class PassportRoute
             $router->post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:passport-login');
             $router->get('/auth/google/redirect', [AuthController::class, 'googleRedirect'])->middleware('throttle:passport-login');
             $router->get('/auth/google/callback', [AuthController::class, 'googleCallback'])->middleware('throttle:passport-login');
-            $router->get ('/auth/token2Login', [AuthController::class, 'token2Login']);
+            // token2Login / getQuickLoginUrl / pv 全部加 throttle，避免对 verify 码爆破 / 邀请 pv 刷量。
+            // 与 V1/PassportRoute 同步，否则会出现"V1 加固了 V2 仍裸奔"的回归。
+            $router->get ('/auth/token2Login', [AuthController::class, 'token2Login'])->middleware('throttle:passport-login');
             $router->post('/auth/forget', [AuthController::class, 'forget'])->middleware('throttle:passport-forget');
-            $router->post('/auth/getQuickLoginUrl', [AuthController::class, 'getQuickLoginUrl']);
+            $router->post('/auth/getQuickLoginUrl', [AuthController::class, 'getQuickLoginUrl'])->middleware('throttle:passport-login');
             $router->post('/auth/loginWithMailLink', [AuthController::class, 'loginWithMailLink'])->middleware('throttle:passport-login');
             // Comm
             $router->post('/comm/sendEmailVerify', [CommController::class, 'sendEmailVerify'])->middleware('throttle:passport-email-verify');
-            $router->post('/comm/pv', [CommController::class, 'pv']);
+            $router->post('/comm/pv', [CommController::class, 'pv'])->middleware('throttle:60,1');
         });
     }
 }

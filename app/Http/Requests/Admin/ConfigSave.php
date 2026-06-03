@@ -40,6 +40,7 @@ class ConfigSave extends FormRequest
         // subscribe
         'plan_change_enable' => '',
         'reset_traffic_method' => 'in:0,1,2,3,4',
+        'advance_cycle_used_ratio' => 'numeric|between:0.5,1',
         'surplus_enable' => '',
         'new_order_event_id' => '',
         'renew_order_event_id' => '',
@@ -73,6 +74,9 @@ class ConfigSave extends FormRequest
         // telegram
         'telegram_bot_enable' => 'boolean',
         'telegram_bot_token' => 'nullable|string|max:128',
+        // 用于校验 Telegram POST 到 /api/v1/guest/telegram/webhook 的 access_token。
+        // 必须是 hex 串（与历史 md5(bot_token) 等位宽以保持前向兼容），未配置时回退 md5(bot_token)。
+        'telegram_webhook_secret' => 'nullable|string|min:32|max:64|regex:/^[a-f0-9]+$/i',
         'telegram_webhook_url' => 'nullable|url',
         'telegram_discuss_id' => 'nullable|string|max:64',
         'telegram_channel_id' => 'nullable|string|max:64',

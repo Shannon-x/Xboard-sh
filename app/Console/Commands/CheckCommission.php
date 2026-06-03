@@ -7,6 +7,7 @@ use Illuminate\Console\Command;
 use App\Models\Order;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class CheckCommission extends Command
 {
@@ -60,51 +61,96 @@ class CheckCommission extends Command
 
     public function autoPayCommission()
     {
-        $orders = Order::where('commission_status', 1)
+        // 改 chunkById：原 ->get() 在待结算订单量大时直接拉全量 id 到内存
+        // 同时把"单笔异常即 re-throw 终止整轮"改为"per-order 捕获 + 日志"，单笔失败不再影响后续订单结算
+        Order::where('commission_status', 1)
             ->where('invite_user_id', '!=', NULL)
             ->select('id')
-            ->get();
-        foreach ($orders as $order) {
-            try{
-                DB::transaction(function () use ($order) {
-                    $lockedOrder = Order::where('id', $order->id)
-                        ->lockForUpdate()
-                        ->first();
+            ->orderBy('id')
+            ->chunkById(500, function ($orders) {
+                foreach ($orders as $order) {
+                    try {
+                        DB::transaction(function () use ($order) {
+                            $lockedOrder = Order::where('id', $order->id)
+                                ->lockForUpdate()
+                                ->first();
 
-                    if (
-                        !$lockedOrder
-                        || (int) $lockedOrder->commission_status !== 1
-                        || !$lockedOrder->invite_user_id
-                    ) {
-                        return;
-                    }
+                            // 多层防御：除了 commission_status=1 之外，必须额外校验
+                            //   ① order.status = STATUS_COMPLETED（已支付完成的订单才发佣）
+                            //   ② invite_user_id 非空
+                            //   ③ commission_balance > 0（订单本身有佣金额度可分；防御 admin 把 status
+                            //      改回 1 但 commission_balance=0/负数 时仍然走 payHandle）
+                            //
+                            // 历史实现只信 commission_status==1：admin 误操作 / 后台权限被滥用 / 数据回填
+                            // 都能反复触发佣金发放。CommissionLog 已经有 uniq_commission_trade_inviter
+                            // 唯一索引兜底（2026_05_29 迁移），但唯一索引只挡同 (trade_no, invite_user_id)
+                            // 重复发，不挡"该订单本来就不该发佣"的情况。
+                            if (
+                                !$lockedOrder
+                                || (int) $lockedOrder->commission_status !== 1
+                                || (int) $lockedOrder->status !== Order::STATUS_COMPLETED
+                                || !$lockedOrder->invite_user_id
+                                || (int) ($lockedOrder->commission_balance ?? 0) <= 0
+                            ) {
+                                return;
+                            }
 
-                    if (!$this->payHandle($lockedOrder->invite_user_id, $lockedOrder)) {
-                        throw new \RuntimeException('Failed to pay commission');
-                    }
+                            if (!$this->payHandle($lockedOrder->invite_user_id, $lockedOrder)) {
+                                throw new \RuntimeException('Failed to pay commission');
+                            }
 
-                    $lockedOrder->commission_status = 2;
-                    if (!$lockedOrder->save()) {
-                        throw new \RuntimeException('Failed to save commission status');
+                            $lockedOrder->commission_status = 2;
+                            if (!$lockedOrder->save()) {
+                                throw new \RuntimeException('Failed to save commission status');
+                            }
+                        });
+                    } catch (\Throwable $e) {
+                        // 单笔失败不应阻断后续订单。常见原因：inviter 被删 / lockForUpdate 超时 /
+                        // CommissionLog uniq_commission_trade_inviter 冲突（已结算过的订单重新被置回 status=1）。
+                        // 这里只记日志、继续；运营可基于 commission_status=1 且 updated_at 长期不变筛出滞留单。
+                        Log::error('commission pay failed', [
+                            'order_id' => $order->id,
+                            'msg' => $e->getMessage(),
+                        ]);
+                        continue;
                     }
-                });
-            } catch (\Exception $e){
-                throw $e;
-            }
-        }
+                }
+            });
     }
 
     public function payHandle($inviteUserId, Order $order)
     {
         $commissionShareLevels = $this->getCommissionShareLevels();
-        for ($l = 0; $l < 3; $l++) {
+        // 防环：链上任何 inviter 第二次出现都立即停（A→B→A 这种循环邀请，或 admin 误把
+        // user 自己设成 inviter 自指）。inviter == 下单人本人也立刻停（自邀订单）。
+        $visited = [];
+        for ($l = 0; $l < 3 && $inviteUserId; $l++) {
+            if (isset($visited[$inviteUserId]) || (int) $inviteUserId === (int) $order->user_id) {
+                break;
+            }
+            $visited[$inviteUserId] = true;
+
             $inviter = User::where('id', $inviteUserId)
                 ->lockForUpdate()
                 ->first();
-            if (!$inviter) continue;
-            if (!isset($commissionShareLevels[$l])) continue;
+            if (!$inviter) {
+                // 链断了，下层也无法续上
+                break;
+            }
+            // 立即推进：原实现是把这一句放在循环尾，导致 continue 跳过推进，下层重新加载到同一个
+            // inviter，比例为 0 的层会把上层比例错发给同一人；getCommissionShareLevels 返回稀疏数组
+            // （跳过 share=0 的层）时这个 bug 必现。
+            $nextInviteUserId = $inviter->invite_user_id;
+
+            if (!isset($commissionShareLevels[$l])) {
+                $inviteUserId = $nextInviteUserId;
+                continue;
+            }
             $commissionBalance = (int) floor($order->commission_balance * ($commissionShareLevels[$l] / 100));
-            if (!$commissionBalance) continue;
+            if (!$commissionBalance) {
+                $inviteUserId = $nextInviteUserId;
+                continue;
+            }
             if ((int)admin_setting('withdraw_close_enable', 0)) {
                 $inviter->balance = (int) ($inviter->balance ?? 0) + $commissionBalance;
             } else {
@@ -114,15 +160,16 @@ class CheckCommission extends Command
                 return false;
             }
             CommissionLog::create([
-                'invite_user_id' => $inviteUserId,
+                'invite_user_id' => $inviter->id,
                 'user_id' => $order->user_id,
                 'trade_no' => $order->trade_no,
                 'order_amount' => $order->total_amount,
                 'get_amount' => $commissionBalance
             ]);
-            $inviteUserId = $inviter->invite_user_id;
             // update order actual commission balance
             $order->actual_commission_balance = (int) ($order->actual_commission_balance ?? 0) + $commissionBalance;
+
+            $inviteUserId = $nextInviteUserId;
         }
         return true;
     }

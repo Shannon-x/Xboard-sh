@@ -106,6 +106,23 @@ class UserController extends Controller
         return $this->success($user->save());
     }
 
+    /**
+     * 防御 CSV Formula injection：以 `=`、`+`、`-`、`@`、Tab、CR 开头的字段在 Excel/WPS/Numbers
+     * 中会被解释为公式（DDE/外联 HTTP/读本地文件）。前置一个单引号即可强制按文本显示。
+     */
+    private static function csvSafe(?string $value): string
+    {
+        $s = (string) ($value ?? '');
+        if ($s === '') {
+            return $s;
+        }
+        $first = $s[0];
+        if (in_array($first, ['=', '+', '-', '@', "\t", "\r"], true)) {
+            return "'" . $s;
+        }
+        return $s;
+    }
+
     // Apply filters and sorts to the query builder.
     private function applyFiltersAndSorts(Request $request, Builder|QueryBuilder $builder): void
     {
@@ -354,10 +371,43 @@ class UserController extends Controller
             $params['group_id'] = $plan->group_id;
         }
         // 处理邀请用户
-        if ($request->input('invite_user_email') && $inviteUser = User::byEmail($request->input('invite_user_email'))->first()) {
-            $params['invite_user_id'] = $inviteUser->id;
+        //
+        // 改进点（保持前向兼容）：
+        // ① 只有当请求里显式带了 invite_user_email 这个 key 时才更新 invite_user_id；
+        //    原实现是"没带 key 就清空"，导致 admin 只编辑备注/封禁等字段时会顺手把邀请关系清掉，
+        //    历史佣金链直接断。前端不传字段时通常意味着"不改"，按这个语义处理更安全。
+        // ② 显式给空 string / null 才清空 invite_user_id（仍允许 admin 解除邀请关系）。
+        // ③ 自指（inviter == self）与环（A→B→A 这种链）都拒绝；CheckCommission::payHandle 已经
+        //    有 $visited 做运行期防环，这里在写入侧再加一道，避免脏数据沉淀到 DB。
+        if ($request->has('invite_user_email')) {
+            $email = $request->input('invite_user_email');
+            if ($email === null || $email === '') {
+                $params['invite_user_id'] = null;
+            } else {
+                $inviteUser = User::byEmail($email)->first();
+                if (!$inviteUser) {
+                    return $this->fail([400202, '邀请用户不存在']);
+                }
+                if ((int) $inviteUser->id === (int) $user->id) {
+                    return $this->fail([400, '不能将用户自己设为邀请人']);
+                }
+                // 沿 inviter 链回溯，最多 16 跳；如果在链上碰到 self.id，说明会形成环。
+                $cursor = $inviteUser;
+                for ($i = 0; $i < 16 && $cursor; $i++) {
+                    if ((int) $cursor->id === (int) $user->id) {
+                        return $this->fail([400, '邀请关系不能形成环']);
+                    }
+                    $nextId = $cursor->invite_user_id;
+                    if (!$nextId) {
+                        break;
+                    }
+                    $cursor = User::find($nextId);
+                }
+                $params['invite_user_id'] = $inviteUser->id;
+            }
         } else {
-            $params['invite_user_id'] = null;
+            // 没传 key 时保留原值，移除可能从 validated() 透传进来的 null
+            unset($params['invite_user_id']);
         }
 
         if (isset($params['banned']) && (int) $params['banned'] === 1) {
@@ -444,13 +494,16 @@ class UserController extends Controller
                 foreach ($users as $user) {
                     try {
                         $row = [
-                            $user->email,
+                            // CSV Formula injection 防护：以 = + - @ \t \r 开头的字段在 Excel/WPS/Numbers
+                            // 里会被当作公式执行（外联 webhook、读本地文件）。前置一个单引号即可让 Excel
+                            // 把它当文本而非公式。仅对自由文本字段做（数值/日期/链接保持原样）。
+                            self::csvSafe($user->email),
                             number_format($user->balance / 100, 2),
                             number_format($user->commission_balance / 100, 2),
                             Helper::trafficConvert($user->transfer_enable),
                             Helper::trafficConvert($user->transfer_enable - ($user->u + $user->d)),
                             $user->expired_at ? date('Y-m-d H:i:s', $user->expired_at) : '长期有效',
-                            $user->plan ? $user->plan->name : '无订阅',
+                            self::csvSafe($user->plan ? $user->plan->name : '无订阅'),
                             Helper::getSubscribeUrl($user->token)
                         ];
                         fputcsv($output, $row);

@@ -203,12 +203,16 @@ class GiftCardTemplate extends Model
                 if ($now >= $festivalConfig['start_time'] && $now <= $festivalConfig['end_time']) {
                     $bonus = data_get($festivalConfig, 'festival_bonus', 1.0);
                     if ($bonus > 1.0) {
-                        foreach ($actualRewards as $key => &$value) {
-                            if (is_numeric($value)) {
-                                $value = intval($value * $bonus);
+                        // 白名单：只对真正"奖励量级"字段乘 bonus。
+                        // 原实现 `is_numeric($value)` 会把 plan_id（外键）、reset_package（布尔/枚举）、
+                        // invite_reward_rate（0~1 小数 → 节日后 intval 归零）等都乘进去，节日活动一开
+                        // 就静默错乱。
+                        $multipliableKeys = ['balance', 'transfer_enable', 'expire_days', 'device_limit'];
+                        foreach ($multipliableKeys as $k) {
+                            if (isset($actualRewards[$k]) && is_numeric($actualRewards[$k])) {
+                                $actualRewards[$k] = (int) round($actualRewards[$k] * $bonus);
                             }
                         }
-                        unset($value); // 解除引用
                     }
                 }
             }

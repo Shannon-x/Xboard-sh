@@ -50,7 +50,18 @@ class Order extends Model
         'created_at' => 'timestamp',
         'updated_at' => 'timestamp',
         'surplus_order_ids' => 'array',
-        'handling_amount' => 'integer'
+        // 所有金钱字段都是"分"单位的整数。补全 cast 让读写两端统一：
+        // ① 从 DB 取出来始终是 int（驱动有时给 string），前端 JSON 类型稳定；
+        // ② 写入时把 string '30' 整数化，避免 admin 前端 form 误传字符串/小数把列写花。
+        // 不影响 JSON 字段名/字段数量，对前端透明。
+        'total_amount'              => 'integer',
+        'handling_amount'           => 'integer',
+        'balance_amount'            => 'integer',
+        'refund_amount'             => 'integer',
+        'surplus_amount'            => 'integer',
+        'discount_amount'           => 'integer',
+        'commission_balance'        => 'integer',
+        'actual_commission_balance' => 'integer',
     ];
 
     const STATUS_PENDING = 0; // 待支付

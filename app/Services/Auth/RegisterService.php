@@ -14,6 +14,7 @@ use App\Utils\Dict;
 use App\Utils\Helper;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class RegisterService
 {
@@ -112,20 +113,41 @@ class RegisterService
      */
     public function handleInviteCode(string $inviteCode): int|null
     {
-        $inviteCodeModel = InviteCode::where('code', $inviteCode)
-            ->where('status', InviteCode::STATUS_UNUSED)
-            ->first();
+        // 不允许重复消费：原实现"SELECT WHERE status=UNUSED → save status=USED" 非原子，
+        // 并发注册可让同一码绑定多个用户。改成条件 UPDATE：
+        //   - invite_never_expire=0（一次性码）：用 affected_rows 判断"我抢到了"
+        //   - invite_never_expire=1（永久码）：不需要 mark used，直接读取 user_id 即可
+        $neverExpire = (int) admin_setting('invite_never_expire', 0);
+
+        if ($neverExpire) {
+            $inviteCodeModel = InviteCode::where('code', $inviteCode)
+                ->where('status', InviteCode::STATUS_UNUSED)
+                ->first();
+        } else {
+            // 先读 id（仅用于事后取 user_id）
+            $candidate = InviteCode::where('code', $inviteCode)
+                ->where('status', InviteCode::STATUS_UNUSED)
+                ->first();
+
+            if ($candidate) {
+                // 原子地把 UNUSED 翻成 USED。affected !== 1 说明被并发请求抢先消费了，等同 code 已失效。
+                $affected = InviteCode::where('id', $candidate->id)
+                    ->where('status', InviteCode::STATUS_UNUSED)
+                    ->update([
+                        'status' => InviteCode::STATUS_USED,
+                        'updated_at' => time(),
+                    ]);
+                $inviteCodeModel = $affected === 1 ? $candidate : null;
+            } else {
+                $inviteCodeModel = null;
+            }
+        }
 
         if (!$inviteCodeModel) {
             if ((int) admin_setting('invite_force', 0)) {
                 throw new ApiException(__('Invalid invitation code'));
             }
             return null;
-        }
-
-        if (!(int) admin_setting('invite_never_expire', 0)) {
-            $inviteCodeModel->status = InviteCode::STATUS_USED;
-            $inviteCodeModel->save();
         }
 
         return $inviteCodeModel->user_id;
@@ -153,25 +175,40 @@ class RegisterService
         $password = $request->input('password');
         $inviteCode = $request->input('invite_code');
 
-        // 处理邀请码获取邀请人ID
-        $inviteUserId = null;
-        if ($inviteCode) {
-            $inviteUserId = $this->handleInviteCode($inviteCode);
-        }
+        // 把"消费邀请码 + 创建用户 + 保存"包在同一事务里。
+        // 之前 handleInviteCode 把邀请码翻成 USED 是独立 DB 写入，如果后续 createUser/save 抛错或失败，
+        // 一次性邀请码就被烧掉但用户没建。事务包住后任一步失败都会回滚邀请码的状态，码不会白扔。
+        try {
+            $user = DB::transaction(function () use ($email, $password, $inviteCode) {
+                // 处理邀请码获取邀请人ID
+                $inviteUserId = null;
+                if ($inviteCode) {
+                    $inviteUserId = $this->handleInviteCode($inviteCode);
+                }
 
-        // 创建用户
-        $userService = app(UserService::class);
-        $user = $userService->createUser([
-            'email' => $email,
-            'password' => $password,
-            'invite_user_id' => $inviteUserId,
-        ]);
+                // 创建用户
+                $userService = app(UserService::class);
+                $user = $userService->createUser([
+                    'email' => $email,
+                    'password' => $password,
+                    'invite_user_id' => $inviteUserId,
+                ]);
 
-        // 保存用户
-        if (!$user->save()) {
+                // 保存用户 —— save 失败 / 唯一冲突会让事务回滚，handleInviteCode 的 USED 标记一起撤销
+                if (!$user->save()) {
+                    throw new \RuntimeException('user save failed');
+                }
+                return $user;
+            });
+        } catch (ApiException $e) {
+            // handleInviteCode 在 invite_force 且 code 无效时会抛 ApiException —— 原样向上传，不要被
+            // 上层 catch \RuntimeException 吞成 "Register failed" 掩盖真实原因
+            throw $e;
+        } catch (\Throwable $e) {
             return [false, [500, __('Register failed')]];
         }
 
+        // after hook 与 cache 副作用放在事务外：它们不应该 rollback 已落库的用户
         HookManager::call('user.register.after', $user);
 
         // 清除邮箱验证码

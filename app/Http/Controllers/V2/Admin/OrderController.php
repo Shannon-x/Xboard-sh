@@ -292,6 +292,16 @@ class OrderController extends Controller
         return $this->success(true);
     }
 
+    /**
+     * Admin 后门：直接给用户挂一笔已知金额的订单，不走常规折扣/优惠券/余额折抵/surplus 链路。
+     *
+     * 适用场景：线下打款补单、运营补偿、客服手动调账。
+     * total_amount 单位为"分"（与 createFromRequest 一致）；由 OrderAssign 强校验 integer + max。
+     *
+     * 注意：因为故意绕开 setVipDiscount / applyCoupon / applySurplusDiscount，
+     * 这条路径不会自动把 TYPE_UPGRADE 的旧订单标记 STATUS_DISCOUNTED；如有套餐变更场景，
+     * 仍建议引导用户走自助下单或在 admin 后台用"作废+重发"组合操作。
+     */
     public function assign(OrderAssign $request)
     {
         $plan = Plan::find($request->input('plan_id'));

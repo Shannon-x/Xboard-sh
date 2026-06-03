@@ -210,8 +210,18 @@ class OrderService
     public function setInvite(User $user): void
     {
         $order = $this->order;
-        if ($user->invite_user_id && ($order->total_amount <= 0))
+        if (!$user->invite_user_id) {
             return;
+        }
+        // 排除自邀：原实现没拦自指，自邀订单会让 inviter == 下单人，CheckCommission 仍会发佣金。
+        // payHandle 层面有 $visited 防环，但脏数据落到 order.invite_user_id 后续 admin 查询/统计依旧会错。
+        if ((int) $user->invite_user_id === (int) $user->id) {
+            return;
+        }
+
+        // 原实现 `if ($user->invite_user_id && total_amount<=0) return` 会让 0 元订单（被余额/折扣抵掉）
+        // 丢失 invite_user_id 字段。admin 端 is_commission 过滤、邀请关系回溯都会漏掉这类订单。
+        // 现在改为：总是写 invite_user_id（保留邀请关系），只是当金额 0 时 commission_balance 自然算出 0。
         $order->invite_user_id = $user->invite_user_id;
         $inviter = User::find($user->invite_user_id);
         if (!$inviter)
@@ -234,7 +244,8 @@ class OrderService
             return;
         $commissionRate = $inviter->commission_rate ?: admin_setting('invite_commission', 10);
         $commissionRate = max(0, min(100, (float) $commissionRate));
-        $order->commission_balance = (int) floor($order->total_amount * ($commissionRate / 100));
+        // total_amount 已经是被折扣/余额抵扣后的最终金额，乘比例可能为 0（合法 → 不发佣金）
+        $order->commission_balance = (int) floor(max(0, (int) $order->total_amount) * ($commissionRate / 100));
     }
 
     private function applySurplusDiscount(Order $order): void

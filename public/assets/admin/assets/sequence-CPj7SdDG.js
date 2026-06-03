@@ -1,0 +1,1 @@
+function e(e=0){let t=e;return{next(){return t+=1,t},current(){return t},isCurrent(e){return e===t},invalidate(){t+=1}}}export{e as t};

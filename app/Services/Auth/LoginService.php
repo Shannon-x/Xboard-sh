@@ -70,6 +70,15 @@ class LoginService
             return [false, [400, __('Your account has been suspended')]];
         }
 
+        // 历史密码（md5 / sha256 / *salt）登录通过后透明升级到 bcrypt。
+        // Helper::multiPasswordVerify 注释承诺过"一次性登录后升级"，原本没真正实现 —— 这里补上。
+        // 升级动作对前端完全透明：明文密码已经在握，只是把 DB 里弱哈希换成 bcrypt 并清空 algo/salt。
+        if (!empty($user->password_algo)) {
+            $user->password = password_hash($password, PASSWORD_DEFAULT);
+            $user->password_algo = null;
+            $user->password_salt = null;
+        }
+
         // 更新最后登录时间
         $user->last_login_at = time();
         $user->save();
@@ -128,6 +137,10 @@ class LoginService
 
         // 清除邮箱验证码
         Cache::forget(CacheKey::get('EMAIL_VERIFY_CODE', $email));
+        // 清除 PASSWORD_ERROR_LIMIT 与 FORGET_REQUEST_LIMIT：用户已经走完合法的"忘记密码"流程，
+        // 不应该继续被"之前的错试次数"困住下次登录。
+        Cache::forget(CacheKey::get('PASSWORD_ERROR_LIMIT', $email));
+        Cache::forget($forgetRequestLimitKey);
 
         (new AuthService($user))->removeAllSessions();
 
@@ -153,7 +166,8 @@ class LoginService
 
         Cache::put($key, $user->id, 60);
 
-        $redirect = $redirect ?: 'dashboard';
+        // 防 open redirect：与 MailLinkService::sanitizeRedirect 同款规则
+        $redirect = self::sanitizeQuickLoginRedirect($redirect);
         $loginRedirect = '/#/login?verify=' . $code . '&redirect=' . rawurlencode($redirect);
 
         if (admin_setting('app_url')) {
@@ -163,5 +177,24 @@ class LoginService
         }
 
         return $url;
+    }
+
+    private static function sanitizeQuickLoginRedirect(?string $redirect): string
+    {
+        $fallback = 'dashboard';
+        if ($redirect === null) {
+            return $fallback;
+        }
+        $r = trim((string) $redirect);
+        if ($r === '' || strlen($r) > 255) {
+            return $fallback;
+        }
+        if (str_starts_with($r, '//') || str_starts_with($r, '\\') || preg_match('#^[a-zA-Z][a-zA-Z0-9+.\-]*:#', $r)) {
+            return $fallback;
+        }
+        if (preg_match('/[\x00-\x1f\x7f]/', $r)) {
+            return $fallback;
+        }
+        return $r;
     }
 }

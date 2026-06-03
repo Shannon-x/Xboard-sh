@@ -57,12 +57,8 @@ class ServerController extends Controller
         // hanle traffic data
         $traffic = $request->input('traffic');
         if (is_array($traffic) && !empty($traffic)) {
-            $data = array_filter($traffic, function ($item) {
-                return is_array($item)
-                    && count($item) === 2
-                    && is_numeric($item[0])
-                    && is_numeric($item[1]);
-            });
+            // 统一清洗：拒负数、非整数、超大值、非正整数 uid（见 ServerService::sanitizeTrafficData）
+            $data = ServerService::sanitizeTrafficData($traffic);
 
             if (!empty($data)) {
                 Cache::put(

@@ -14,6 +14,23 @@ use Illuminate\Support\Facades\Log;
 class GiftCardController extends Controller
 {
     /**
+     * 礼品卡兑换码是 bearer instrument（持有即可兑换），不能明文落日志。
+     * 这里只保留首 4 + 末 2 位，中间打码；调试时可凭 sha256 短哈希做比对。
+     */
+    private static function maskCode(?string $code): array
+    {
+        $code = (string) $code;
+        $len = strlen($code);
+        $masked = $len <= 6
+            ? str_repeat('*', max(0, $len))
+            : substr($code, 0, 4) . str_repeat('*', max(2, $len - 6)) . substr($code, -2);
+        return [
+            'code_mask' => $masked,
+            'code_hash8' => substr(hash('sha256', $code), 0, 8),
+        ];
+    }
+
+    /**
      * 查询兑换码信息
      */
     public function check(GiftCardCheckRequest $request)
@@ -44,7 +61,7 @@ class GiftCardController extends Controller
             return $this->fail([400, $e->getMessage()]);
         } catch (\Exception $e) {
             Log::error('礼品卡查询失败', [
-                'code' => $request->input('code'),
+                ...self::maskCode($request->input('code')),
                 'user_id' => $request->user()->id,
                 'error' => $e->getMessage(),
             ]);
@@ -69,7 +86,7 @@ class GiftCardController extends Controller
             ]);
 
             Log::info('礼品卡使用成功', [
-                'code' => $request->input('code'),
+                ...self::maskCode($request->input('code')),
                 'user_id' => $request->user()->id,
                 'rewards' => $result['rewards'],
             ]);
@@ -84,11 +101,13 @@ class GiftCardController extends Controller
         } catch (ApiException $e) {
             return $this->fail([400, $e->getMessage()]);
         } catch (\Exception $e) {
+            // 不写 getTraceAsString —— PHP trace 会把 GiftCardService::__construct(string $code) 的实参一并打印，
+            // 等同把兑换码明文落日志两次。stack 由 Laravel 的全局 ExceptionHandler 在 storage/logs 里完整记录，
+            // 这里只补充业务上下文即可。
             Log::error('礼品卡使用失败', [
-                'code' => $request->input('code'),
+                ...self::maskCode($request->input('code')),
                 'user_id' => $request->user()->id,
                 'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
             ]);
             return $this->fail([500, '兑换失败，请稍后重试']);
         }

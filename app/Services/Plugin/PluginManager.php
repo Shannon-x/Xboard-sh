@@ -25,10 +25,25 @@ class PluginManager
     }
 
     /**
+     * 入口校验：插件 code 只允许 [a-z0-9_]+。
+     * validateConfig() 已经对上传时的 code 做了这条 regex，但 enable/disable/delete/publishAssets/
+     * runMigrations 这些直接吃 `$pluginCode` 参数的入口（包括 DB 里历史脏数据）没有自己再校验。
+     * 一旦异常 code 流入（含 `.` `/` `..`），Str::studly 不阻挡 → 拼出来的路径会越界。
+     * 这里集中拒绝。
+     */
+    private static function assertSafeCode(string $pluginCode): void
+    {
+        if (!preg_match('/^[a-z0-9_]+$/', $pluginCode)) {
+            throw new \InvalidArgumentException("Invalid plugin code: {$pluginCode}");
+        }
+    }
+
+    /**
      * 获取插件的命名空间
      */
     public function getPluginNamespace(string $pluginCode): string
     {
+        self::assertSafeCode($pluginCode);
         return 'Plugin\\' . Str::studly($pluginCode);
     }
 
@@ -37,6 +52,7 @@ class PluginManager
      */
     public function getPluginPath(string $pluginCode): string
     {
+        self::assertSafeCode($pluginCode);
         return $this->pluginPath . '/' . Str::studly($pluginCode);
     }
 
@@ -251,14 +267,51 @@ class PluginManager
 
     /**
      * 发布插件资源
+     *
+     * 1) publishPath 用 Str::studly 与 getPluginPath 保持一致（原实现用裸 $pluginCode）；
+     *    getPluginPath 已经走 assertSafeCode，再 studly 同样安全。
+     * 2) 不再 File::copyDirectory 全量复制：用白名单扩展逐文件 copy，
+     *    避免插件包内 resources/assets/pwn.php 被 PHP-FPM 通过 public/plugins/<code>/pwn.php 执行。
      */
     protected function publishAssets(string $pluginCode): void
     {
         $assetsPath = $this->getPluginPath($pluginCode) . '/resources/assets';
-        if (File::exists($assetsPath)) {
-            $publishPath = public_path('plugins/' . $pluginCode);
-            File::ensureDirectoryExists($publishPath);
-            File::copyDirectory($assetsPath, $publishPath);
+        if (!File::exists($assetsPath)) {
+            return;
+        }
+        $publishPath = public_path('plugins/' . Str::studly($pluginCode));
+        File::ensureDirectoryExists($publishPath);
+
+        $allowedExts = [
+            'css', 'js', 'mjs', 'map', 'json', 'html', 'htm',
+            'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp',
+            'woff', 'woff2', 'ttf', 'otf', 'eot',
+            'mp3', 'mp4', 'webm', 'ogg', 'wav',
+            'txt', 'md',
+            // 与 ThemeService 同步：预压缩资源是静态二进制，nginx gzip_static / brotli_static
+            // 直接返回；不会被 PHP-FPM 解释执行
+            'gz', 'br', 'zst',
+        ];
+
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($assetsPath, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+        foreach ($it as $entry) {
+            $relative = ltrim(str_replace($assetsPath, '', $entry->getPathname()), DIRECTORY_SEPARATOR);
+            $target = $publishPath . DIRECTORY_SEPARATOR . $relative;
+            if ($entry->isDir()) {
+                File::ensureDirectoryExists($target, 0755, true);
+                continue;
+            }
+            if ($entry->isLink()) {
+                continue;
+            }
+            $ext = strtolower($entry->getExtension());
+            if (!in_array($ext, $allowedExts, true)) {
+                continue;
+            }
+            File::copy($entry->getPathname(), $target);
         }
     }
 

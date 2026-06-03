@@ -12,36 +12,81 @@ class Helper
         return base64_encode(substr($uuid, 0, $length));
     }
 
-    public static function getServerKey($timestamp, $length)
+    /**
+     * 派生 SS2022 server_key。
+     *
+     * 历史实现（$secret 为 null 时回退）：base64_encode(substr(md5($timestamp), 0, $length))
+     *   - 这是已知弱密钥（输入空间 = Unix 时间戳，md5 截 hex 砍熵）
+     *   - 但是订阅链路已经下发给了所有付费客户端，强行换 key 会让现有 SS2022 客户端立即断连
+     *   - 因此默认行为不变，保证升级前后**无可观察破坏**
+     *
+     * 加固路径（推荐）：给该节点设置 v2_server.ss_secret = random_bytes(32)。
+     *   Server::serverKey / generateServerPassword / ServerService::buildNodeConfig 都会
+     *   优先用 HMAC-SHA256 派生 server_key，订阅下次拉取自动同步新 key。
+     */
+    public static function getServerKey($timestamp, $length, ?string $secret = null)
     {
-        return base64_encode(substr(md5($timestamp), 0, $length));
+        if ($secret !== null && $secret !== '') {
+            // 输入混入 length 防止同节点不同密文长度互相还原内部状态
+            $material = hash_hmac('sha256', "ss2022:{$length}:{$timestamp}", $secret, true);
+            return base64_encode(substr($material, 0, $length));
+        }
+        return base64_encode(substr(md5((string) $timestamp), 0, $length));
     }
 
     public static function guid($format = false)
     {
-        if (function_exists('com_create_guid') === true) {
-            return md5(trim(com_create_guid(), '{}'));
-        }
-        $data = openssl_random_pseudo_bytes(16);
+        // 历史实现：openssl_random_pseudo_bytes(16) + md5 + time()。openssl_random_pseudo_bytes 返回值不保证
+        // 加密强度（PHP 7.1+ 已经内部用 CSPRNG，但仍然没有 random_bytes 明确）；外层再 md5 等于把 128-bit 熵
+        // 通过 md5 收口到 128-bit，本身没有降熵但隐藏了真实强度，且 md5() 的结果接在 time() 后再 md5 一次反而
+        // 引入"时间戳猜测"路径（同 SS2022 server_key 的弱密钥模式）。
+        //
+        // 这里改成直接走 random_bytes(16)（CSPRNG）→ hex/uuid。输出长度与历史完全一致（32 / 36 字符），
+        // 对前端透明；只是真正成为不可预测的 128-bit 随机串。
+        $data = random_bytes(16);
         $data[6] = chr(ord($data[6]) & 0x0f | 0x40); // set version to 0100
         $data[8] = chr(ord($data[8]) & 0x3f | 0x80); // set bits 6-7 to 10
         if ($format) {
             return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
         }
-        return md5(vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4)) . '-' . time());
+        // 32 字符 hex 字符串，与历史 md5() 输出格式（也是 32 hex）完全兼容
+        return bin2hex($data);
     }
 
     public static function generateOrderNo(): string
     {
-        $randomChar = mt_rand(10000, 99999);
+        // 原 mt_rand 是 Mersenne-Twister，2^32 seed，可由 ~624 个连续输出还原内部状态。
+        // 订单号被用在 Payment notify URL 等公开路径，必须用 CSPRNG。
+        $randomChar = random_int(10000, 99999);
         return date('YmdHms') . substr(microtime(), 2, 6) . $randomChar;
     }
 
     public static function exchange($from, $to)
     {
-        $result = file_get_contents('https://api.exchangerate.host/latest?symbols=' . $to . '&base=' . $from);
-        $result = json_decode($result, true);
-        return $result['rates'][$to];
+        // 历史用裸 file_get_contents：默认超时是 default_socket_timeout（60s+），
+        // 上游 API 抽风时整个请求线程挂死；返回 null/解析失败也会让调用方拿 null 当成功。
+        // 这里改用带超时的流上下文，并在异常路径返回 null（保持调用方"拿不到汇率就跳过"的兼容语义）。
+        $opts = stream_context_create([
+            'http' => [
+                'timeout' => 3, // 短超时；汇率不是关键路径
+                'ignore_errors' => true,
+                'header' => "User-Agent: xboard-exchange-fetch\r\n",
+            ],
+        ]);
+        try {
+            $raw = @file_get_contents(
+                'https://api.exchangerate.host/latest?symbols=' . urlencode($to) . '&base=' . urlencode($from),
+                false,
+                $opts
+            );
+            if ($raw === false) {
+                return null;
+            }
+            $result = json_decode($raw, true);
+            return $result['rates'][$to] ?? null;
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 
     public static function randomChar($len, $special = false)
@@ -67,7 +112,8 @@ class Helper
         shuffle($chars);
         $str = '';
         for ($i = 0; $i < $len; $i++) {
-            $str .= $chars[mt_rand(0, $charsLen)];
+            // CSPRNG：兑换码 / 优惠券 / 邀请码这一类持有即用的"凭据型字符串"必须走 random_int
+            $str .= $chars[random_int(0, $charsLen)];
         }
         return $str;
     }

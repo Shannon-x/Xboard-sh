@@ -44,10 +44,9 @@ trait HasPluginConfig
         if ($this->pluginConfig === null) {
             $pluginCode = $this->getPluginCode();
 
-            \Log::channel('daily')->info('Telegram Login: 获取插件配置', [
-                'plugin_code' => $pluginCode
-            ]);
-
+            // 移除生产期高频 info 日志：HasPluginConfig 被几乎所有插件请求路径走过，
+            // 这一行会让 daily channel 每天积累大量"Telegram Login: 获取插件配置"噪声，
+            // 同时把 plugin_code 落日志对排查也没新增信息（Cache::remember 命中后根本不读 DB）。
             $this->pluginConfig = Cache::remember(
                 "plugin_config_{$pluginCode}",
                 3600,

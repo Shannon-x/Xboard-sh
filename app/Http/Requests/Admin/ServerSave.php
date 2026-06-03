@@ -143,6 +143,10 @@ class ServerSave extends FormRequest
             'custom_outbounds' => 'nullable|array',
             'custom_routes' => 'nullable|array',
             'cert_config' => 'nullable|array',
+            // ss_secret 用于强化 SS2022 server_key 派生（HMAC-SHA256 替代 md5($timestamp)）。
+            // 仅 SS2022 cipher 节点需要；新建节点会自动注入（见 Server::booted creating hook），
+            // 历史节点可在 admin 主动设置触发轮换。64 hex（= random_bytes(32)）。
+            'ss_secret' => 'nullable|string|min:32|max:64|regex:/^[a-f0-9]+$/i',
             'rate_time_ranges.*.start' => 'required_with:rate_time_ranges|string|date_format:H:i',
             'rate_time_ranges.*.end' => 'required_with:rate_time_ranges|string|date_format:H:i',
             'rate_time_ranges.*.rate' => 'required_with:rate_time_ranges|numeric|min:0',

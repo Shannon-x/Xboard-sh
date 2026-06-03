@@ -58,6 +58,20 @@ class UserController extends Controller
     public function changePassword(UserChangePassword $request)
     {
         $user = $request->user();
+
+        // 老密码错误计数：原实现完全不限流，已盗 token 的攻击者可在线撞库 old_password，得手后改密 + 踢掉所有 session
+        // 这里复用 PASSWORD_ERROR_LIMIT cache key 与登录共享同一窗口（按 user.email），命中规则同 LoginService
+        $email = (string) ($user->email ?? '');
+        if ((int) admin_setting('password_limit_enable', true) && $email !== '') {
+            $key = \App\Utils\CacheKey::get('PASSWORD_ERROR_LIMIT', $email);
+            $errorCount = (int) \Illuminate\Support\Facades\Cache::get($key, 0);
+            if ($errorCount >= (int) admin_setting('password_limit_count', 5)) {
+                return $this->fail([429, __('There are too many password errors, please try again after :minute minutes.', [
+                    'minute' => admin_setting('password_limit_expire', 60),
+                ])]);
+            }
+        }
+
         if (
             !Helper::multiPasswordVerify(
                 $user->password_algo,
@@ -66,6 +80,15 @@ class UserController extends Controller
                 $user->password
             )
         ) {
+            if ((int) admin_setting('password_limit_enable', true) && $email !== '') {
+                $key = \App\Utils\CacheKey::get('PASSWORD_ERROR_LIMIT', $email);
+                $errorCount = (int) \Illuminate\Support\Facades\Cache::get($key, 0);
+                \Illuminate\Support\Facades\Cache::put(
+                    $key,
+                    $errorCount + 1,
+                    60 * (int) admin_setting('password_limit_expire', 60)
+                );
+            }
             return $this->fail([400, __('The old password is wrong')]);
         }
         $user->password = password_hash($request->input('new_password'), PASSWORD_DEFAULT);
@@ -74,14 +97,19 @@ class UserController extends Controller
         if (!$user->save()) {
             return $this->fail([400, __('Save failed')]);
         }
-        
+
+        // 改密成功后清掉错误计数，避免合法用户被自己之前的错试影响
+        if ($email !== '') {
+            \Illuminate\Support\Facades\Cache::forget(\App\Utils\CacheKey::get('PASSWORD_ERROR_LIMIT', $email));
+        }
+
         $currentToken = $user->currentAccessToken();
         if ($currentToken) {
             $user->tokens()->where('id', '!=', $currentToken->id)->delete();
         } else {
             $user->tokens()->delete();
         }
-        
+
         return $this->success(true);
     }
 

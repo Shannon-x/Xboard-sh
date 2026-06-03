@@ -13,26 +13,38 @@ class UserUpdate extends FormRequest
      */
     public function rules()
     {
+        // 单位与上限说明（与 UserController.update 实际处理逻辑严格对齐 —— 不能凭注释揣测）：
+        //
+        //   transfer_enable / u / d 单位为 **byte**（admin 前端在表单层已经把 GB 乘 1073741824 提交）。
+        //     上限给到 9 EiB（MySQL bigint 上限的 2^62），覆盖任何合法套餐而不至于挡住 100GB 这种正常值。
+        //     这里只是兜底防御"被钓的 admin token 一次写 1e18 让 bigint 溢出"的极端场景。
+        //     之前误写成 1048576 是把 GB 当作单位 → 100GB 提交后直接被 422 挡死，这是回归 bug，已修。
+        //
+        //   balance / commission_balance：admin 前端按"元"传，UserController.update 会 *100 换算到"分"。
+        //     上限 1,000,000 元（与历史前端实际能填的范围一致）。
+        //
+        //   expired_at 上限 9999999999 ≈ 2286 年；下限 0（清空到期）。
+        $maxBigint = 4611686018427387904; // 2^62，安全的 bigint 上限
         return [
             'id' => 'required|integer',
             'email' => 'nullable|string|email:strict|max:64',
             'password' => 'nullable|string|min:8|max:64',
-            'transfer_enable' => 'numeric',
-            'expired_at' => 'nullable|integer',
+            'transfer_enable' => "numeric|min:0|max:{$maxBigint}",
+            'expired_at' => 'nullable|integer|min:0|max:9999999999',
             'banned' => 'bool',
             'plan_id' => 'nullable|integer',
             'commission_rate' => 'nullable|integer|min:0|max:100',
             'discount' => 'nullable|integer|min:0|max:100',
             'is_admin' => 'boolean',
             'is_staff' => 'boolean',
-            'u' => 'integer',
-            'd' => 'integer',
-            'balance' => 'numeric',
-            'commission_type' => 'integer',
-            'commission_balance' => 'numeric',
-            'remarks' => 'nullable',
-            'speed_limit' => 'nullable|integer',
-            'device_limit' => 'nullable|integer'
+            'u' => "integer|min:0|max:{$maxBigint}",
+            'd' => "integer|min:0|max:{$maxBigint}",
+            'balance' => 'numeric|min:0|max:1000000',
+            'commission_type' => 'integer|in:0,1,2',
+            'commission_balance' => 'numeric|min:0|max:1000000',
+            'remarks' => 'nullable|string|max:1024',
+            'speed_limit' => 'nullable|integer|min:0|max:10000000',
+            'device_limit' => 'nullable|integer|min:0|max:10000'
         ];
     }
 

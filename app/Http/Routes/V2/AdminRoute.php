@@ -108,7 +108,9 @@ class AdminRoute
                 $router->post('/sendMail', [UserController::class, 'sendMail']);
                 $router->post('/ban', [UserController::class, 'ban']);
                 $router->post('/resetSecret', [UserController::class, 'resetSecret']);
-                $router->post('/setInviteUser', [UserController::class, 'setInviteUser']);
+                // /setInviteUser 路由对应的 UserController::setInviteUser 方法从未实现，
+                // 访问会抛 BadMethodCallException → 500 + 栈泄露。直接删掉死路由。
+                // admin 端修改邀请人的能力已经合并进 /user/update（接收 invite_user_email 字段）。
                 $router->post('/destroy', [UserController::class, 'destroy']);
             });
 

@@ -14,11 +14,12 @@ class KnowledgeSave extends FormRequest
     public function rules()
     {
         return [
-            'category' => 'required',
-            'language' => 'required',
-            'title' => 'required',
-            'body' => 'required',
-            'show' => 'nullable|boolean'
+            'category' => 'required|string|max:128',
+            'language' => 'required|string|max:16',
+            'title' => 'required|string|max:200',
+            // 知识库正文允许较长，10w 字够任何 markdown
+            'body' => 'required|string|max:100000',
+            'show' => 'nullable|boolean',
         ];
     }
 

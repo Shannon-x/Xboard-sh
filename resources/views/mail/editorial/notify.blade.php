@@ -34,7 +34,7 @@
                     <!-- Content -->
                     <tr>
                         <td style="padding:24px 44px 0 44px;">
-                            <div style="font-family:'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;font-size:15px;color:#2a2520;line-height:1.8;">{!! nl2br($content) !!}</div>
+                            <div style="font-family:'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;font-size:15px;color:#2a2520;line-height:1.8;">{!! nl2br(e($content)) !!}</div>
                         </td>
                     </tr>
                     <!-- CTA -->

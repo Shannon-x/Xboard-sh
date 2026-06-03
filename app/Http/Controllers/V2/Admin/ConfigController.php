@@ -56,8 +56,15 @@ class ConfigController extends Controller
         if (blank($hookUrl)) {
             return $this->fail([422, 'Telegram Webhook地址未配置']);
         }
+        // 优先用独立的 telegram_webhook_secret（可单独轮换、与 bot_token 解耦）；
+        // 未设置时回退到历史 md5(bot_token)，保证升级前部署不变行为。
+        $botToken = $request->input('telegram_bot_token', admin_setting('telegram_bot_token'));
+        $accessToken = (string) admin_setting('telegram_webhook_secret', '');
+        if ($accessToken === '') {
+            $accessToken = md5((string) $botToken);
+        }
         $hookUrl .= '?' . http_build_query([
-            'access_token' => md5(admin_setting('telegram_bot_token', $request->input('telegram_bot_token')))
+            'access_token' => $accessToken,
         ]);
         $telegramService = new TelegramService($request->input('telegram_bot_token'));
         $telegramService->getMe();
@@ -122,6 +129,7 @@ class ConfigController extends Controller
             'subscribe' => [
                 'plan_change_enable' => (bool) admin_setting('plan_change_enable', 1),
                 'reset_traffic_method' => (int) admin_setting('reset_traffic_method', 0),
+                'advance_cycle_used_ratio' => (float) admin_setting('advance_cycle_used_ratio', 0.95),
                 'surplus_enable' => (bool) admin_setting('surplus_enable', 1),
                 'new_order_event_id' => (int) admin_setting('new_order_event_id', 0),
                 'renew_order_event_id' => (int) admin_setting('renew_order_event_id', 0),
@@ -161,6 +169,7 @@ class ConfigController extends Controller
             'telegram' => [
                 'telegram_bot_enable' => (bool) admin_setting('telegram_bot_enable', 0),
                 'telegram_bot_token' => admin_setting('telegram_bot_token'),
+                'telegram_webhook_secret' => admin_setting('telegram_webhook_secret'),
                 'telegram_webhook_url' => admin_setting('telegram_webhook_url'),
                 'telegram_discuss_link' => admin_setting('telegram_discuss_link')
             ],

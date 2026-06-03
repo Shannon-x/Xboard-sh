@@ -14,6 +14,10 @@ class AdvanceCycleService
 {
     private const CONSUME_DAYS = 30;
     private const CONSUME_SECONDS = self::CONSUME_DAYS * 86400;
+    // 默认按流量耗尽 95% 即可提前重置；与节点端常见的软上限（~95%）语义对齐。
+    private const DEFAULT_USED_RATIO = 0.95;
+    private const MIN_USED_RATIO = 0.5;
+    private const MAX_USED_RATIO = 1.0;
 
     public function preview(User $user): array
     {
@@ -121,12 +125,16 @@ class AdvanceCycleService
         $expiredAt = $user->expired_at !== null ? (int) $user->expired_at : null;
         $oldNextResetAt = $user->next_reset_at;
         $newExpiredAt = $expiredAt ? $expiredAt - self::CONSUME_SECONDS : null;
+        $usedRatio = $this->resolveUsedRatio();
+        $usedThreshold = $this->calculateUsedThreshold($transferEnable, $usedRatio);
         $base = [
             'consume_days' => self::CONSUME_DAYS,
             'consume_seconds' => self::CONSUME_SECONDS,
             'used' => $used,
             'transfer_enable' => $transferEnable,
             'remaining' => max(0, $transferEnable - $used),
+            'used_ratio' => $usedRatio,
+            'used_threshold' => $usedThreshold,
             'old_expired_at' => $expiredAt,
             'new_expired_at' => $newExpiredAt,
             'old_next_reset_at' => $oldNextResetAt,
@@ -149,7 +157,7 @@ class AdvanceCycleService
             return array_merge($base, $this->ineligible('no_traffic_quota', __('advance_cycle.no_traffic_quota')));
         }
 
-        if ($used < $transferEnable) {
+        if ($used < $usedThreshold) {
             return array_merge($base, $this->ineligible('traffic_not_exhausted', __('advance_cycle.traffic_not_exhausted')));
         }
 
@@ -167,6 +175,29 @@ class AdvanceCycleService
             'reason' => null,
             'message' => __('advance_cycle.available'),
         ]);
+    }
+
+    private function resolveUsedRatio(): float
+    {
+        $configured = admin_setting('advance_cycle_used_ratio', self::DEFAULT_USED_RATIO);
+        if (!is_numeric($configured)) {
+            return self::DEFAULT_USED_RATIO;
+        }
+        $ratio = (float) $configured;
+        if (!is_finite($ratio)) {
+            return self::DEFAULT_USED_RATIO;
+        }
+        return max(self::MIN_USED_RATIO, min(self::MAX_USED_RATIO, $ratio));
+    }
+
+    private function calculateUsedThreshold(int $transferEnable, float $ratio): int
+    {
+        if ($transferEnable <= 0) {
+            return 0;
+        }
+        // 取上取整，确保即便存在浮点误差也不会少于配置的比例；并夹在 [0, transferEnable] 内。
+        $threshold = (int) ceil($transferEnable * $ratio);
+        return max(0, min($transferEnable, $threshold));
     }
 
     private function supportsAdvanceCycle(Plan $plan): bool

@@ -55,12 +55,8 @@ class UniProxyController extends Controller
         if (!is_array($res)) {
             return $this->fail([422, 'Invalid data format']);
         }
-        $data = array_filter($res, function ($item) {
-            return is_array($item)
-                && count($item) === 2
-                && is_numeric($item[0])
-                && is_numeric($item[1]);
-        });
+        // 统一清洗：拒负数、非整数、超大值、非正整数 uid（见 ServerService::sanitizeTrafficData）
+        $data = ServerService::sanitizeTrafficData($res);
         if (empty($data)) {
             return $this->success(true);
         }

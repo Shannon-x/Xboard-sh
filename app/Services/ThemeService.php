@@ -215,7 +215,10 @@ class ThemeService
             }
 
             $targetPath = public_path('theme/' . $theme);
-            if (!File::copyDirectory($themePath, $targetPath)) {
+            // 只复制白名单扩展的静态资源到 public/，不再 File::copyDirectory 全量复制。
+            // 主题包内若含 .php / .htaccess / .user.ini 等会被 PHP-FPM 解析的文件，
+            // 全量复制后即可通过 https://host/theme/<name>/pwn.php 执行（post-auth admin RCE）。
+            if (!self::copyThemeAssets($themePath, $targetPath)) {
                 throw new Exception('Failed to copy theme files');
             }
 
@@ -350,6 +353,18 @@ class ThemeService
             return true;
         }
 
+        // 主题包不允许携带任何会被 PHP-FPM / web server 解释执行的文件 ——
+        // switch() 会把主题包整体 copyDirectory 到 public_path('theme/{name}')，
+        // 任何含 pwn.php 的合法主题包切换后即可通过 https://host/theme/<name>/pwn.php 命中 RCE。
+        // 黑名单覆盖：直接的 PHP 解释器后缀 + PHP 配置文件 + nginx/Apache 解析劫持文件。
+        if (preg_match('/\.(php\d?|phtml|phar|phps|pht|inc|hphp)$/i', $normalized)) {
+            return true;
+        }
+        $basename = basename($normalized);
+        if (strcasecmp($basename, '.htaccess') === 0 || strcasecmp($basename, '.user.ini') === 0) {
+            return true;
+        }
+
         if (method_exists($zip, 'getExternalAttributesIndex')) {
             $opsys = 0;
             $attr = 0;
@@ -362,6 +377,53 @@ class ThemeService
         }
 
         return false;
+    }
+
+    /**
+     * 把主题目录里的静态资源（仅限白名单扩展）复制到 public/theme/<name>。
+     * Blade view 走 namespace 渲染（registerThemeViewPaths），不需要 public 端可执行的 .php。
+     */
+    private static function copyThemeAssets(string $src, string $dst): bool
+    {
+        if (!is_dir($src)) {
+            return false;
+        }
+        $allowedExts = [
+            'css', 'js', 'mjs', 'map', 'json', 'html', 'htm',
+            'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp',
+            'woff', 'woff2', 'ttf', 'otf', 'eot',
+            'mp3', 'mp4', 'webm', 'ogg', 'wav',
+            'txt', 'md',
+            // 预压缩资源：Vite/webpack 常生成 umi.js.gz / umi.js.br 与原文件配对，
+            // 由 nginx gzip_static / brotli_static 模块直接返回给客户端。漏掉的话
+            // 切换主题后 CDN/反代仍按原始 .js 重新压缩，浪费 CPU 并丢失预压缩收益。
+            // 这些是静态二进制，不会被 PHP-FPM 解释执行，加入白名单安全。
+            'gz', 'br', 'zst',
+        ];
+        File::ensureDirectoryExists($dst, 0755, true);
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($src, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+        foreach ($it as $entry) {
+            $relative = ltrim(str_replace($src, '', $entry->getPathname()), DIRECTORY_SEPARATOR);
+            $target = $dst . DIRECTORY_SEPARATOR . $relative;
+            if ($entry->isDir()) {
+                File::ensureDirectoryExists($target, 0755, true);
+                continue;
+            }
+            $ext = strtolower($entry->getExtension());
+            // 跳过任何会被 PHP-FPM/web server 解释的文件；扩展名白名单兜底
+            if (!in_array($ext, $allowedExts, true)) {
+                continue;
+            }
+            // 防止符号链接逃逸目录
+            if ($entry->isLink()) {
+                continue;
+            }
+            File::copy($entry->getPathname(), $target);
+        }
+        return true;
     }
 
     /**
@@ -472,7 +534,8 @@ class ThemeService
             }
 
             $targetPath = public_path('theme/' . $currentTheme);
-            if (!File::copyDirectory($themePath, $targetPath)) {
+            // 同 switch()：白名单复制，禁止把 .php / .htaccess 等可执行文件搬到 public/
+            if (!self::copyThemeAssets($themePath, $targetPath)) {
                 throw new Exception('Failed to copy theme files');
             }
 

@@ -35,7 +35,9 @@ class Server
                 'string',
                 'required',
                 function ($attribute, $value, $fail) {
-                    if ($value !== admin_setting('server_token')) {
+                    // hash_equals 避免时序泄露；admin_setting 可能返回 null，强转 string
+                    $expected = (string) admin_setting('server_token');
+                    if ($expected === '' || !hash_equals($expected, (string) $value)) {
                         $fail("Invalid {$attribute}");
                     }
                 },

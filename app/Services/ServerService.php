@@ -153,6 +153,59 @@ class ServerService
     }
 
     /**
+     * 节点上报流量数据的统一清洗。
+     *
+     * V1 UniProxy push 与 V2 ServerController report 两个入口都吃 `{uid: [u, d]}`
+     * 这种结构。历史实现只过滤 `is_numeric`，对负数、浮点、超大数、非整数 key 全部放行，
+     * 直接落进 TrafficFetchJob 后会让 u/d 变负、溢出、错算。
+     *
+     * 这里拒绝所有可疑条目：
+     *   - key 必须是字符串/整数形式的正整数 user id
+     *   - value 必须是 [int, int] 且都 >= 0
+     *   - value 单边上限 1 TiB（节点单次心跳合理上限远小于此）
+     *
+     * 对合法节点完全透明（合法上报本来就是非负整数）；只过滤明显异常。
+     */
+    public static function sanitizeTrafficData(array $raw): array
+    {
+        // 单条上报单边硬上限：1 TiB。普通节点 60s 心跳几乎不可能上报到这个量级，
+        // 超过的视为脏数据丢弃，避免恶意/异常上报让 u/d bigint 失真或溢出。
+        $maxPerEntry = 1024 * 1024 * 1024 * 1024;
+
+        $sanitized = [];
+        foreach ($raw as $uid => $item) {
+            // key 必须是正整数 user id（字符串或整型均可）
+            $uidStr = (string) $uid;
+            if (!ctype_digit($uidStr)) {
+                continue;
+            }
+            $uidInt = (int) $uidStr;
+            if ($uidInt <= 0) {
+                continue;
+            }
+            if (!is_array($item) || count($item) !== 2) {
+                continue;
+            }
+            // 严格要求整数：is_numeric 会放 1e308 这种合法 numeric 浮点
+            $u = $item[0];
+            $d = $item[1];
+            if (!is_int($u) && !(is_string($u) && ctype_digit(ltrim($u, '-')))) {
+                continue;
+            }
+            if (!is_int($d) && !(is_string($d) && ctype_digit(ltrim($d, '-')))) {
+                continue;
+            }
+            $u = (int) $u;
+            $d = (int) $d;
+            if ($u < 0 || $d < 0 || $u > $maxPerEntry || $d > $maxPerEntry) {
+                continue;
+            }
+            $sanitized[$uidInt] = [$u, $d];
+        }
+        return $sanitized;
+    }
+
+    /**
      * Update node metrics and load status
      */
     public static function updateMetrics(Server $node, array $metrics): void
@@ -215,11 +268,15 @@ class ServerService
                 'cipher' => $protocolSettings['cipher'],
                 'plugin' => $protocolSettings['plugin'],
                 'plugin_opts' => $protocolSettings['plugin_opts'],
-                'server_key' => match ($protocolSettings['cipher']) {
-                        '2022-blake3-aes-128-gcm' => Helper::getServerKey($node->created_at, 16),
-                        '2022-blake3-aes-256-gcm' => Helper::getServerKey($node->created_at, 32),
+                'server_key' => (function () use ($node, $protocolSettings) {
+                    $secret = (string) ($node->ss_secret ?? '');
+                    $secret = $secret !== '' ? $secret : null;
+                    return match ($protocolSettings['cipher']) {
+                        '2022-blake3-aes-128-gcm' => Helper::getServerKey($node->created_at, 16, $secret),
+                        '2022-blake3-aes-256-gcm' => Helper::getServerKey($node->created_at, 32, $secret),
                         default => null,
-                    },
+                    };
+                })(),
             ],
             'vmess' => [
                 ...$baseConfig,

@@ -170,13 +170,39 @@ class TelegramService
             return $data;
 
         } catch (\Exception $e) {
+            // setWebhook 的 url 参数里嵌了 access_token；sendMessage 的 text 可能含用户隐私。
+            // 错误日志只写脱敏后的元数据，详细 stack 由全局 ExceptionHandler 落 storage/logs。
             Log::error('Telegram API 请求失败', [
                 'method' => $method,
-                'params' => $params,
+                'params_summary' => self::summarizeParams($method, $params),
                 'error' => $e->getMessage(),
             ]);
 
             throw new ApiException("Telegram 服务错误: {$e->getMessage()}");
         }
+    }
+
+    /**
+     * 把 params 折成不含敏感凭据的元数据，避免 access_token / 用户 chat 文本进日志。
+     */
+    private static function summarizeParams(string $method, array $params): array
+    {
+        $summary = ['param_keys' => array_keys($params)];
+        // 仅对几个高风险方法主动脱敏；其它方法只记 key 不记 value
+        if ($method === 'setWebhook' && isset($params['url'])) {
+            $parsed = parse_url((string) $params['url']);
+            $summary['url_host'] = $parsed['host'] ?? null;
+            $summary['url_path'] = $parsed['path'] ?? null;
+            // 故意丢弃 query（access_token 在那里）
+        }
+        if (isset($params['chat_id'])) {
+            // 数字 chat_id 不算高敏，但保留首尾用于排查
+            $cid = (string) $params['chat_id'];
+            $summary['chat_id_short'] = strlen($cid) > 4 ? substr($cid, 0, 2) . '***' . substr($cid, -2) : '***';
+        }
+        if (isset($params['text'])) {
+            $summary['text_len'] = mb_strlen((string) $params['text']);
+        }
+        return $summary;
     }
 }

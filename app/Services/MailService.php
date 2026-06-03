@@ -287,7 +287,10 @@ class MailService
             'subject' => $params['subject'],
             'template_name' => $params['template_name'],
             'error' => $error,
-            'config' => config('mail')
+            // 故意不写 'config' => config('mail')：
+            // ① v2_mail_log 表 schema 没有 config 列，Eloquent 会静默丢弃这个 key —— 没有真实写入；
+            // ② 任何后续加列或开 strict mode 都会立即让 SMTP 密码以明文落库，是个潜伏地雷；
+            // ③ 真要排查可以临时开 mail debug log，而不是把生产凭据持久化在业务表。
         ];
         MailLog::create($log);
         return $log;

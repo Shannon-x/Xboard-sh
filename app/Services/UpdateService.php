@@ -290,11 +290,12 @@ class UpdateService
     protected function backupDatabase(): void
     {
         try {
-            // Use existing backup command
-            Process::run('php artisan backup:database');
-            
-            if (!Process::result()->successful()) {
-                throw new \Exception(__('update.backup_failed', ['error' => Process::result()->errorOutput()]));
+            // Process::run 返回 ProcessResult 实例 —— 原实现用 Process::result() 静态门面去拿
+            // "上一次结果"是错的（Process facade 没有这个静态方法），导致备份判定永远走异常分支，
+            // 等于在线升级流程的"备份保护"从未真正生效，反而每次都给出'backup failed'误导提示。
+            $result = Process::run('php artisan backup:database');
+            if (!$result->successful()) {
+                throw new \Exception(__('update.backup_failed', ['error' => $result->errorOutput()]));
             }
         } catch (\Exception $e) {
             Log::error('Database backup failed: ' . $e->getMessage());
@@ -307,16 +308,25 @@ class UpdateService
         try {
             // Get current project root directory
             $basePath = base_path();
-            
+
             // Ensure git configuration is correct
             Process::run(sprintf('git config --global --add safe.directory %s', $basePath));
-            
-            // Pull latest code
-            Process::run('git fetch origin master');
-            Process::run('git reset --hard origin/master');
+
+            // Pull latest code —— 每步都检查 successful()，避免 fetch/reset 失败仍继续 composer install + migrate。
+            $fetch = Process::run('git fetch origin master');
+            if (!$fetch->successful()) {
+                throw new \Exception('git fetch failed: ' . $fetch->errorOutput());
+            }
+            $reset = Process::run('git reset --hard origin/master');
+            if (!$reset->successful()) {
+                throw new \Exception('git reset failed: ' . $reset->errorOutput());
+            }
 
             // Update dependencies
-            Process::run('composer install --no-dev --optimize-autoloader');
+            $composer = Process::run('composer install --no-dev --optimize-autoloader');
+            if (!$composer->successful()) {
+                throw new \Exception('composer install failed: ' . $composer->errorOutput());
+            }
 
             // Update version cache after pulling new code
             $this->updateVersionCache();

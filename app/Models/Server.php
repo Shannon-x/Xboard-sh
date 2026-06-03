@@ -127,6 +127,34 @@ class Server extends Model
         'rate_time_enable' => 'boolean',
     ];
 
+    /**
+     * 新建节点时自动给 SS2022 节点生成 ss_secret，让"默认配置即安全"。
+     *
+     * 历史节点不主动回填（迁移层面是 nullable，回退到 md5($timestamp) 旧行为），原因：
+     * 强行回填会让所有现存 SS2022 客户端拉到的新 server_key 与节点端运行中的旧 key 不匹配，
+     * 全部断连。所以历史节点必须由运维主动决定何时轮换（在 admin 编辑该节点 → 写入 ss_secret →
+     * 节点端按新 key 重启 → 客户端重拉订阅）。
+     *
+     * 但是新建节点没这个负担：节点和客户端都还没建立任何 SS2022 会话，自动注入强 secret
+     * 不影响任何已有连接，且消除了"忘记设置 ss_secret 导致默认弱 key 永久存在"的隐患。
+     */
+    protected static function booted(): void
+    {
+        static::creating(function (self $server) {
+            if (
+                $server->type === self::TYPE_SHADOWSOCKS
+                && empty($server->ss_secret)
+            ) {
+                $cipher = data_get($server->protocol_settings, 'cipher');
+                // 仅对 SS2022 cipher 自动生成；非 2022 cipher 的 SS 节点不需要 server_key
+                if (is_string($cipher) && str_starts_with($cipher, '2022-blake3-')) {
+                    // bin2hex(random_bytes(32)) = 64 hex 字符；与 ss_secret VARCHAR(64) 列长度一致
+                    $server->ss_secret = bin2hex(random_bytes(32));
+                }
+            }
+        });
+    }
+
     private const MULTIPLEX_CONFIGURATION = [
         'multiplex' => [
             'type' => 'object',
@@ -407,7 +435,9 @@ class Server extends Model
         $config = self::CIPHER_CONFIGURATIONS[$cipher];
         // Use parent's created_at if this is a child node
         $serverCreatedAt = $this->parent_id ? $this->parent->created_at : $this->created_at;
-        $serverKey = Helper::getServerKey($serverCreatedAt, $config['serverKeySize']);
+        // 优先取该节点（或父节点）的 ss_secret 走 HMAC 派生；未设置时回退到历史 md5(timestamp) 行为
+        $secret = $this->parent_id ? (string) ($this->parent->ss_secret ?? '') : (string) ($this->ss_secret ?? '');
+        $serverKey = Helper::getServerKey($serverCreatedAt, $config['serverKeySize'], $secret !== '' ? $secret : null);
         $userKey = Helper::uuidToBase64($user->uuid, $config['userKeySize']);
         return "{$serverKey}:{$userKey}";
     }
@@ -530,7 +560,8 @@ class Server extends Model
         return Attribute::make(
             get: function () {
                 if ($this->type === self::TYPE_SHADOWSOCKS) {
-                    return Helper::getServerKey($this->created_at, 16);
+                    $secret = (string) ($this->ss_secret ?? '');
+                    return Helper::getServerKey($this->created_at, 16, $secret !== '' ? $secret : null);
                 }
                 return null;
             }

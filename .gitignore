@@ -34,3 +34,6 @@ compose.yaml
 .scribe
 # 孤立 gitlink 防护：调研用空目录不应入库
 tmp_repos/
+
+# Claude Code per-user settings
+/.claude/

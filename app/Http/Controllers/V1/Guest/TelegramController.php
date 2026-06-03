@@ -24,13 +24,25 @@ class TelegramController extends Controller
 
     public function webhook(Request $request): void
     {
+        // access_token 历史是 md5(bot_token)（32 hex），新 secret 走 random_bytes(20)→40 hex，
+        // 因此长度限制放宽到 32–64 hex。两套都接受，便于灰度切换。
         $params = $request->validate([
-            'access_token' => 'required|string|size:32',
+            'access_token' => 'required|string|min:32|max:64|regex:/^[a-f0-9]+$/i',
         ]);
 
         $botToken = (string) admin_setting('telegram_bot_token', '');
-        $expectedToken = md5($botToken);
-        if ($botToken === '' || !hash_equals($expectedToken, $params['access_token'])) {
+        if ($botToken === '') {
+            throw new ApiException('access_token is error', 401);
+        }
+
+        $provided = (string) $params['access_token'];
+        $legacyExpected = md5($botToken);                                              // 旧凭据 = md5(bot_token)
+        $secretExpected = (string) admin_setting('telegram_webhook_secret', '');       // 新凭据，独立可轮换
+
+        $ok = hash_equals($legacyExpected, $provided)
+            || ($secretExpected !== '' && hash_equals($secretExpected, $provided));
+
+        if (!$ok) {
             throw new ApiException('access_token is error', 401);
         }
 

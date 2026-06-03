@@ -136,9 +136,11 @@ class StatUserJob implements ShouldQueue
         $u = intval($v[0] * $this->server['rate']);
         $d = intval($v[1] * $this->server['rate']);
 
+        // ON CONFLICT 必须包含 record_type，否则同 (user_id, server_rate, record_at) 下的
+        // daily/monthly 行会撞库累加到一起，统计错位（见 2026_06_03_000003 迁移说明）。
         $sql = "INSERT INTO {$table} (user_id, server_rate, record_at, record_type, u, d, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (user_id, server_rate, record_at)
+                ON CONFLICT (user_id, server_rate, record_at, record_type)
                 DO UPDATE SET
                     u = {$table}.u + EXCLUDED.u,
                     d = {$table}.d + EXCLUDED.d,

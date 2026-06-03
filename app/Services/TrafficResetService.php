@@ -95,6 +95,10 @@ class TrafficResetService
 
     if ($resetMethod === Plan::RESET_TRAFFIC_FOLLOW_SYSTEM) {
       $resetMethod = (int) admin_setting('reset_traffic_method', Plan::RESET_TRAFFIC_MONTHLY);
+      // 系统级 reset_traffic_method 也可能是 NEVER（合法值），这种情况就不应该再算 next_reset_at
+      if ($resetMethod === Plan::RESET_TRAFFIC_NEVER) {
+        return null;
+      }
     }
 
     $now = Carbon::now(config('app.timezone'));
@@ -104,49 +108,55 @@ class TrafficResetService
       Plan::RESET_TRAFFIC_MONTHLY => $this->getNextMonthlyReset($user, $now),
       Plan::RESET_TRAFFIC_FIRST_DAY_YEAR => $this->getNextYearFirstDay($now),
       Plan::RESET_TRAFFIC_YEARLY => $this->getNextYearlyReset($user, $now),
-      default => null,
+      // 未知枚举（DB 脏值或新增枚举尚未在此 switch 处理）：当作"按月"兜底，
+      // 而不是 null。原 default => null 会让用户被默默从 cron 重置流程中排除，
+      // 现象上是"流量永远不重置"，运维侧也看不到任何报错。
+      default => $this->getNextMonthlyReset($user, $now),
     };
   }
 
   /**
    * Get the first day of the next month.
+   *
+   * 注意：先 startOfMonth 再 addMonthNoOverflow，避免 addMonth() 在 1/31 这种"目标月没这一天"
+   * 的场景溢出到 3/2（startOfMonth 后变成 3/1，整月跳过 2 月）。
    */
   private function getNextMonthFirstDay(Carbon $from): Carbon
   {
-    return $from->copy()->addMonth()->startOfMonth();
+    return $from->copy()->startOfMonth()->addMonthNoOverflow();
   }
 
   /**
    * Get the next monthly reset time based on the user's expiration date.
    *
-   * Logic:
-   * 1. If the user has no expiration date, reset on the 1st of each month.
-   * 2. If the user has an expiration date, use the day of that date as the monthly reset day.
-   * 3. Prioritize the reset day in the current month if it has not passed yet.
-   * 4. Handle cases where the day does not exist in a month (e.g., 31st in February).
+   * 关键约束：当 expiredAt.day = 29/30/31 时，不能简单 Carbon::day(31)，因为 Carbon 在目标月没有
+   * 这一天时会**直接溢出**（例：2026-02 + day(31) → 2026-03-03，整月跳过 2 月）。
+   * 必须把 resetDay 夹到目标月的最后一天（feb→28/29、apr→30、…）。
+   *
+   * 之前只修了"每月 1 号"路径（getNextMonthFirstDay），按到期日月重置这条路径上的当月候选
+   * 与下月候选都要做 day-clamping，否则 2 月用户仍会被推到 3 月。
    */
   private function getNextMonthlyReset(User $user, Carbon $from): Carbon
   {
-    $expiredAt = Carbon::createFromTimestamp($user->expired_at, config('app.timezone'));
+    $tz = config('app.timezone');
+    $expiredAt = Carbon::createFromTimestamp($user->expired_at, $tz);
     $resetDay = $expiredAt->day;
-    $resetTime = [$expiredAt->hour, $expiredAt->minute, $expiredAt->second];
-    
-    $currentMonthTarget = $from->copy()->day($resetDay)->setTime(...$resetTime);
+    [$rh, $rm, $rs] = [$expiredAt->hour, $expiredAt->minute, $expiredAt->second];
+
+    // 当月候选：把 resetDay 夹到当月最后一天，再组装
+    $curLast = $from->copy()->endOfMonth()->day;
+    $curTargetDay = min($resetDay, $curLast);
+    $currentMonthTarget = Carbon::create($from->year, $from->month, $curTargetDay, $rh, $rm, $rs, $tz);
     if ($currentMonthTarget->timestamp > $from->timestamp) {
       return $currentMonthTarget;
     }
-    
-    $nextMonthTarget = $from->copy()->startOfMonth()->addMonths(1)->day($resetDay)->setTime(...$resetTime);
-    
-    if ($nextMonthTarget->month !== ($from->month % 12) + 1) {
-      $nextMonth = ($from->month % 12) + 1;
-      $nextYear = $from->year + ($from->month === 12 ? 1 : 0);
-      $lastDayOfNextMonth = Carbon::create($nextYear, $nextMonth, 1)->endOfMonth()->day;
-      $targetDay = min($resetDay, $lastDayOfNextMonth);
-      $nextMonthTarget = Carbon::create($nextYear, $nextMonth, $targetDay)->setTime(...$resetTime);
-    }
-    
-    return $nextMonthTarget;
+
+    // 下月候选：同样夹到下月最后一天（关键修复点：原实现这里也直接 day($resetDay) 仍会溢出）
+    $nextMonth = ($from->month % 12) + 1;
+    $nextYear = $from->year + ($from->month === 12 ? 1 : 0);
+    $nextLast = Carbon::create($nextYear, $nextMonth, 1, 0, 0, 0, $tz)->endOfMonth()->day;
+    $nextTargetDay = min($resetDay, $nextLast);
+    return Carbon::create($nextYear, $nextMonth, $nextTargetDay, $rh, $rm, $rs, $tz);
   }
 
   /**

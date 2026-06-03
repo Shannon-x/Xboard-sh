@@ -107,140 +107,108 @@ class ResetTraffic extends Command
   {
     $startTime = microtime(true);
     $totalResetCount = 0;
-    $errors = [];
+    $totalProcessed = 0;
+    $errorCount = 0;
 
-    $users = $this->getResetQuery()->get();
+    // 改 chunkById：原 ->get() 会把全表待重置用户一次性拉到内存。
+    // 用户表 20w+ 时单次 cron 直接 OOM；withoutOverlapping(10) 还会让下一次 cron 静默跳过。
+    // 同时 with('plan:...') 避免 checkAndReset 内部对 plan 的 N+1 懒加载。
+    $this->getResetQuery()
+      ->with('plan:id,name,reset_traffic_method')
+      ->orderBy('id')
+      ->chunkById(500, function ($users) use (&$totalResetCount, &$totalProcessed, &$errorCount) {
+        foreach ($users as $user) {
+          $totalProcessed++;
+          try {
+            $totalResetCount += (int) $this->trafficResetService->checkAndReset($user, TrafficResetLog::SOURCE_CRON);
+          } catch (\Exception $e) {
+            $errorCount++;
+            Log::error('用户流量重置失败', [
+              'user_id' => $user->id,
+              'error' => $e->getMessage(),
+            ]);
+          }
+        }
+      });
 
-    if ($users->isEmpty()) {
+    if ($totalProcessed === 0) {
       $this->info("😴 当前没有需要重置的用户");
-      return [
-        'total_processed' => 0,
-        'total_reset' => 0,
-        'error_count' => 0,
-        'duration' => round(microtime(true) - $startTime, 2),
-      ];
-    }
-
-    $this->info("找到 {$users->count()} 个需要重置的用户");
-
-    foreach ($users as $user) {
-      try {
-        $totalResetCount += (int) $this->trafficResetService->checkAndReset($user, TrafficResetLog::SOURCE_CRON);
-      } catch (\Exception $e) {
-        $errors[] = [
-          'user_id' => $user->id,
-          'email' => $user->email,
-          'error' => $e->getMessage(),
-        ];
-        Log::error('用户流量重置失败', [
-          'user_id' => $user->id,
-          'error' => $e->getMessage(),
-        ]);
-      }
+    } else {
+      $this->info("找到 {$totalProcessed} 个需要重置的用户");
     }
 
     return [
-      'total_processed' => $users->count(),
+      'total_processed' => $totalProcessed,
       'total_reset' => $totalResetCount,
-      'error_count' => count($errors),
+      'error_count' => $errorCount,
       'duration' => round(microtime(true) - $startTime, 2),
     ];
   }
 
   private function performFix(): array
   {
-    $startTime = microtime(true);
-    $nullUsers = $this->getNullResetTimeUsers();
-
-    if ($nullUsers->isEmpty()) {
-      $this->info("✅ 没有发现next_reset_at为null的用户");
-      return [
-        'total_found' => 0,
-        'total_fixed' => 0,
-        'error_count' => 0,
-        'duration' => round(microtime(true) - $startTime, 2),
-      ];
-    }
-
-    $this->info("🔧 发现 {$nullUsers->count()} 个next_reset_at为null的用户，开始修正...");
-
-    $fixedCount = 0;
-    $errors = [];
-
-    foreach ($nullUsers as $user) {
-      try {
-        $nextResetTime = $this->trafficResetService->calculateNextResetTime($user);
-        if ($nextResetTime) {
-          $user->next_reset_at = $nextResetTime->timestamp;
-          $user->save();
-          $fixedCount++;
-        }
-      } catch (\Exception $e) {
-        $errors[] = [
-          'user_id' => $user->id,
-          'email' => $user->email,
-          'error' => $e->getMessage(),
-        ];
-        Log::error('修正用户next_reset_at失败', [
-          'user_id' => $user->id,
-          'error' => $e->getMessage(),
-        ]);
-      }
-    }
-
-    return [
-      'total_found' => $nullUsers->count(),
-      'total_fixed' => $fixedCount,
-      'error_count' => count($errors),
-      'duration' => round(microtime(true) - $startTime, 2),
-    ];
+    return $this->chunkedRecalculate(
+      query: $this->getNullResetTimeQuery(),
+      emptyMsg: '✅ 没有发现next_reset_at为null的用户',
+      foundFmtFn: fn(int $n) => "🔧 发现 {$n} 个next_reset_at为null的用户，开始修正...",
+      errorFmt: '修正用户next_reset_at失败',
+      startTime: microtime(true),
+    );
   }
 
   private function performForce(): array
   {
-    $startTime = microtime(true);
-    $allUsers = $this->getAllUsers();
+    return $this->chunkedRecalculate(
+      query: $this->getAllUsersQuery(),
+      emptyMsg: '✅ 没有发现需要处理的用户',
+      foundFmtFn: fn(int $n) => "⚡ 发现 {$n} 个用户，开始重新计算重置时间...",
+      errorFmt: '强制重新计算用户next_reset_at失败',
+      startTime: microtime(true),
+    );
+  }
 
-    if ($allUsers->isEmpty()) {
-      $this->info("✅ 没有发现需要处理的用户");
-      return [
-        'total_found' => 0,
-        'total_fixed' => 0,
-        'error_count' => 0,
-        'duration' => round(microtime(true) - $startTime, 2),
-      ];
-    }
-
-    $this->info("⚡ 发现 {$allUsers->count()} 个用户，开始重新计算重置时间...");
-
+  /**
+   * 共享的"重新计算 next_reset_at"主循环。
+   * 原 performFix / performForce 各自 ->get() 全表，外加完全重复的 foreach。
+   * 这里抽成 chunkById(500)，对 20w+ 用户表也不会 OOM。
+   */
+  private function chunkedRecalculate(
+    \Illuminate\Database\Eloquent\Builder $query,
+    string $emptyMsg,
+    callable $foundFmtFn,
+    string $errorFmt,
+    float $startTime,
+  ): array {
+    $totalFound = 0;
     $fixedCount = 0;
-    $errors = [];
+    $errorCount = 0;
 
-    foreach ($allUsers as $user) {
-      try {
-        $nextResetTime = $this->trafficResetService->calculateNextResetTime($user);
-        if ($nextResetTime) {
-          $user->next_reset_at = $nextResetTime->timestamp;
-          $user->save();
-          $fixedCount++;
+    $query->orderBy('id')->chunkById(500, function ($users) use (&$totalFound, &$fixedCount, &$errorCount, $errorFmt) {
+      foreach ($users as $user) {
+        $totalFound++;
+        try {
+          $nextResetTime = $this->trafficResetService->calculateNextResetTime($user);
+          if ($nextResetTime) {
+            $user->next_reset_at = $nextResetTime->timestamp;
+            $user->save();
+            $fixedCount++;
+          }
+        } catch (\Exception $e) {
+          $errorCount++;
+          Log::error($errorFmt, [
+            'user_id' => $user->id,
+            'error' => $e->getMessage(),
+          ]);
         }
-      } catch (\Exception $e) {
-        $errors[] = [
-          'user_id' => $user->id,
-          'email' => $user->email,
-          'error' => $e->getMessage(),
-        ];
-        Log::error('强制重新计算用户next_reset_at失败', [
-          'user_id' => $user->id,
-          'error' => $e->getMessage(),
-        ]);
       }
-    }
+    });
+
+    $this->info($totalFound === 0 ? $emptyMsg : $foundFmtFn($totalFound));
 
     return [
-      'total_found' => $allUsers->count(),
+      'total_found' => $totalFound,
       'total_fixed' => $fixedCount,
-      'error_count' => count($errors),
+      'error_count' => $errorCount,
       'duration' => round(microtime(true) - $startTime, 2),
     ];
   }
@@ -261,7 +229,7 @@ class ResetTraffic extends Command
 
 
 
-  private function getNullResetTimeUsers()
+  private function getNullResetTimeQuery(): \Illuminate\Database\Eloquent\Builder
   {
     return User::whereNull('next_reset_at')
       ->whereNotNull('plan_id')
@@ -270,11 +238,10 @@ class ResetTraffic extends Command
           ->orWhereNull('expired_at');
       })
       ->where('banned', 0)
-      ->with('plan:id,name,reset_traffic_method')
-      ->get();
+      ->with('plan:id,name,reset_traffic_method');
   }
 
-  private function getAllUsers()
+  private function getAllUsersQuery(): \Illuminate\Database\Eloquent\Builder
   {
     return User::whereNotNull('plan_id')
       ->where(function ($query) {
@@ -282,8 +249,7 @@ class ResetTraffic extends Command
           ->orWhereNull('expired_at');
       })
       ->where('banned', 0)
-      ->with('plan:id,name,reset_traffic_method')
-      ->get();
+      ->with('plan:id,name,reset_traffic_method');
   }
 
 }

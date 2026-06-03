@@ -159,7 +159,7 @@
     "advance_cycle.invalid_expiration": "当前订阅没有可扣减的有效期",
     "advance_cycle.unsupported_reset_method": "当前套餐的重置方式暂不支持提前重置流量",
     "advance_cycle.no_traffic_quota": "当前套餐没有可重置的流量额度",
-    "advance_cycle.traffic_not_exhausted": "当前流量尚未用完，无需提前重置流量",
+    "advance_cycle.traffic_not_exhausted": "当前流量使用率未达到提前重置阈值，暂无需提前重置",
     "advance_cycle.insufficient_remaining_days": "剩余有效期不足 30 天，无法提前重置流量",
     "advance_cycle.regular_reset_due": "当前周期已到自然重置时间，请刷新后查看"
 }

@@ -466,9 +466,19 @@ return new class extends Migration {
 
     /**
      * Reverse the migrations.
+     *
+     * 这个 down() 会把全部业务核心表 DROP，等同清空整个站。
+     * 之前没有任何防护，admin 一旦误触 migrate:rollback 就直接没了。
+     * 必须显式设置 ALLOW_DESTRUCTIVE_ROLLBACK=true 才允许真正执行。
      */
     public function down(): void
     {
+        if (env('ALLOW_DESTRUCTIVE_ROLLBACK') !== 'true') {
+            throw new \RuntimeException(
+                'Refusing to drop core v2_* tables — this will WIPE all business data. '
+                . 'If you really mean it, set ALLOW_DESTRUCTIVE_ROLLBACK=true in .env first.'
+            );
+        }
         Schema::dropIfExists('v2_commission_log');
         Schema::dropIfExists('v2_plan');
         Schema::dropIfExists('v2_user');

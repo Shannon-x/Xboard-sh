@@ -107,13 +107,30 @@ class AdvanceCycleService
                 ]);
             });
         } catch (\Throwable $e) {
+            // 完整 trace 仍落 laravel.log，便于 SSH 上去事后排查
             Log::error('advance_cycle.failed', [
                 'user_id' => $user->id,
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
 
-            return $this->ineligible('server_error', __('advance_cycle.failed'));
+            // 把异常的 class + message + file:line 透传给前端 ApiError.payload.debug。
+            // 前端 PageClient.tsx 的 catch 块已经在等这个字段，dev 环境下 F12 会把它打到 console，
+            // 用户/运维不用 SSH 也能立刻看到「具体是哪条 SQL / 哪个 hook / 哪一行 throw 了」。
+            //
+            // 之所以这些字段在生产也透出：
+            //   - class name + 文件路径 + 行号不算秘密，跟 stack-trace-as-a-service 一致
+            //   - error message 本身通常是 PDOException / RuntimeException 的简短文本
+            //   - trace 不透（trace 太长且可能包含参数值），仅 log 留底
+            //   - 极端场景下 message 里可能带敏感片段（如 SQL with 真实邮箱），调用方可在前端
+            //     脱敏渲染；至少 F12 能立刻定位是哪一行 throw，比 "server_error" 强得多
+            return $this->ineligible('server_error', __('advance_cycle.failed'), [
+                'debug' => [
+                    'class' => get_class($e),
+                    'message' => $e->getMessage(),
+                    'at' => basename($e->getFile()) . ':' . $e->getLine(),
+                ],
+            ]);
         }
     }
 
@@ -216,14 +233,14 @@ class AdvanceCycleService
         return min(time() + self::CONSUME_SECONDS, $newExpiredAt);
     }
 
-    private function ineligible(string $reason, string $message): array
+    private function ineligible(string $reason, string $message, array $extra = []): array
     {
-        return [
+        return array_merge([
             'eligible' => false,
             'advanced' => false,
             'reason' => $reason,
             'message' => $message,
-        ];
+        ], $extra);
     }
 
     private function clearUserCache(User $user): void

@@ -331,7 +331,11 @@ class OrderService
             return;
         }
 
-        $orderAmountSum = (int) $orders->sum(fn(Order $item) => max(0, (int) (($item->total_amount ?? 0) + ($item->balance_amount ?? 0) + ($item->surplus_amount ?? 0) - ($item->refund_amount ?? 0))));
+        // surplus_amount 已在 applySurplusDiscount() 被封顶到订单价，超出部分作为 refund_amount
+        // 单独退回余额（open() 内 user.balance += refund_amount）。因此 total+balance+surplus 已
+        // 精确等于"消耗进该套餐的金额"，不能再减 refund_amount——否则退款被双扣（既进余额又从套餐
+        // 折抵基数抹掉），客户每次"折抵超价退款"的套餐变更都会损失一笔=refund_amount 的钱。
+        $orderAmountSum = (int) $orders->sum(fn(Order $item) => max(0, (int) (($item->total_amount ?? 0) + ($item->balance_amount ?? 0) + ($item->surplus_amount ?? 0))));
         $orderMonthSum = (int) $orders->sum(fn(Order $item) => self::STR_TO_TIME[PlanService::getPeriodKey((string) $item->period)] ?? 0);
         if ($orderAmountSum <= 0 || $orderMonthSum <= 0) {
             $order->surplus_amount = 0;

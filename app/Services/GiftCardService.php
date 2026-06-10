@@ -106,6 +106,18 @@ class GiftCardService
         }
 
         return DB::transaction(function () use ($options) {
+            // 模板级行锁必须最先获取：max_use_per_user / cooldown_hours 是「跨该模板所有兑换码」
+            // 统计的（checkUsageLimit 查的是 GiftCardUsage 全表），仅锁单张码行无法串行化
+            // 「同一用户并发兑换同模板的不同码」。最先加该锁还能让本事务的一致性读快照在
+            // 并发对手提交后才建立（lockForUpdate 是加锁读，不设快照；其后第一条普通读才设），
+            // 从而 checkUsageLimit 能读到对方刚写入的 usage，杜绝击穿人均上限。
+            //
+            // ⚠️ 不变量：本行必须是事务内的第一条 DB 语句，且其前不得有任何「非加锁读」
+            //    （普通 SELECT / Model::refresh / first()）。InnoDB REPEATABLE READ 下快照由
+            //    第一条非加锁读建立；若有非加锁读抢在本锁之前执行，快照会在对手提交前形成，
+            //    count() 将漏看并发 usage，人均上限绕过会无声复活。改动此处务必保持该顺序。
+            GiftCardTemplate::where('id', $this->template->id)->lockForUpdate()->first();
+
             // 行锁 + 重新校验：构造函数读出的 $this->code 可能在并发兑换中已变更
             $locked = GiftCardCode::where('id', $this->code->id)
                 ->lockForUpdate()

@@ -5,6 +5,7 @@ namespace Plugin\Btcpay;
 use App\Services\Plugin\AbstractPlugin;
 use App\Contracts\PaymentInterface;
 use App\Exceptions\ApiException;
+use App\Support\PaymentGuard;
 
 class Plugin extends AbstractPlugin implements PaymentInterface
 {
@@ -99,12 +100,41 @@ class Plugin extends AbstractPlugin implements PaymentInterface
             )
         ));
 
-        $invoiceDetail = file_get_contents($this->getConfig('btcpay_url') . 'api/v1/stores/' . $this->getConfig('btcpay_storeId') . '/invoices/' . $json_param['invoiceId'], false, $context);
-        $invoiceDetail = json_decode($invoiceDetail, true);
+        $invoiceRaw = @file_get_contents($this->getConfig('btcpay_url') . 'api/v1/stores/' . $this->getConfig('btcpay_storeId') . '/invoices/' . $json_param['invoiceId'], false, $context);
+        $invoiceDetail = json_decode((string) $invoiceRaw, true);
 
-        $out_trade_no = $invoiceDetail['metadata']["orderId"];
-        $pay_trade_no = $json_param['invoiceId'];
-        
+        // 回查失败（网络/鉴权）时不开通订单：抛错让 BTCPay 重投，真正结算的 webhook 会再来。
+        if (!is_array($invoiceDetail)) {
+            throw new ApiException('Unable to fetch BTCPay invoice', 400);
+        }
+
+        $out_trade_no = $invoiceDetail['metadata']["orderId"] ?? null;
+        $pay_trade_no = $json_param['invoiceId'] ?? null;
+
+        // BTCPay 对 InvoiceCreated / ReceivedPayment / Processing / Expired / Invalid / Settled
+        // 全部投递合法签名 webhook。只有发票真正结清才可开通：
+        //   Greenfield 状态 = Settled；旧版/部分配置 = Complete / Confirmed / Paid。
+        // 未结清的事件验签通过但不开通——返回 acknowledge 让 PaymentController 回 200，避免重投风暴。
+        $status = strtolower((string) ($invoiceDetail['status'] ?? ''));
+        $settled = in_array($status, ['settled', 'complete', 'confirmed', 'paid'], true);
+        if (!$settled || !$out_trade_no) {
+            return [
+                'acknowledge' => true,
+                'custom_result' => 'success',
+            ];
+        }
+
+        // 金额绑定（受 payment_amount_check 控制，默认 warn 仅观测）。
+        // pay() 中以 CNY 设定 amount，发票 amount 即为元。
+        $mode = PaymentGuard::amountMode();
+        if ($mode !== 'off') {
+            $amount = $invoiceDetail['amount'] ?? null;
+            $actualMinor = $amount !== null ? (int) round(((float) $amount) * 100) : null;
+            if (!PaymentGuard::ensureAmount('BTCPay', $out_trade_no, $actualMinor, $mode)) {
+                throw new ApiException('Payment amount mismatch', 400);
+            }
+        }
+
         return [
             'trade_no' => $out_trade_no,
             'callback_no' => $pay_trade_no

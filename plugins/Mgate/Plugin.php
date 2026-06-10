@@ -5,6 +5,7 @@ namespace Plugin\Mgate;
 use App\Services\Plugin\AbstractPlugin;
 use App\Contracts\PaymentInterface;
 use App\Exceptions\ApiException;
+use App\Support\PaymentGuard;
 use Curl\Curl;
 
 class Plugin extends AbstractPlugin implements PaymentInterface
@@ -114,6 +115,27 @@ class Plugin extends AbstractPlugin implements PaymentInterface
 
         if ($sign !== md5($str)) {
             return false;
+        }
+
+        // 验签只证明回调来自 MGate；绑定金额与 app_id，防止低额支付 / 跨商户回调
+        // 开通高价订单（受 payment_amount_check 控制，默认 warn 仅观测）。
+        $mode = PaymentGuard::amountMode();
+        if ($mode !== 'off') {
+            if (!PaymentGuard::ensureMerchant(
+                'MGate',
+                'app_id',
+                isset($params['app_id']) ? (string) $params['app_id'] : null,
+                (string) $this->getConfig('mgate_app_id'),
+                $mode
+            )) {
+                return false;
+            }
+            // pay() 提交的 total_amount 单位为分，回调原样回传，按分比较
+            $total = $params['total_amount'] ?? null;
+            $actualMinor = $total !== null ? (int) round((float) $total) : null;
+            if (!PaymentGuard::ensureAmount('MGate', $params['out_trade_no'] ?? null, $actualMinor, $mode)) {
+                return false;
+            }
         }
 
         return [

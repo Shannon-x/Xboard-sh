@@ -5,6 +5,7 @@ namespace Plugin\AlipayF2f;
 use App\Services\Plugin\AbstractPlugin;
 use App\Contracts\PaymentInterface;
 use App\Exceptions\ApiException;
+use App\Support\PaymentGuard;
 use Illuminate\Support\Facades\Log;
 use Plugin\AlipayF2f\library\AlipayF2F;
 
@@ -91,6 +92,28 @@ class Plugin extends AbstractPlugin implements PaymentInterface
 
         try {
             if ($gateway->verify($params)) {
+                // 验签只证明回调来自支付宝；还需绑定金额与商户，防止用 0.01 当面付
+                // 或另一商户账号的合法 TRADE_SUCCESS 开通高价订单（受 payment_amount_check 控制）。
+                $mode = PaymentGuard::amountMode();
+                if ($mode !== 'off') {
+                    // app_id 绑定
+                    if (!PaymentGuard::ensureMerchant(
+                        'AlipayF2F',
+                        'app_id',
+                        isset($params['app_id']) ? (string) $params['app_id'] : null,
+                        (string) $this->getConfig('app_id'),
+                        $mode
+                    )) {
+                        return false;
+                    }
+                    // 金额绑定：当面付回调 total_amount 单位为元
+                    $total = $params['total_amount'] ?? null;
+                    $actualMinor = $total !== null ? (int) round(((float) $total) * 100) : null;
+                    if (!PaymentGuard::ensureAmount('AlipayF2F', $params['out_trade_no'] ?? null, $actualMinor, $mode)) {
+                        return false;
+                    }
+                }
+
                 return [
                     'trade_no' => $params['out_trade_no'],
                     'callback_no' => $params['trade_no']

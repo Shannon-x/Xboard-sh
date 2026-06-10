@@ -72,6 +72,35 @@ class RouteServiceProvider extends ServiceProvider
                 Limit::perHour(20)->by('email_verify:ip:' . $request->ip()),
             ];
         });
+
+        // 价值型 bearer 接口（coupon / gift-card 的 check / redeem）：
+        // 仅靠登录态保护时，单账号可高速枚举兑换码 / 优惠码。这里按「用户 + IP」双维度限流，
+        // 阈值远高于正常使用，只拦截枚举类滥用。未取到用户时退化为 IP 维度（不会因 user 为空而漏限）。
+        $byUserOrIp = static function (Request $request, string $tag): string {
+            $uid = $request->user()?->id;
+            return $uid ? "{$tag}:user:{$uid}" : "{$tag}:ip:{$request->ip()}";
+        };
+
+        RateLimiter::for('coupon-check', function (Request $request) use ($byUserOrIp) {
+            return [
+                Limit::perMinute(20)->by($byUserOrIp($request, 'coupon_check')),
+                Limit::perMinute(60)->by('coupon_check:ip:' . $request->ip()),
+            ];
+        });
+
+        RateLimiter::for('gift-card-check', function (Request $request) use ($byUserOrIp) {
+            return [
+                Limit::perMinute(10)->by($byUserOrIp($request, 'giftcard_check')),
+                Limit::perMinute(30)->by('giftcard_check:ip:' . $request->ip()),
+            ];
+        });
+
+        RateLimiter::for('gift-card-redeem', function (Request $request) use ($byUserOrIp) {
+            return [
+                Limit::perMinute(5)->by($byUserOrIp($request, 'giftcard_redeem')),
+                Limit::perMinute(20)->by('giftcard_redeem:ip:' . $request->ip()),
+            ];
+        });
     }
 
     /**

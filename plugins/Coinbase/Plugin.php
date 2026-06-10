@@ -5,6 +5,7 @@ namespace Plugin\Coinbase;
 use App\Services\Plugin\AbstractPlugin;
 use App\Contracts\PaymentInterface;
 use App\Exceptions\ApiException;
+use App\Support\PaymentGuard;
 
 class Plugin extends AbstractPlugin implements PaymentInterface
 {
@@ -90,9 +91,34 @@ class Plugin extends AbstractPlugin implements PaymentInterface
             throw new ApiException('HMAC signature does not match', 400);
         }
 
-        $out_trade_no = $json_param['event']['data']['metadata']['outTradeNo'];
-        $pay_trade_no = $json_param['event']['id'];
-        
+        $event = $json_param['event'] ?? [];
+        $eventType = $event['type'] ?? '';
+        $out_trade_no = $event['data']['metadata']['outTradeNo'] ?? null;
+        $pay_trade_no = $event['id'] ?? null;
+
+        // Coinbase Commerce 在「创建收银页」瞬间就会投递一条合法签名的 charge:created，
+        // 此时尚未付款；charge:pending / charge:failed / charge:delayed 同理。
+        // 只有 charge:confirmed（首次确认）/ charge:resolved（人工解决欠/溢付）才代表已结算。
+        // 其余事件验签通过但不开通订单——返回 acknowledge 让 PaymentController 回 200，
+        // 避免 Coinbase 把本端点标记为投递失败而反复重投。
+        if (!in_array($eventType, ['charge:confirmed', 'charge:resolved'], true) || !$out_trade_no) {
+            return [
+                'acknowledge' => true,
+                'custom_result' => 'success',
+            ];
+        }
+
+        // 金额绑定（受 payment_amount_check 控制，默认 warn 仅观测）。
+        // 我们在 pay() 中以 CNY 设定 local_price，回调 pricing.local.amount 即为元。
+        $mode = PaymentGuard::amountMode();
+        if ($mode !== 'off') {
+            $local = $event['data']['pricing']['local']['amount'] ?? null;
+            $actualMinor = $local !== null ? (int) round(((float) $local) * 100) : null;
+            if (!PaymentGuard::ensureAmount('Coinbase', $out_trade_no, $actualMinor, $mode)) {
+                throw new ApiException('Payment amount mismatch', 400);
+            }
+        }
+
         return [
             'trade_no' => $out_trade_no,
             'callback_no' => $pay_trade_no

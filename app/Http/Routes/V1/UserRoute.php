@@ -64,10 +64,13 @@ class UserRoute
             // Server
             $router->get('/server/fetch', [ServerController::class, 'fetch']);
             // Coupon
-            $router->post('/coupon/check', [CouponController::class, 'check']);
+            $router->post('/coupon/check', [CouponController::class, 'check'])
+                ->middleware('throttle:coupon-check');
             // Gift Card
-            $router->post('/gift-card/check', [GiftCardController::class, 'check']);
-            $router->post('/gift-card/redeem', [GiftCardController::class, 'redeem']);
+            $router->post('/gift-card/check', [GiftCardController::class, 'check'])
+                ->middleware('throttle:gift-card-check');
+            $router->post('/gift-card/redeem', [GiftCardController::class, 'redeem'])
+                ->middleware('throttle:gift-card-redeem');
             $router->get('/gift-card/history', [GiftCardController::class, 'history']);
             $router->get('/gift-card/detail', [GiftCardController::class, 'detail']);
             $router->get('/gift-card/types', [GiftCardController::class, 'types']);

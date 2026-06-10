@@ -9,8 +9,9 @@ use Tests\TestCase;
 /**
  * 验证 FeatureFlag 读取行为。
  *
- * 当前仅保留两个 flag：
+ * 当前保留的 flag：
  *   - payment_amount_check : 默认 warn（仅观察、不拒收）
+ *   - payment_gateway_bind : 默认 warn（回调网关与订单 payment_id 绑定，仅观察、不拒收）
  *   - payment_secret_hide  : 默认 false（前端未配合前不能开启）
  *
  * paid() 行锁、OrderHandleJob 事务、签名 hash_equals 等纯修复已直接写死在代码中，
@@ -24,6 +25,14 @@ class FeatureFlagTest extends TestCase
         $this->assertTrue(FeatureFlag::is('payment_amount_check', 'warn'));
         $this->assertFalse(FeatureFlag::is('payment_amount_check', 'enforce'));
         $this->assertFalse(FeatureFlag::enabled('payment_amount_check'));
+    }
+
+    public function test_payment_gateway_bind_defaults_to_warn(): void
+    {
+        $this->assertSame('warn', FeatureFlag::mode('payment_gateway_bind'));
+        $this->assertTrue(FeatureFlag::is('payment_gateway_bind', 'warn'));
+        $this->assertFalse(FeatureFlag::is('payment_gateway_bind', 'enforce'));
+        $this->assertFalse(FeatureFlag::enabled('payment_gateway_bind'));
     }
 
     public function test_payment_secret_hide_defaults_to_old_behavior(): void

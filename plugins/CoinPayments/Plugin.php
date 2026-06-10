@@ -5,6 +5,7 @@ namespace Plugin\CoinPayments;
 use App\Services\Plugin\AbstractPlugin;
 use App\Contracts\PaymentInterface;
 use App\Exceptions\ApiException;
+use App\Support\PaymentGuard;
 
 class Plugin extends AbstractPlugin implements PaymentInterface
 {
@@ -98,6 +99,17 @@ class Plugin extends AbstractPlugin implements PaymentInterface
 
         $status = $params['status'];
         if ($status >= 100 || $status == 2) {
+            // 金额绑定（受 payment_amount_check 控制，默认 warn 仅观测）。
+            // amount1 = 以商户结算币种计的金额；pay() 中以 coinpayments_currency 提交 amountf。
+            $mode = PaymentGuard::amountMode();
+            if ($mode !== 'off') {
+                $amount1 = $params['amount1'] ?? null;
+                $actualMinor = $amount1 !== null ? (int) round(((float) $amount1) * 100) : null;
+                if (!PaymentGuard::ensureAmount('CoinPayments', $params['item_number'] ?? null, $actualMinor, $mode)) {
+                    throw new ApiException('Payment amount mismatch', 400);
+                }
+            }
+
             return [
                 'trade_no' => $params['item_number'],
                 'callback_no' => $params['txn_id'],

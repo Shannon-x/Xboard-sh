@@ -1,1 +1,0 @@
-import{L as e,P as t,p as n,u as r}from"./runtime-core.esm-bundler-BSF7N2Dj.js";import{E as i}from"./index-DAGWkefF.js";var a={class:`not-found`},o=i({__name:`NotFoundPage`,setup(i){return t(()=>{document.title=`404 Not Found`}),(t,i)=>(e(),n(`div`,a,[...i[0]||=[r(`h1`,null,`404 Not Found`,-1),r(`p`,null,`nginx`,-1)]]))}},[[`__scopeId`,`data-v-fb2e0a68`]]);export{o as default};

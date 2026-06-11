@@ -16,7 +16,8 @@ class Kernel extends ConsoleKernel
      * @var array
      */
     protected $commands = [
-        //
+        Commands\TestBTCPayConnection::class,
+        Commands\TestBTCPay::class,
     ];
 
     /**

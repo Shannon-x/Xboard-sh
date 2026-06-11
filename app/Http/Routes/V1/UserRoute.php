@@ -50,9 +50,16 @@ class UserRoute
             // Plan
             $router->get('/plan/fetch', [PlanController::class, 'fetch']);
             // Invite
-            $router->get('/invite/save', [InviteController::class, 'save']);
+            // GET save 保留给老前端（无参随机码）；POST save 支持自定义 code；同方法双路由
+            $router->get('/invite/save', [InviteController::class, 'save'])
+                ->middleware('throttle:invite-save');
+            $router->post('/invite/save', [InviteController::class, 'save'])
+                ->middleware('throttle:invite-save');
+            $router->post('/invite/delete', [InviteController::class, 'delete'])
+                ->middleware('throttle:invite-delete');
             $router->get('/invite/fetch', [InviteController::class, 'fetch']);
             $router->get('/invite/details', [InviteController::class, 'details']);
+            $router->get('/invite/users', [InviteController::class, 'users']);
             // Notice
             $router->get('/notice/fetch', [NoticeController::class, 'fetch']);
             // Ticket

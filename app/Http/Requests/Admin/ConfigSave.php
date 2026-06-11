@@ -12,6 +12,7 @@ class ConfigSave extends FormRequest
         'invite_force' => '',
         'invite_commission' => 'integer|nullable|min:0|max:100',
         'invite_gen_limit' => 'integer|nullable',
+        'invite_custom_code_enable' => '',
         'invite_never_expire' => '',
         'commission_first_time_enable' => '',
         'commission_auto_check_enable' => '',

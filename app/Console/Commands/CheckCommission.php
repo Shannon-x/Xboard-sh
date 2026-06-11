@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\CommissionLog;
+use App\Services\Plugin\HookManager;
 use Illuminate\Console\Command;
 use App\Models\Order;
 use App\Models\User;
@@ -85,13 +86,23 @@ class CheckCommission extends Command
                             // 都能反复触发佣金发放。CommissionLog 已经有 uniq_commission_trade_inviter
                             // 唯一索引兜底（2026_05_29 迁移），但唯一索引只挡同 (trade_no, invite_user_id)
                             // 重复发，不挡"该订单本来就不该发佣"的情况。
+                            // 非法 / 不该发佣：跳过且不改状态
                             if (
                                 !$lockedOrder
                                 || (int) $lockedOrder->commission_status !== 1
                                 || (int) $lockedOrder->status !== Order::STATUS_COMPLETED
                                 || !$lockedOrder->invite_user_id
-                                || (int) ($lockedOrder->commission_balance ?? 0) <= 0
                             ) {
+                                return;
+                            }
+
+                            // 零佣订单（commission_rate=0 的用户、或被余额/折扣抵成 0 元仍保留邀请关系的单）：
+                            // 无佣可发，直接推进到终态，否则会永久卡在 commission_status=1 被每分钟反复扫描、
+                            // 随零佣订单累积而拖慢结算。commission_balance=0 的单不进 admin is_commission 视图，
+                            // 置 2 对后台统计透明。
+                            if ((int) ($lockedOrder->commission_balance ?? 0) <= 0) {
+                                $lockedOrder->commission_status = 2;
+                                $lockedOrder->save();
                                 return;
                             }
 
@@ -166,6 +177,27 @@ class CheckCommission extends Command
                 'order_amount' => $order->total_amount,
                 'get_amount' => $commissionBalance
             ]);
+            // 佣金到账事件：给插件留扩展点（Telegram/邮件通知等）。
+            // 必须吞掉 hook 异常：本方法在结算事务内执行，插件抛错会回滚整笔结算并卡单。
+            try {
+                HookManager::call('commission.paid', [
+                    'invite_user_id' => $inviter->id,
+                    'user_id' => $order->user_id,
+                    'trade_no' => $order->trade_no,
+                    'get_amount' => $commissionBalance,
+                    'level' => $l + 1,
+                ]);
+            } catch (\Throwable $e) {
+                // 本段在结算事务内：Log::warning 若因日志通道故障再抛，会回滚整笔结算并卡单。
+                // 套一层吞掉，hook 失败绝不能影响佣金落账。
+                try {
+                    Log::warning('commission.paid hook failed', [
+                        'trade_no' => $order->trade_no,
+                        'msg' => $e->getMessage(),
+                    ]);
+                } catch (\Throwable $ignored) {
+                }
+            }
             // update order actual commission balance
             $order->actual_commission_balance = (int) ($order->actual_commission_balance ?? 0) + $commissionBalance;
 

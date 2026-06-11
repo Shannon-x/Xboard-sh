@@ -39,8 +39,10 @@ class PaymentMetrics
             Redis::hincrby($bucket, '_total', 1);
             Redis::expire($bucket, self::TTL_SECONDS);
         } catch (\Throwable $e) {
-            // metrics 不能影响业务；仅记一次结构化日志便于排查
-            Log::warning('PaymentMetrics.inc failed', [
+            // metrics 不能影响业务；仅记一次结构化日志便于排查。
+            // safeLog 而非裸 Log：Redis 与日志同机故障时，裸 Log::warning 的二次抛出
+            // 会逃出本 catch，使「吞掉一切 Redis 故障」的设计失效。
+            self::safeLog('PaymentMetrics.inc failed', [
                 'event' => $event,
                 'error' => $e->getMessage(),
             ]);
@@ -50,11 +52,17 @@ class PaymentMetrics
     /**
      * 同时打 metrics + 结构化日志（warn 级别）。
      * 适合"灰度 warn 模式"下的可疑事件 — 既能计数也能查到上下文。
+     *
+     * ⚠️ Log::warning 必须包在 try/catch 内：本方法被支付回调链路（PaymentGuard、
+     *    各网关 notify、PaymentController::handle）在 warn 模式下调用，一旦日志通道
+     *    硬故障（磁盘满 / laravel.log 属主变 root / 只读文件系统）抛 UnexpectedValueException，
+     *    异常会冒泡成 500/422 把「本应放行的合法回调」拒收掉，直接违反类头第 14 行
+     *    「失败必须不影响业务路径」的契约。metrics/日志全部失败也只能静默吞。
      */
     public static function warn(string $event, array $context = []): void
     {
         self::inc($event);
-        Log::warning("payment.{$event}", $context);
+        self::safeLog("payment.{$event}", $context);
     }
 
     /** 读最近 N 小时某事件的累计值（用于本地 dashboard 或快速排查）。 */
@@ -70,13 +78,27 @@ class PaymentMetrics
                 $out[$hour] = (int) ($total ?? 0);
             }
         } catch (\Throwable $e) {
-            Log::warning('PaymentMetrics.readRecent failed', [
+            self::safeLog('PaymentMetrics.readRecent failed', [
                 'event' => $event,
                 'error' => $e->getMessage(),
             ]);
         }
 
         return $out;
+    }
+
+    /**
+     * 写一条 warning 日志，且永不向外抛异常。
+     * 支付回调链路在 warn 模式下高频调用本类，日志通道硬故障（磁盘满 / 文件属主错 /
+     * 只读 fs）绝不能把合法回调拖成 500。日志都写不了时只能静默丢弃。
+     */
+    private static function safeLog(string $message, array $context = []): void
+    {
+        try {
+            Log::warning($message, $context);
+        } catch (\Throwable $e) {
+            // 无处可记，放弃。
+        }
     }
 
     private static function flattenLabels(array $labels): string

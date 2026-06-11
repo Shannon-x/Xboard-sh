@@ -118,7 +118,14 @@ class Plugin extends AbstractPlugin implements PaymentInterface
         } else if ($status < 0) {
             throw new ApiException('Payment Timed Out or Error');
         } else {
-            return 'IPN OK: pending';
+            // pending（status 0..99，尚未结算）：已验签但不开单。返回 acknowledge 让
+            // PaymentController 回 200。绝不能返回裸字符串——controller 会把它当成
+            // $verify['trade_no'] 数组解引用，PHP8 下抛 TypeError（属 \Error，
+            // 旧 catch(\Exception) 兜不住）→ 500，且 CoinPayments 会无限重投 pending IPN。
+            return [
+                'acknowledge' => true,
+                'custom_result' => 'IPN OK',
+            ];
         }
     }
 } 

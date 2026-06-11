@@ -144,15 +144,21 @@ class Plugin extends AbstractPlugin implements PaymentInterface
             return true;
         }
 
-        // EPay 的 money 单位为元，本地 total_amount 单位为分
-        $expectedYuan = bcdiv((string) $order->total_amount, '100', 2);
-        $actualYuan = number_format((float) $money, 2, '.', '');
-        if (bccomp($expectedYuan, $actualYuan, 2) !== 0) {
+        // EPay 的 money 单位为元；本地 total_amount/handling_amount 单位为分。
+        // 应付额 = total_amount + handling_amount：checkout 向网关发起的就是这个合计
+        // （OrderController::checkout），回调 money 也含手续费。与 PaymentGuard 口径完全一致：
+        //   - 用合计作为期望值，避免把「足额含手续费」误判为不一致；
+        //   - 只拦「欠额」（实付 < 应付），不拦溢付——溢付不是攻击方向。
+        // 原实现用 bccomp(...) !== 0 严格相等 + base-only，对任何有手续费的订单都会误报，
+        // warn 下污染 webhook.amount_mismatch 指标、enforce 下直接拒收足额订单。
+        $expectedMinor = (int) $order->total_amount + (int) ($order->handling_amount ?? 0);
+        $actualMinor = (int) round((float) $money * 100);
+        if ($actualMinor < $expectedMinor) {
             PaymentMetrics::warn('webhook.amount_mismatch', [
                 'gateway' => 'EPay',
                 'out_trade_no' => $tradeNo,
-                'expected' => $expectedYuan,
-                'actual' => $actualYuan,
+                'expected' => $expectedMinor,
+                'actual' => $actualMinor,
             ]);
             if ($mode === 'enforce') {
                 return false;

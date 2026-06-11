@@ -226,6 +226,11 @@ class GiftCardService
         if (!$this->user->invite_user_id) {
             return null;
         }
+        // 自指防护：脏数据把 invite_user_id 指向自己时，礼品卡邀请奖励会变成
+        // 自我加成（即时发放、无确认期，与订单佣金的 setInvite/payHandle 防线平行）
+        if ((int) $this->user->invite_user_id === (int) $this->user->id) {
+            return null;
+        }
 
         $inviteUser = User::find($this->user->invite_user_id);
         if (!$inviteUser) {

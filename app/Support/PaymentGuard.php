@@ -59,7 +59,10 @@ class PaymentGuard
             return true;
         }
 
-        $expected = (int) $order->total_amount;
+        // 应付额 = total_amount + handling_amount。结账时实际向网关发起的就是这个合计
+        // （OrderController::checkout：total_amount + handling_amount），网关回传的实付额也含手续费，
+        // 因此用合计作为期望值：既不会把「足额含手续费」误判为欠额，也能拦住「只付 total、漏付手续费」。
+        $expected = (int) $order->total_amount + (int) ($order->handling_amount ?? 0);
         $actual = (int) round((float) $actualMinor);
 
         if ($actual < $expected) {

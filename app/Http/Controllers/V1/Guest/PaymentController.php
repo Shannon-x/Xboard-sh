@@ -25,18 +25,30 @@ class PaymentController extends Controller
                 HookManager::call('payment.notify.failed', [$method, $uuid, $request]);
                 return $this->fail([422, 'verify error']);
             }
-            // 已验签但非「可结算」事件（如 Coinbase charge:created、BTCPay 未结清发票）：
-            // 网关插件返回 ['acknowledge' => true]，此处回 200 让网关停止重投，但不开通订单。
-            if (is_array($verify) && !empty($verify['acknowledge'])) {
+            // 兼容历史插件：notify() 返回非数组真值（老版直接 return 'IPN OK' 之类字符串）时，
+            // 视为「已确认、无需开单」回 200。绝不能往下走 $verify['trade_no']——对字符串做
+            // 字符串下标解引用在 PHP8 下抛 TypeError。
+            if (!is_array($verify)) {
+                return is_string($verify) ? $verify : 'success';
+            }
+            // 已验签但非「可结算」事件（如 Coinbase charge:created、BTCPay 未结清发票、
+            // CoinPayments pending）：插件返回 ['acknowledge' => true]，回 200 让网关停止重投，不开单。
+            if (!empty($verify['acknowledge'])) {
                 return $verify['custom_result'] ?? 'success';
             }
             HookManager::call('payment.notify.verified', $verify);
-            if (!$this->handle($verify['trade_no'], $verify['callback_no'], $uuid)) {
+            if (!$this->handle($verify['trade_no'] ?? null, $verify['callback_no'] ?? null, $uuid)) {
                 return $this->fail([400, 'handle error']);
             }
             return (isset($verify['custom_result']) ? $verify['custom_result'] : 'success');
-        } catch (\Exception $e) {
-            Log::error($e);
+        } catch (\Throwable $e) {
+            // \Throwable 而非 \Exception：插件里的 TypeError / class-not-found 等属 \Error，
+            // 旧 catch(\Exception) 兜不住会直接 500 且逃逸。Log::error 本身也可能因日志通道
+            // 故障再抛，套一层吞掉，保证至少能回受控的 fail 响应让网关重投。
+            try {
+                Log::error($e);
+            } catch (\Throwable $ignored) {
+            }
             return $this->fail([500, 'fail']);
         }
     }

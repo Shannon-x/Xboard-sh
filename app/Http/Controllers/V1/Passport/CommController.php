@@ -66,11 +66,14 @@ class CommController extends Controller
 
     public function pv(Request $request)
     {
-        $inviteCode = InviteCode::where('code', $request->input('invite_code'))->first();
-        if ($inviteCode) {
-            $inviteCode->pv = $inviteCode->pv + 1;
-            $inviteCode->save();
-        }
+        // 仅对活跃码（status=0）累加 pv：
+        //   1) 与注册消费、fetch 展示口径一致（都只认 status=0）；
+        //   2) 规避对 status=2 墓碑行做 model save —— InviteCode.status 有 boolean cast，
+        //      整模型 save 会把 raw 2 写回 1，破坏「重建同名码恢复」依赖的 getRawOriginal('status')===2。
+        //      用条件 increment（不走 model 的 status cast）双重保险，绝不触碰 status 列。
+        InviteCode::where('code', $request->input('invite_code'))
+            ->where('status', InviteCode::STATUS_UNUSED)
+            ->increment('pv');
 
         return $this->success(true);
     }

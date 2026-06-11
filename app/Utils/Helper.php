@@ -126,6 +126,37 @@ class Helper
         }
     }
 
+    /**
+     * 邮箱脱敏：ab****@e****.com。
+     * 用于把被邀请人邮箱展示给邀请人（aff 明细）这类「同站用户互看」场景，
+     * 保留极弱辨识度但尽量降低撞库/社工价值：
+     *   - local：固定最多保留前 1-2 位（短账号只留 1 位），其余 ****；
+     *   - domain：也部分脱敏——只露主域首字母 + 顶级后缀（e****.com / s****.edu.cn），
+     *     避免把被邀请人所属机构/邮箱服务商完整暴露给邀请人。
+     */
+    public static function maskEmail(?string $email): string
+    {
+        if ($email === null || $email === '' || !str_contains($email, '@')) {
+            return '****';
+        }
+        [$local, $domain] = explode('@', $email, 2);
+
+        $localKeep = mb_strlen($local) <= 2 ? 1 : 2;
+        $maskedLocal = mb_substr($local, 0, $localKeep) . '****';
+
+        // 域名：保留最后一段（com / cn / edu.cn 视为后缀）之外的主域只露首字母
+        $parts = explode('.', $domain);
+        if (count($parts) >= 2) {
+            $host = $parts[0];
+            $suffix = implode('.', array_slice($parts, 1));
+            $maskedDomain = mb_substr($host, 0, 1) . '****.' . $suffix;
+        } else {
+            $maskedDomain = mb_substr($domain, 0, 1) . '****';
+        }
+
+        return $maskedLocal . '@' . $maskedDomain;
+    }
+
     public static function multiPasswordVerify($algo, $salt, $password, $hash)
     {
         // 所有 legacy hash 比对统一走 hash_equals，避免 === 的字符串短路造成可观测的时序差异。

@@ -101,6 +101,22 @@ class RouteServiceProvider extends ServiceProvider
                 Limit::perMinute(20)->by('giftcard_redeem:ip:' . $request->ip()),
             ];
         });
+
+        // 邀请码写操作：自定义码开放后，无限流的 save 可被脚本批量抢注品牌词 /
+        // 通过「already taken」报错枚举他站用户的自定义码。阈值远高于手动操作频率。
+        RateLimiter::for('invite-save', function (Request $request) use ($byUserOrIp) {
+            return [
+                Limit::perMinute(10)->by($byUserOrIp($request, 'invite_save')),
+                Limit::perMinute(30)->by('invite_save:ip:' . $request->ip()),
+            ];
+        });
+
+        RateLimiter::for('invite-delete', function (Request $request) use ($byUserOrIp) {
+            return [
+                Limit::perMinute(10)->by($byUserOrIp($request, 'invite_delete')),
+                Limit::perMinute(30)->by('invite_delete:ip:' . $request->ip()),
+            ];
+        });
     }
 
     /**

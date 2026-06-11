@@ -108,6 +108,15 @@ class Plugin extends AbstractPlugin implements PaymentInterface
             throw new ApiException('Unable to fetch BTCPay invoice', 400);
         }
 
+        // Greenfield 正常发票必然带 status 字段；缺 status 说明回查命中的是错误响应体
+        // （API key 缺 canviewinvoices 权限的 403、storeId 错的 404 等同样是 JSON 数组）。
+        // 此时绝不能走下面的 acknowledge 分支——那会回 200 让 BTCPay 标记「已投递」永不重投，
+        // 把一个「付了全款但配置/鉴权暂时出错」的订单静默卡死且无任何观测。
+        // 按回查失败抛错，触发 BTCPay 自动重投，待运维修好权限/配置后自愈。
+        if (!array_key_exists('status', $invoiceDetail)) {
+            throw new ApiException('BTCPay invoice lookup returned no status (auth/config error?)', 400);
+        }
+
         $out_trade_no = $invoiceDetail['metadata']["orderId"] ?? null;
         $pay_trade_no = $json_param['invoiceId'] ?? null;
 

@@ -161,5 +161,11 @@
     "advance_cycle.no_traffic_quota": "This plan has no traffic quota to reset",
     "advance_cycle.traffic_not_exhausted": "Traffic usage has not reached the early-reset threshold yet",
     "advance_cycle.insufficient_remaining_days": "Less than 30 days remain, so early traffic reset is unavailable",
-    "advance_cycle.regular_reset_due": "This cycle is already due for normal reset, please refresh and check again"
+    "advance_cycle.regular_reset_due": "This cycle is already due for normal reset, please refresh and check again",
+    "Custom invite codes are not enabled": "Custom invite codes are not enabled",
+    "Invite code must be 4-20 characters": "Invite code must be 4-20 characters",
+    "Invite code may only contain letters, numbers, hyphens and underscores, and must start with a letter or number": "Invite code may only contain letters, numbers, hyphens and underscores, and must start with a letter or number",
+    "This invite code is reserved": "This invite code is reserved",
+    "This invite code is already taken": "This invite code is already taken",
+    "Please try again": "Please try again"
 }

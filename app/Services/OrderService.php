@@ -242,6 +242,10 @@ class OrderService
 
         if (!$isCommission)
             return;
+        // 保持原 truthy 语义（commission_rate 为 0/null 都回落全局默认）：
+        // XBoard-admin 用户编辑页「清空比例 = 跟随站点默认」实际会下发 0（el-input 清空→Number('')=0），
+        // 若改成 `!== null` 把 0 当惩罚性归零，会让 admin 的「清空=跟随默认」静默变成「该用户零返佣」，
+        // 破坏既有 admin 前端契约。惩罚性归零本就从未生效，无人依赖，故维持 `?:` 不动。
         $commissionRate = $inviter->commission_rate ?: admin_setting('invite_commission', 10);
         $commissionRate = max(0, min(100, (float) $commissionRate));
         // total_amount 已经是被折扣/余额抵扣后的最终金额，乘比例可能为 0（合法 → 不发佣金）

@@ -100,6 +100,7 @@ class ConfigController extends Controller
                 'invite_force' => (bool) admin_setting('invite_force', 0),
                 'invite_commission' => admin_setting('invite_commission', 10),
                 'invite_gen_limit' => admin_setting('invite_gen_limit', 5),
+                'invite_custom_code_enable' => (bool) admin_setting('invite_custom_code_enable', 1),
                 'invite_never_expire' => (bool) admin_setting('invite_never_expire', 0),
                 'commission_first_time_enable' => (bool) admin_setting('commission_first_time_enable', 1),
                 'commission_auto_check_enable' => (bool) admin_setting('commission_auto_check_enable', 1),

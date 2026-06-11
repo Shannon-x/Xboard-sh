@@ -161,5 +161,11 @@
     "advance_cycle.no_traffic_quota": "當前套餐沒有可重置的流量額度",
     "advance_cycle.traffic_not_exhausted": "當前流量使用率未達到提前重置閾值，暫無需提前重置",
     "advance_cycle.insufficient_remaining_days": "剩餘有效期不足 30 天，無法提前重置流量",
-    "advance_cycle.regular_reset_due": "當前週期已到自然重置時間，請刷新後查看"
+    "advance_cycle.regular_reset_due": "當前週期已到自然重置時間，請刷新後查看",
+    "Custom invite codes are not enabled": "自訂邀請碼功能未開啟",
+    "Invite code must be 4-20 characters": "邀請碼長度須為 4-20 位",
+    "Invite code may only contain letters, numbers, hyphens and underscores, and must start with a letter or number": "邀請碼僅可包含字母、數字、連字號和底線，且必須以字母或數字開頭",
+    "This invite code is reserved": "該邀請碼為系統保留字，不可使用",
+    "This invite code is already taken": "該邀請碼已被佔用",
+    "Please try again": "請重試"
 }

@@ -135,6 +135,31 @@ class ConfigSave extends FormRequest
         return self::RULES;
     }
 
+    /**
+     * 入参归一化：把「规则要求字符串、但前端常以 JSON 数字下发」的字段统一转成字符串，
+     * 避免 validation.string 误拒。
+     *
+     * 典型：XBoard-admin 的邮件设置把端口写成 email_port: Number(emailPort)，
+     * 587（JSON number）撞 `nullable|string|max:16` 直接保存失败。后端归一化比要求各前端
+     * 都改成字符串更前向兼容（多前端共存）。
+     */
+    protected function prepareForValidation(): void
+    {
+        $stringifyIfScalar = ['email_port'];
+        $patch = [];
+        foreach ($stringifyIfScalar as $key) {
+            if ($this->has($key)) {
+                $value = $this->input($key);
+                if (is_int($value) || is_float($value)) {
+                    $patch[$key] = (string) $value;
+                }
+            }
+        }
+        if ($patch) {
+            $this->merge($patch);
+        }
+    }
+
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator) {

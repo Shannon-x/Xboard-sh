@@ -273,19 +273,28 @@ class Helper
     
     public static function getTlsFingerprint($utls = null)
     {
-
-        if (is_array($utls) || is_object($utls)) {
+        // Only roll a real client fingerprint when uTLS is explicitly enabled.
+        // Returning a random value for unset/disabled input caused VLESS Reality
+        // subscriptions to ship a different fp= on every refresh, which broke
+        // Reality handshakes whenever the roll picked an upstream-incompatible
+        // profile (firefox/safari/ios/qq against chrome-strict dests).
+        if (is_string($utls) && $utls !== '') {
+            $fingerprint = $utls;
+        } elseif (is_array($utls) || is_object($utls)) {
             if (!data_get($utls, 'enabled')) {
                 return null;
             }
             $fingerprint = data_get($utls, 'fingerprint', 'chrome');
-            if ($fingerprint !== 'random') {
-                return $fingerprint;
-            }
+        } else {
+            return null;
         }
 
-        $fingerprints = ['chrome', 'firefox', 'safari', 'ios', 'edge', 'qq'];
-        return Arr::random($fingerprints);
+        if ($fingerprint === 'random') {
+            $fingerprints = ['chrome', 'firefox', 'safari', 'ios', 'edge'];
+            return Arr::random($fingerprints);
+        }
+
+        return $fingerprint;
     }
 
     public static function encodeURIComponent($str) {

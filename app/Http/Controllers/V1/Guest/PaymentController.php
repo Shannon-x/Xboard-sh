@@ -59,8 +59,12 @@ class PaymentController extends Controller
         if (!$order) {
             return $this->fail([400202, 'order is not found']);
         }
-        if ($order->status !== Order::STATUS_PENDING)
-            return true;
+        // 迟到支付：订单已不是 PENDING（最常见是 PENDING 超 2 小时被 OrderHandleJob 自动取消后，
+        // 用户才在网关侧完成真实支付）。此前无条件 return true 静默 ACK——钱到账却不开通、不退款、
+        // 也没有任何日志。改为进入迟到支付处理：在严格安全条件下重新开通，否则转人工告警（不再静默）。
+        if ($order->status !== Order::STATUS_PENDING) {
+            return $this->handleLatePayment($order, $callbackNo, $uuid);
+        }
 
         // 回调网关必须与订单 checkout 时绑定的 payment_id 一致：
         // 防止已知某 PENDING 订单 trade_no（可枚举）后，用攻击者掌握的另一网关 uuid
@@ -91,6 +95,84 @@ class PaymentController extends Controller
         }
 
         HookManager::call('payment.notify.success', $order);
+        return true;
+    }
+
+    /**
+     * 迟到支付处理：订单已非 PENDING 时进入。
+     *
+     * - 开通中 / 已完成：真正的重复通知，幂等 ACK。
+     * - 已取消：多为超时自动取消后用户才真正付款。在严格安全前提下尝试重新开通
+     *   （见 OrderService::reopenFromCancelled 的安全闸门），不满足条件的转人工告警。
+     * - 其它状态：记录后 ACK。
+     *
+     * 所有分支都会 return true 向网关 ACK（回调签名已验过，是真实支付，无需网关重投），
+     * 但与旧实现的关键区别是：不再静默——每一种「无法自动开通」都有 error 日志 + 指标可追踪。
+     */
+    private function handleLatePayment(Order $order, $callbackNo, $uuid)
+    {
+        $status = (int) $order->status;
+
+        // 已在开通中或已完成：正常的重复回调，幂等确认。
+        if (in_array($status, [Order::STATUS_PROCESSING, Order::STATUS_COMPLETED], true)) {
+            return true;
+        }
+
+        // 非「已取消」的其它终态（如已折抵）：记录后 ACK，不自动处理。
+        if ($status !== Order::STATUS_CANCELLED) {
+            return $this->flagLatePaymentForReview($order, $callbackNo, 'unexpected_status:' . $status);
+        }
+
+        // 已取消订单收到真实支付。重开是敏感操作，这里**强制**校验回调网关与订单
+        // checkout 绑定的 payment_id 一致（不依赖全局 payment_gateway_bind 的 warn/enforce 开关）。
+        // 结合上游已完成的签名校验与 P0-1 的 method↔uuid 绑定，攻击者无法为他人订单伪造回调，
+        // 只能重开自己真实支付过的订单。payment_id 为空（历史/免费单）无法核验来源 → 转人工。
+        $payment = $uuid !== null ? Payment::where('uuid', $uuid)->first() : null;
+        if (
+            $order->payment_id === null
+            || !$payment
+            || (int) $order->payment_id !== (int) $payment->id
+        ) {
+            return $this->flagLatePaymentForReview($order, $callbackNo, 'gateway_mismatch');
+        }
+
+        $orderService = new OrderService($order);
+        $result = $orderService->reopenFromCancelled($callbackNo);
+
+        switch ($result) {
+            case 'reopened':
+                Log::info('[late-payment] 已取消订单收到真实支付，已在安全条件下重新开通', [
+                    'trade_no' => (string) $order->trade_no,
+                    'order_id' => (int) $order->id,
+                    'user_id' => (int) $order->user_id,
+                    'callback_no' => (string) $callbackNo,
+                ]);
+                PaymentMetrics::inc('order.late_paid.reopened');
+                HookManager::call('payment.notify.success', $orderService->order);
+                return true;
+            case 'duplicate':
+                return true;
+            default: // 'manual' | 'missing' | 'unexpected' | 'error'
+                return $this->flagLatePaymentForReview($order, $callbackNo, $result);
+        }
+    }
+
+    /**
+     * 标记迟到支付需人工处理：记录 error 日志 + 指标，供运营人工退款或手动开通。
+     * 仍向网关 ACK（return true）避免无意义重投，但已不再静默。
+     */
+    private function flagLatePaymentForReview(Order $order, $callbackNo, string $reason)
+    {
+        $context = [
+            'trade_no' => (string) $order->trade_no,
+            'order_id' => (int) $order->id,
+            'user_id' => (int) $order->user_id,
+            'status' => (int) $order->status,
+            'callback_no' => (string) $callbackNo,
+            'reason' => $reason,
+        ];
+        PaymentMetrics::warn('order.late_paid.manual_review', $context);
+        Log::error('[late-payment] 已取消/非常规状态订单收到真实支付，无法安全自动开通，需人工处理', $context);
         return true;
     }
 }

@@ -480,6 +480,100 @@ class OrderService
         return true;
     }
 
+    /**
+     * 已取消订单收到真实迟到支付后，在严格安全条件下重新开通。
+     *
+     * 只自动重开「干净」订单——cancel() 唯一会反向的操作是「退还 balance_amount」和
+     * 「恢复优惠券用量」，因此对没有余额抵扣、没有优惠券、没有套餐折抵/变更的订单，
+     * cancel() 实际上没有释放任何资源，重开与它完全对称，绝不会造成少扣款或优惠券二次使用。
+     * 其余订单一律返回 'manual' 交人工处理，避免制造不一致或漏洞。
+     *
+     * 安全性说明：本方法只在回调签名已由订单绑定网关验过之后（PaymentController::handle
+     * 上游）才会被调用，且调用前已强制校验回调网关 == 订单 payment_id，因此攻击者无法为
+     * 他人订单触发重开，只能重开自己真实支付过的订单。
+     *
+     * @return string 'reopened' | 'duplicate' | 'manual' | 'missing' | 'unexpected' | 'error'
+     */
+    public function reopenFromCancelled(string $callbackNo): string
+    {
+        $tradeNo = $this->order->trade_no;
+
+        try {
+            $action = DB::transaction(function () use ($tradeNo, $callbackNo) {
+                $locked = Order::where('trade_no', $tradeNo)->lockForUpdate()->first();
+                if (!$locked) {
+                    return 'missing';
+                }
+                // 幂等：并发回调 / 网关重投时若已被翻成开通中或已完成，视为重复通知。
+                if (in_array((int) $locked->status, [Order::STATUS_PROCESSING, Order::STATUS_COMPLETED], true)) {
+                    return 'duplicate';
+                }
+                // 只对「已取消」重开；其余状态不在本方法处理范围。
+                if ((int) $locked->status !== Order::STATUS_CANCELLED) {
+                    return 'unexpected';
+                }
+
+                // 安全闸门 A：只重开「干净」订单。
+                //   balance_amount：cancel() 已退回用户余额，重开需重新扣除，但余额可能已被花掉 → 人工。
+                //   coupon_id：    cancel() 已恢复优惠券用量，重开需重新占用，但券可能已过期/用尽 → 人工。
+                //   surplus/UPGRADE：套餐折抵/变更依赖创建时快照，此刻可能已陈旧 → 人工。
+                if (
+                    (int) ($locked->balance_amount ?? 0) !== 0
+                    || $locked->coupon_id !== null
+                    || !empty($locked->surplus_order_ids)
+                    || (int) $locked->type === Order::TYPE_UPGRADE
+                ) {
+                    return 'manual';
+                }
+
+                // 安全闸门 B：该订单取消后用户又已完成/开通更晚的订单，重开会覆盖其当前订阅 → 人工。
+                $hasNewerActiveOrder = Order::where('user_id', $locked->user_id)
+                    ->where('id', '>', $locked->id)
+                    ->whereIn('status', [Order::STATUS_PROCESSING, Order::STATUS_COMPLETED])
+                    ->exists();
+                if ($hasNewerActiveOrder) {
+                    return 'manual';
+                }
+
+                // 安全闸门 C：套餐仍存在。
+                if (!Plan::find($locked->plan_id)) {
+                    return 'manual';
+                }
+
+                $locked->status = Order::STATUS_PROCESSING;
+                $locked->paid_at = time();
+                $locked->callback_no = $callbackNo;
+                if (!$locked->save()) {
+                    throw new \RuntimeException('order save failed');
+                }
+                $this->order = $locked;
+                return 'reopened';
+            });
+        } catch (\Throwable $e) {
+            Log::error('OrderService::reopenFromCancelled transaction failed', [
+                'trade_no' => $tradeNo,
+                'message' => $e->getMessage(),
+            ]);
+            PaymentMetrics::inc('order.late_paid.exception');
+            return 'error';
+        }
+
+        if ($action === 'reopened') {
+            try {
+                OrderHandleJob::dispatchSync($tradeNo); // 复用既有开通流程（PROCESSING → open()）
+            } catch (\Throwable $e) {
+                Log::error('OrderService::reopenFromCancelled open failed', [
+                    'trade_no' => $tradeNo,
+                    'message' => $e->getMessage(),
+                ]);
+                PaymentMetrics::inc('order.late_paid.open_failed');
+                return 'error';
+            }
+        }
+
+        return $action;
+    }
+
     public function cancel(): bool
     {
         $order = $this->order;

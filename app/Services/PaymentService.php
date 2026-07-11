@@ -36,6 +36,13 @@ class PaymentService
             if (!$paymentModel) {
                 throw new ApiException('payment not found');
             }
+            // 安全校验：回调 URL 里的支付方式（$method）必须与 uuid 记录存储的方式一致。
+            // 否则可用 A 网关的插件去验签 B 网关的 config——当 B 的 config 缺少 A 所需的
+            // 签名密钥字段时，验签会退化为对明文参数做 md5，可被伪造（跨插件签名混淆）。
+            // 合法回调的 method 与 uuid 同源、恒相等；大小写不敏感以兼容网关对 URL 的大小写归一化。
+            if (strcasecmp((string) $paymentModel->payment, (string) $method) !== 0) {
+                throw new ApiException('payment method mismatch');
+            }
             $payment = $paymentModel->makeVisible('config')->toArray();
         }
 

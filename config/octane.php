@@ -132,7 +132,15 @@ return [
     ],
 
     'flush' => [
-        \App\Services\Plugin\HookManager::class,
+        // HookManager 把 action/filter 回调存进容器实例 hook.actions / hook.filters
+        // （见 HookManager::setActions/getActions 里的 App::instance('hook.actions', ...)）。
+        // 之前这里 flush 的是 HookManager::class——一个全静态、从不被解析为实例的绑定，
+        // 等于空操作：scoped 的 PluginManager 每请求重新注册钩子，但这两个数组从不清理，
+        // 闭包按 spl_object_hash 无限累积（重复触发 hook + worker 内存泄漏直至 OOM）。
+        // 改为 flush 真正的存储键：每请求开始清空，随后 InitializePlugins 中间件重新注册，
+        // 保证每个 hook 每请求恰好一份。
+        'hook.actions',
+        'hook.filters',
     ],
 
     /*

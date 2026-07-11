@@ -37,3 +37,6 @@ tmp_repos/
 
 # Claude Code per-user settings
 /.claude/
+
+# 安全审计报告：含未修复漏洞的利用细节，公开仓库禁止入库
+docs/AUDIT_REPORT_*.md

@@ -117,15 +117,13 @@ class UniProxyController extends Controller
     {
         $node = $this->getNodeInfo($request);
         $data = json_decode(request()->getContent(), true);
-        if ($data === null) {
+        if (!is_array($data)) {
             return response()->json([
                 'error' => 'Invalid online data'
             ], 400);
         }
 
-        foreach ($data as $uid => $ips) {
-            $this->deviceStateService->setDevices((int) $uid, $node->id, $ips);
-        }
+        $this->deviceStateService->syncNodeDevices($node->id, $data);
 
         return response()->json(['data' => true]);
     }

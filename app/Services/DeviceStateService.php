@@ -44,6 +44,40 @@ class DeviceStateService
     }
 
     /**
+     * Apply a node's full device snapshot.
+     *
+     * HTTP and WebSocket reports have the same semantics: users omitted from
+     * the new snapshot are no longer online on this node. Keeping the diff in
+     * one place prevents the two transports from drifting apart.
+     *
+     * @return int[] user IDs removed from this node
+     */
+    public function syncNodeDevices(int $nodeId, array $devices): array
+    {
+        $normalized = [];
+        foreach ($devices as $userId => $ips) {
+            if (!is_numeric($userId) || (int) $userId <= 0 || !is_array($ips)) {
+                continue;
+            }
+            $normalized[(int) $userId] = $ips;
+        }
+
+        $oldDevices = $this->getNodeDevices($nodeId);
+        $removedUsers = array_diff_key($oldDevices, $normalized);
+
+        foreach (array_keys($removedUsers) as $userId) {
+            $this->removeNodeDevices($nodeId, (int) $userId);
+            $this->notifyUpdate((int) $userId);
+        }
+
+        foreach ($normalized as $userId => $ips) {
+            $this->setDevices($userId, $nodeId, $ips);
+        }
+
+        return array_map('intval', array_keys($removedUsers));
+    }
+
+    /**
      * 获取某节点的所有设备数据
      * 返回: {userId: [ip1, ip2, ...], ...}
      *
@@ -159,15 +193,94 @@ class DeviceStateService
     public function getDeviceCount(int $userId): int
     {
         $data = Redis::hgetall(self::PREFIX . $userId);
-        $now = time();
         $mode = (int) admin_setting('device_limit_mode', 0);
 
+        return $this->countDeviceData($data, $mode, time());
+    }
+
+    /**
+     * Get multiple users' real-time counts with one Redis round trip.
+     *
+     * @return array<int, int> map of user ID to current device count
+     */
+    public function getDeviceCounts(array $userIds): array
+    {
+        $userIds = array_values(array_unique(array_filter(
+            array_map('intval', $userIds),
+            fn (int $userId) => $userId > 0
+        )));
+        if (empty($userIds)) {
+            return [];
+        }
+
+        $hashes = Redis::pipeline(function ($pipe) use ($userIds) {
+            foreach ($userIds as $userId) {
+                $pipe->hgetall(self::PREFIX . $userId);
+            }
+        });
+
+        $mode = (int) admin_setting('device_limit_mode', 0);
+        $now = time();
+        $result = [];
+        foreach ($userIds as $index => $userId) {
+            $data = $hashes[$index] ?? [];
+            $result[$userId] = $this->countDeviceData(is_array($data) ? $data : [], $mode, $now);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Reconcile the database display snapshot against Redis.
+     *
+     * Redis expires device hashes without executing application code, so a
+     * positive v2_user.online_count can otherwise live forever. We scan rows
+     * that are positive or were recently touched, pipeline their Redis reads,
+     * and only write rows whose count actually changed.
+     */
+    public function reconcileOnlineCounts(int $chunkSize = 500): int
+    {
+        $chunkSize = max(1, min($chunkSize, 5000));
+        $updated = 0;
+        $recentThreshold = now()->subSeconds(self::TTL + 60);
+
+        User::query()
+            ->where(function ($query) use ($recentThreshold) {
+                $query->where('online_count', '>', 0)
+                    ->orWhere('last_online_at', '>=', $recentThreshold);
+            })
+            ->select(['id', 'online_count'])
+            ->chunkById($chunkSize, function ($users) use (&$updated) {
+                $counts = $this->getDeviceCounts($users->pluck('id')->all());
+                $idsByCount = [];
+
+                foreach ($users as $user) {
+                    $count = $counts[(int) $user->id] ?? 0;
+                    if ((int) $user->online_count === $count) {
+                        continue;
+                    }
+                    $idsByCount[$count][] = (int) $user->id;
+                    $updated++;
+                }
+
+                foreach ($idsByCount as $count => $userIds) {
+                    User::query()
+                        ->whereKey($userIds)
+                        ->update(['online_count' => (int) $count]);
+                }
+            });
+
+        return $updated;
+    }
+
+    private function countDeviceData(array $data, int $mode, int $now): int
+    {
         if ($mode === 1 || $mode === 2) {
             // Loose mode (1): deduplicate by exact IP across all nodes
             // Subnet mode (2): deduplicate by IP subnet (/24 or /64) across all nodes
             $ips = [];
             foreach ($data as $field => $timestamp) {
-                if ($now - $timestamp <= self::TTL) {
+                if ($now - (int) $timestamp <= self::TTL) {
                     $ip = substr($field, strpos($field, ':') + 1);
                     if ($mode === 2) {
                         $ip = self::getSubnet($ip);
@@ -181,7 +294,7 @@ class DeviceStateService
         // Strict mode (default): count all active entries (each node×IP pair counts separately)
         $count = 0;
         foreach ($data as $field => $timestamp) {
-            if ($now - $timestamp <= self::TTL) {
+            if ($now - (int) $timestamp <= self::TTL) {
                 $count++;
             }
         }
@@ -198,10 +311,10 @@ class DeviceStateService
         }
 
         $result = [];
-        foreach ($users as $user) {
-            $count = $this->getDeviceCount($user->id);
+        $counts = $this->getDeviceCounts($users->pluck('id')->all());
+        foreach ($counts as $userId => $count) {
             if ($count > 0) {
-                $result[$user->id] = $count;
+                $result[$userId] = $count;
             }
         }
 
@@ -220,7 +333,7 @@ class DeviceStateService
             if (!empty($data)) {
                 $ips = [];
                 foreach ($data as $field => $timestamp) {
-                    if ($now - $timestamp <= self::TTL) {
+                    if ($now - (int) $timestamp <= self::TTL) {
                         $ips[] = substr($field, strpos($field, ':') + 1);
                     }
                 }

@@ -39,6 +39,11 @@ class Kernel extends ConsoleKernel
         // reset
         $schedule->command('reset:traffic')->everyMinute()->onOneServer()->withoutOverlapping(10);
         $schedule->command('reset:log')->daily()->onOneServer();
+        // Redis TTL expiration does not execute PHP, so reconcile the DB display snapshot.
+        $schedule->command('device:reconcile-online-counts')
+            ->everyMinute()
+            ->onOneServer()
+            ->withoutOverlapping(5);
         // send
         $schedule->command('send:remindMail', ['--force'])->dailyAt('11:30')->onOneServer();
         // horizon metrics

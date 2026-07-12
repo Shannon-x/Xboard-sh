@@ -78,11 +78,9 @@ class ServerController extends Controller
 
         // handle alive data
         $alive = $request->input('alive');
-        if (is_array($alive) && !empty($alive)) {
+        if (array_key_exists('alive', $request->all()) && is_array($alive)) {
             $deviceStateService = app(DeviceStateService::class);
-            foreach ($alive as $uid => $ips) {
-                $deviceStateService->setDevices((int) $uid, $nodeId, (array) $ips);
-            }
+            $deviceStateService->syncNodeDevices($nodeId, $alive);
         }
 
         // handle active connections

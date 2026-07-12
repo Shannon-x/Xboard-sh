@@ -206,9 +206,6 @@ class NodeWebSocketServer extends Command
 
                 $service = app(DeviceStateService::class);
                 $affectedUserIds = $service->clearAllNodeDevices($nodeId);
-                foreach ($affectedUserIds as $userId) {
-                    $service->notifyUpdate($userId);
-                }
 
                 Log::debug("[WS] Node#{$nodeId} disconnected", [
                     'total' => NodeRegistry::count(),
@@ -250,30 +247,7 @@ class NodeWebSocketServer extends Command
     private function handleDeviceReport(int $nodeId, array $data): void
     {
         $service = app(DeviceStateService::class);
-
-        // Get old data for this node
-        $oldDevices = $service->getNodeDevices($nodeId);
-
-        // Calculate diff: find users that were connected but are no longer
-        $removedUsers = array_diff_key($oldDevices, $data);
-        $newDevices = [];
-
-        foreach ($data as $userId => $ips) {
-            if (is_numeric($userId) && is_array($ips)) {
-                $newDevices[(int) $userId] = $ips;
-            }
-        }
-
-        // Handle removed users — clean their device data and update online_count
-        foreach ($removedUsers as $userId => $ips) {
-            $service->removeNodeDevices($nodeId, $userId);
-            $service->notifyUpdate($userId);
-        }
-
-        // Handle new/updated users
-        foreach ($newDevices as $userId => $ips) {
-            $service->setDevices($userId, $nodeId, $ips);
-        }
+        $service->syncNodeDevices($nodeId, $data);
 
         // 标记该节点待推送（由定时器批量处理）
         Redis::sadd('device:push_pending_nodes', $nodeId);

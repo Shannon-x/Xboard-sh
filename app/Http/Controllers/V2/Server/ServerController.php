@@ -78,9 +78,11 @@ class ServerController extends Controller
 
         // handle alive data
         $alive = $request->input('alive');
+        $aliveDelta = null;
         if (array_key_exists('alive', $request->all()) && is_array($alive)) {
             $deviceStateService = app(DeviceStateService::class);
-            $deviceStateService->syncNodeDevices($nodeId, $alive);
+            $affectedUserIds = $deviceStateService->syncNodeDevices($nodeId, $alive);
+            $aliveDelta = $deviceStateService->getDeviceCounts($affectedUserIds);
         }
 
         // handle active connections
@@ -127,6 +129,10 @@ class ServerController extends Controller
             ServerService::updateMetrics($node, $metrics);
         }
 
-        return response()->json(['data' => true]);
+        $response = ['data' => true];
+        if ($aliveDelta !== null) {
+            $response['alive'] = (object) $aliveDelta;
+        }
+        return response()->json($response);
     }
 }

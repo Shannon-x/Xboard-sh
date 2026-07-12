@@ -50,7 +50,7 @@ class DeviceStateService
      * the new snapshot are no longer online on this node. Keeping the diff in
      * one place prevents the two transports from drifting apart.
      *
-     * @return int[] user IDs removed from this node
+     * @return int[] user IDs whose global count may have changed
      */
     public function syncNodeDevices(int $nodeId, array $devices): array
     {
@@ -64,6 +64,10 @@ class DeviceStateService
 
         $oldDevices = $this->getNodeDevices($nodeId);
         $removedUsers = array_diff_key($oldDevices, $normalized);
+        $affectedUserIds = array_values(array_unique(array_merge(
+            array_map('intval', array_keys($oldDevices)),
+            array_map('intval', array_keys($normalized))
+        )));
 
         foreach (array_keys($removedUsers) as $userId) {
             $this->removeNodeDevices($nodeId, (int) $userId);
@@ -74,7 +78,7 @@ class DeviceStateService
             $this->setDevices($userId, $nodeId, $ips);
         }
 
-        return array_map('intval', array_keys($removedUsers));
+        return $affectedUserIds;
     }
 
     /**

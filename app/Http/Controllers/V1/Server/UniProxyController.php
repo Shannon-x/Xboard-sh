@@ -123,9 +123,14 @@ class UniProxyController extends Controller
             ], 400);
         }
 
-        $this->deviceStateService->syncNodeDevices($node->id, $data);
+        $affectedUserIds = $this->deviceStateService->syncNodeDevices($node->id, $data);
+        $alive = $this->deviceStateService->getDeviceCounts($affectedUserIds);
 
-        return response()->json(['data' => true]);
+        return response()->json([
+            'data' => true,
+            // Post-snapshot delta lets V2bX recover without waiting for its next pull.
+            'alive' => (object) $alive,
+        ]);
     }
 
     // 提交节点负载状态

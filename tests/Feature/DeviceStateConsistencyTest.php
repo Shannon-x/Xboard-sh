@@ -52,7 +52,7 @@ class DeviceStateConsistencyTest extends TestCase
     }
 
     #[Test]
-    public function it_applies_full_node_snapshots_and_removes_missing_users(): void
+    public function it_applies_full_node_snapshots_and_returns_all_affected_users(): void
     {
         $service = $this->getMockBuilder(DeviceStateService::class)
             ->onlyMethods(['getNodeDevices', 'removeNodeDevices', 'notifyUpdate', 'setDevices'])
@@ -75,13 +75,13 @@ class DeviceStateConsistencyTest extends TestCase
                 $setCalls[] = [$userId, $nodeId, $ips];
             });
 
-        $removed = $service->syncNodeDevices(7, [
+        $affected = $service->syncNodeDevices(7, [
             10 => ['1.1.1.1'],
             30 => ['3.3.3.3'],
             'invalid' => ['4.4.4.4'],
         ]);
 
-        $this->assertSame([20], $removed);
+        $this->assertSame([10, 20, 30], $affected);
         $this->assertSame([
             [10, 7, ['1.1.1.1']],
             [30, 7, ['3.3.3.3']],
@@ -92,7 +92,8 @@ class DeviceStateConsistencyTest extends TestCase
     public function v1_alive_treats_an_empty_object_as_a_full_empty_snapshot(): void
     {
         $service = Mockery::mock(DeviceStateService::class);
-        $service->shouldReceive('syncNodeDevices')->once()->with(7, []);
+        $service->shouldReceive('syncNodeDevices')->once()->with(7, [])->andReturn([20]);
+        $service->shouldReceive('getDeviceCounts')->once()->with([20])->andReturn([20 => 0]);
 
         $request = Request::create('/api/v1/server/UniProxy/alive', 'POST', [], [], [], [
             'CONTENT_TYPE' => 'application/json',
@@ -103,13 +104,15 @@ class DeviceStateConsistencyTest extends TestCase
         $response = (new UniProxyController($service))->alive($request);
 
         $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame(['data' => true, 'alive' => ['20' => 0]], $response->getData(true));
     }
 
     #[Test]
     public function v2_report_distinguishes_a_missing_alive_field_from_an_empty_snapshot(): void
     {
         $service = Mockery::mock(DeviceStateService::class);
-        $service->shouldReceive('syncNodeDevices')->once()->with(7, []);
+        $service->shouldReceive('syncNodeDevices')->once()->with(7, [])->andReturn([20]);
+        $service->shouldReceive('getDeviceCounts')->once()->with([20])->andReturn([20 => 0]);
         $this->app->instance(DeviceStateService::class, $service);
 
         $missingRequest = Request::create('/api/v2/server/node/report', 'POST', [], [], [], [
@@ -127,6 +130,8 @@ class DeviceStateConsistencyTest extends TestCase
 
         $this->assertSame(200, $missingResponse->getStatusCode());
         $this->assertSame(200, $response->getStatusCode());
+        $this->assertArrayNotHasKey('alive', $missingResponse->getData(true));
+        $this->assertSame(['20' => 0], $response->getData(true)['alive']);
     }
 
     #[Test]

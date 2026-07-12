@@ -43,6 +43,12 @@ The `device_limit_mode` setting controls counting:
 - `1`: deduplicate the exact same IP across nodes.
 - `2`: deduplicate IPv4 `/24` or IPv6 `/64` subnets across nodes.
 
+For the common "test every node at once" case, mode `1` is normally the right
+choice: one physical client behind one public IP remains one device even while
+it opens connections to many nodes. Mode `0` intentionally treats those node
+connections as separate devices and can therefore exhaust the limit during an
+all-node speed test.
+
 ## Report and enforcement flow
 
 1. The user list endpoint reads `device_limit` from `v2_user` and sends it to the
@@ -51,7 +57,9 @@ The `device_limit_mode` setting controls counting:
    HTTP `/alive`, the V2 combined report, or WebSocket `report.devices`.
 3. The panel applies a per-node difference: users missing from the new snapshot
    are removed from that node, and present users are replaced with the new IPs.
-4. `/alivelist` reads Redis and returns only current, non-expired counts.
+4. The report response includes the latest Redis count for every affected user,
+   including explicit zeroes. V2bX applies this delta immediately; `/alivelist`
+   remains the periodic full-state fallback.
 5. The node rejects a new IP when the database-configured `device_limit` has
    already been reached by the Redis-derived alive count.
 

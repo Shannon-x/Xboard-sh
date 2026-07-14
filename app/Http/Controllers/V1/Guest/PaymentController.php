@@ -7,6 +7,7 @@ use App\Models\Order;
 use App\Models\Payment;
 use App\Services\OrderService;
 use App\Services\PaymentService;
+use App\Services\TelegramService;
 use App\Support\FeatureFlag;
 use App\Support\PaymentMetrics;
 use Illuminate\Http\Request;
@@ -78,12 +79,18 @@ class PaymentController extends Controller
         if ($bindMode !== 'off' && $uuid !== null && $order->payment_id !== null) {
             $payment = Payment::where('uuid', $uuid)->first();
             if ($payment && (int) $order->payment_id !== (int) $payment->id) {
+                // 同插件类的不同网关记录视为同源（如同一易支付商户拆的「支付宝」「微信」
+                // 两条通道：用户 checkout 后切换支付方式会改写 payment_id，随后才支付
+                // 第一条通道的收款码，合法回调必然与最终绑定不一致）。enforce 只拦跨插件。
+                $boundPayment = Payment::find($order->payment_id);
+                $sameFamily = $boundPayment && (string) $boundPayment->payment === (string) $payment->payment;
                 PaymentMetrics::warn('webhook.payment_id_mismatch', [
                     'trade_no' => $tradeNo,
                     'order_payment_id' => (int) $order->payment_id,
                     'callback_payment_id' => (int) $payment->id,
+                    'same_family' => $sameFamily,
                 ]);
-                if ($bindMode === 'enforce') {
+                if ($bindMode === 'enforce' && !$sameFamily) {
                     return false;
                 }
             }
@@ -124,16 +131,28 @@ class PaymentController extends Controller
         }
 
         // 已取消订单收到真实支付。重开是敏感操作，这里**强制**校验回调网关与订单
-        // checkout 绑定的 payment_id 一致（不依赖全局 payment_gateway_bind 的 warn/enforce 开关）。
-        // 结合上游已完成的签名校验与 P0-1 的 method↔uuid 绑定，攻击者无法为他人订单伪造回调，
-        // 只能重开自己真实支付过的订单。payment_id 为空（历史/免费单）无法核验来源 → 转人工。
+        // checkout 绑定的 payment_id 同源（不依赖全局 payment_gateway_bind 的 warn/enforce 开关）：
+        //   - 精确同一网关记录 → 通过；
+        //   - 同一插件类的不同网关记录（如同一易支付商户拆的「支付宝」「微信」两条通道，
+        //     用户 checkout 后切换过支付方式导致 payment_id 指向另一条）→ 视为同源放行，
+        //     单独记指标便于观察；
+        //   - 跨插件 / 无绑定 / 找不到回调网关 → 转人工。
+        // 回调签名已在上游用接收 uuid 的凭证验过，是该网关的真实结算通知；同插件类等价
+        // 不弱于 pending 路径默认 warn 模式的既有行为（后者对跨网关回调仅记录不拒收）。
         $payment = $uuid !== null ? Payment::where('uuid', $uuid)->first() : null;
-        if (
-            $order->payment_id === null
-            || !$payment
-            || (int) $order->payment_id !== (int) $payment->id
-        ) {
+        $boundPayment = $order->payment_id !== null ? Payment::find($order->payment_id) : null;
+        if (!$payment || !$boundPayment) {
             return $this->flagLatePaymentForReview($order, $callbackNo, 'gateway_mismatch');
+        }
+        if ((int) $boundPayment->id !== (int) $payment->id) {
+            if ((string) $boundPayment->payment !== (string) $payment->payment) {
+                return $this->flagLatePaymentForReview($order, $callbackNo, 'gateway_mismatch');
+            }
+            PaymentMetrics::warn('order.late_paid.gateway_family_match', [
+                'trade_no' => (string) $order->trade_no,
+                'order_payment_id' => (int) $boundPayment->id,
+                'callback_payment_id' => (int) $payment->id,
+            ]);
         }
 
         $orderService = new OrderService($order);
@@ -148,6 +167,7 @@ class PaymentController extends Controller
                     'callback_no' => (string) $callbackNo,
                 ]);
                 PaymentMetrics::inc('order.late_paid.reopened');
+                $this->notifyAdminsLatePayment($orderService->order, $callbackNo, 'reopened', true);
                 HookManager::call('payment.notify.success', $orderService->order);
                 return true;
             case 'duplicate':
@@ -173,6 +193,33 @@ class PaymentController extends Controller
         ];
         PaymentMetrics::warn('order.late_paid.manual_review', $context);
         Log::error('[late-payment] 已取消/非常规状态订单收到真实支付，无法安全自动开通，需人工处理', $context);
+        $this->notifyAdminsLatePayment($order, $callbackNo, $reason);
         return true;
+    }
+
+    /**
+     * 迟到支付事件推送 Telegram 管理员。sendMessageWithAdmin 只查库并派发队列任务，
+     * 真正的 HTTP 发送在队列 worker 中完成；本方法整体 try/catch，任何失败（含 Bot
+     * 未配置、队列不可用）都不影响向网关 ACK。
+     */
+    private function notifyAdminsLatePayment(Order $order, $callbackNo, string $reason, bool $reopened = false): void
+    {
+        try {
+            $amount = number_format(((int) $order->total_amount) / 100, 2);
+            $message = ($reopened
+                ? "✅ 已取消订单收到真实支付，已自动恢复开通\n"
+                : "⚠️ 迟到支付需人工处理\n")
+                . "订单号：{$order->trade_no}\n"
+                . "用户ID：{$order->user_id}\n"
+                . "金额：¥{$amount}\n"
+                . "回调流水：{$callbackNo}"
+                . ($reopened ? '' : "\n原因：{$reason}");
+            (new TelegramService())->sendMessageWithAdmin($message);
+        } catch (\Throwable $e) {
+            try {
+                Log::warning('[late-payment] Telegram 通知发送失败', ['message' => $e->getMessage()]);
+            } catch (\Throwable $ignored) {
+            }
+        }
     }
 }

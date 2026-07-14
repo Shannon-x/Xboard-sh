@@ -21,6 +21,14 @@ class OrderService
 {
     private const BYTES_PER_GB = 1073741824;
 
+    /**
+     * 迟到支付自动复活的最大迟到窗口（秒）。
+     * 网关收款会话存活期是分钟级（BEpusdt 默认 10 分钟、易支付类同量级），正常迟到
+     * 支付都发生在下单后极短时间内；超过该窗口的「复活」更可能是重放或异常场景，
+     * 且折抵快照的价值漂移开始不可忽略，一律转人工。
+     */
+    private const REOPEN_MAX_LATE_SECONDS = 86400;
+
     const STR_TO_TIME = [
         Plan::PERIOD_MONTHLY => 1,
         Plan::PERIOD_QUARTERLY => 3,
@@ -133,8 +141,22 @@ class OrderService
             }
 
             if ($order->surplus_order_ids) {
-                Order::whereIn('id', $order->surplus_order_ids)
+                $surplusIds = array_values(array_filter(array_map('intval', (array) $order->surplus_order_ids)));
+                // 条件更新：只允许「已完成 → 已折抵」。affected 数不足说明部分折抵源
+                // 已被其他订单折抵（典型：取消单复活与重下的新单引用同一批折抵源，
+                // 先开通的一单消耗后另一单又完成支付）。此时继续开通等于同一批旧订单
+                // 的剩余价值被折抵两次，必须中止转人工；事务回滚不留半套状态。
+                $marked = Order::whereIn('id', $surplusIds)
+                    ->where('status', Order::STATUS_COMPLETED)
                     ->update(['status' => Order::STATUS_DISCOUNTED]);
+                if ($marked !== count($surplusIds)) {
+                    PaymentMetrics::warn('order.open.surplus_conflict', [
+                        'trade_no' => (string) $order->trade_no,
+                        'expected' => count($surplusIds),
+                        'marked' => (int) $marked,
+                    ]);
+                    throw new \RuntimeException('折抵源订单状态已变化（疑似重复折抵），中止自动开通转人工');
+                }
             }
 
             match ((string) $order->period) {
@@ -481,16 +503,24 @@ class OrderService
     }
 
     /**
-     * 已取消订单收到真实迟到支付后，在严格安全条件下重新开通。
+     * 已取消订单收到真实迟到支付后，复核下单时占用的资源并重新开通。
      *
-     * 只自动重开「干净」订单——cancel() 唯一会反向的操作是「退还 balance_amount」和
-     * 「恢复优惠券用量」，因此对没有余额抵扣、没有优惠券、没有套餐折抵/变更的订单，
-     * cancel() 实际上没有释放任何资源，重开与它完全对称，绝不会造成少扣款或优惠券二次使用。
-     * 其余订单一律返回 'manual' 交人工处理，避免制造不一致或漏洞。
+     * cancel() 会反向释放的资源有：退还 balance_amount、恢复优惠券用量；套餐折抵
+     * （surplus_order_ids）虽在 open() 才真正消耗，但取消后折抵源可能已被后续订单
+     * 折抵。重开的原则是「先复核、再占用、后翻状态」，任一资源无法完整恢复到下单
+     * 时的占用状态就返回 'manual' 交人工，绝不部分开通：
+     *   - 折抵源订单必须仍全部处于「已完成」（行锁防并发）；
+     *   - 余额抵扣需用户当前余额仍足够，重新扣回；
+     *   - 优惠券配额需仍可原子占用（全局 limit_use 条件扣减 + 每人限用复核）。
+     *     券的时间窗不复核：用户在券有效期内下的单、按折后价真实付了款，迟到只是
+     *     网关结算延迟，重占配额即可，不没收既定折扣。
+     *
+     * 所有只读校验先于所有写入执行；写入阶段的意外失败一律抛异常整体回滚，落入
+     * 'error' 分支（与 'manual' 一样会转人工告警），不会留下半套状态。
      *
      * 安全性说明：本方法只在回调签名已由订单绑定网关验过之后（PaymentController::handle
-     * 上游）才会被调用，且调用前已强制校验回调网关 == 订单 payment_id，因此攻击者无法为
-     * 他人订单触发重开，只能重开自己真实支付过的订单。
+     * 上游）才会被调用，且调用前已强制校验回调网关与订单 payment_id 同源，因此攻击者
+     * 无法为他人订单触发重开，只能重开自己真实支付过的订单。
      *
      * @return string 'reopened' | 'duplicate' | 'manual' | 'missing' | 'unexpected' | 'error'
      */
@@ -513,16 +543,8 @@ class OrderService
                     return 'unexpected';
                 }
 
-                // 安全闸门 A：只重开「干净」订单。
-                //   balance_amount：cancel() 已退回用户余额，重开需重新扣除，但余额可能已被花掉 → 人工。
-                //   coupon_id：    cancel() 已恢复优惠券用量，重开需重新占用，但券可能已过期/用尽 → 人工。
-                //   surplus/UPGRADE：套餐折抵/变更依赖创建时快照，此刻可能已陈旧 → 人工。
-                if (
-                    (int) ($locked->balance_amount ?? 0) !== 0
-                    || $locked->coupon_id !== null
-                    || !empty($locked->surplus_order_ids)
-                    || (int) $locked->type === Order::TYPE_UPGRADE
-                ) {
+                // 安全闸门 0：迟到窗口，超过上限的复活转人工（见常量注释）。
+                if (time() - (int) $locked->created_at > self::REOPEN_MAX_LATE_SECONDS) {
                     return 'manual';
                 }
 
@@ -538,6 +560,74 @@ class OrderService
                 // 安全闸门 C：套餐仍存在。
                 if (!Plan::find($locked->plan_id)) {
                     return 'manual';
+                }
+
+                // ── 安全闸门 A：复核并重新占用下单时的资源（先只读校验，后统一写入）──
+
+                // A1 套餐折抵：折抵源订单必须仍全部「已完成」。若已被其他订单折抵
+                // （典型：用户取消本单后重下一单引用同一批折抵源且已开通）或被撤销，
+                // 创建时的折抵快照失效 → 人工。行锁串行化与并发 open() 的竞争；真正
+                // 翻成 DISCOUNTED 由本单后续 open() 在同样的条件守卫下完成。
+                $surplusIds = array_values(array_filter(array_map('intval', (array) ($locked->surplus_order_ids ?? []))));
+                if (!empty($surplusIds)) {
+                    $stillCompleted = Order::whereIn('id', $surplusIds)
+                        ->where('status', Order::STATUS_COMPLETED)
+                        ->lockForUpdate()
+                        ->count();
+                    if ($stillCompleted !== count($surplusIds)) {
+                        return 'manual';
+                    }
+                }
+
+                // A2 余额抵扣（只读校验）：cancel() 已退回余额，重开需重新扣除；
+                // 余额可能已被花掉，先锁用户行校验充足性。
+                $balanceAmount = (int) ($locked->balance_amount ?? 0);
+                if ($balanceAmount < 0) {
+                    return 'manual'; // 异常数据，不自动处理
+                }
+                $lockedUser = User::lockForUpdate()->find($locked->user_id);
+                if (!$lockedUser) {
+                    return 'manual';
+                }
+                if ($balanceAmount > 0 && (int) $lockedUser->balance < $balanceAmount) {
+                    return 'manual';
+                }
+
+                // A3 优惠券：cancel() 已恢复用量，重开需重新占用。券被删除 → 人工；
+                // 每人限用按当前非待付/非取消订单数复核（本单此刻仍是 CANCELLED，不计入）；
+                // 全局配额用条件 UPDATE 原子扣减，抢不到 → 人工。该扣减虽是写入，但失败
+                // 即 affected=0 且不产生任何变更，放在只读校验末尾是安全的。
+                if ($locked->coupon_id !== null) {
+                    $coupon = Coupon::lockForUpdate()->find($locked->coupon_id);
+                    if (!$coupon) {
+                        return 'manual';
+                    }
+                    if ($coupon->limit_use_with_user !== null) {
+                        $usedCount = Order::where('coupon_id', $coupon->id)
+                            ->where('user_id', $locked->user_id)
+                            ->whereNotIn('status', [Order::STATUS_PENDING, Order::STATUS_CANCELLED])
+                            ->count();
+                        if ($usedCount >= (int) $coupon->limit_use_with_user) {
+                            return 'manual';
+                        }
+                    }
+                    if ($coupon->limit_use !== null) {
+                        $affected = Coupon::where('id', $coupon->id)
+                            ->where('limit_use', '>', 0)
+                            ->decrement('limit_use');
+                        if ($affected === 0) {
+                            return 'manual';
+                        }
+                    }
+                }
+
+                // ── 写入阶段：以下失败均抛异常，整体回滚（含上面的优惠券扣减）──
+
+                if ($balanceAmount > 0) {
+                    $lockedUser->balance = (int) $lockedUser->balance - $balanceAmount;
+                    if (!$lockedUser->save()) {
+                        throw new \RuntimeException('re-deduct balance failed');
+                    }
                 }
 
                 $locked->status = Order::STATUS_PROCESSING;

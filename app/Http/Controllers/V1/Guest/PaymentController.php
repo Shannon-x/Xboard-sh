@@ -56,48 +56,46 @@ class PaymentController extends Controller
 
     private function handle($tradeNo, $callbackNo, $uuid = null)
     {
+        if (!is_string($tradeNo) || $tradeNo === '' || !is_string($callbackNo) || trim($callbackNo) === '') {
+            return false;
+        }
         $order = Order::where('trade_no', $tradeNo)->first();
         if (!$order) {
-            return $this->fail([400202, 'order is not found']);
+            PaymentMetrics::warn('webhook.order_missing', ['trade_no' => $tradeNo]);
+            return false;
+        }
+        $payment = $uuid !== null ? Payment::where('uuid', $uuid)->first() : null;
+        if (!$payment) {
+            return false;
         }
         // 迟到支付：订单已不是 PENDING（最常见是 PENDING 超 2 小时被 OrderHandleJob 自动取消后，
         // 用户才在网关侧完成真实支付）。此前无条件 return true 静默 ACK——钱到账却不开通、不退款、
         // 也没有任何日志。改为进入迟到支付处理：在严格安全条件下重新开通，否则转人工告警（不再静默）。
         if ($order->status !== Order::STATUS_PENDING) {
-            return $this->handleLatePayment($order, $callbackNo, $uuid);
+            return $this->handleLatePayment($order, $callbackNo, $payment);
         }
 
         // 回调网关必须与订单 checkout 时绑定的 payment_id 一致：
         // 防止已知某 PENDING 订单 trade_no（可枚举）后，用攻击者掌握的另一网关 uuid
         // 端点提交「该网关验签通过的回调」来翻转目标订单。
         //
-        // 受 payment_gateway_bind 控制，默认 warn（仅记录不拒收）：用户可能对同一 PENDING 订单
-        // 先 checkout 网关 A、再改 checkout 网关 B（payment_id 被改写），随后才真正支付 A，
-        // 此时 A 的合法回调会与 payment_id 不一致。先观察 PaymentMetrics 计数再切 enforce。
-        // payment_id 为空（历史订单 / 免费单）时跳过，保持前向兼容。
+        // 受 payment_gateway_bind 控制，默认 enforce。checkout 首次绑定后已禁止切换支付配置，
+        // 所以同插件下的不同配置也必须精确匹配；它们可能属于完全不同的商户和密钥。
         $bindMode = FeatureFlag::mode('payment_gateway_bind');
-        if ($bindMode !== 'off' && $uuid !== null && $order->payment_id !== null) {
-            $payment = Payment::where('uuid', $uuid)->first();
-            if ($payment && (int) $order->payment_id !== (int) $payment->id) {
-                // 同插件类的不同网关记录视为同源（如同一易支付商户拆的「支付宝」「微信」
-                // 两条通道：用户 checkout 后切换支付方式会改写 payment_id，随后才支付
-                // 第一条通道的收款码，合法回调必然与最终绑定不一致）。enforce 只拦跨插件。
-                $boundPayment = Payment::find($order->payment_id);
-                $sameFamily = $boundPayment && (string) $boundPayment->payment === (string) $payment->payment;
-                PaymentMetrics::warn('webhook.payment_id_mismatch', [
-                    'trade_no' => $tradeNo,
-                    'order_payment_id' => (int) $order->payment_id,
-                    'callback_payment_id' => (int) $payment->id,
-                    'same_family' => $sameFamily,
-                ]);
-                if ($bindMode === 'enforce' && !$sameFamily) {
-                    return false;
-                }
+        if ($bindMode !== 'off' && (int) $order->payment_id !== (int) $payment->id) {
+            PaymentMetrics::warn('webhook.payment_id_mismatch', [
+                'trade_no' => $tradeNo,
+                'order_payment_id' => $order->payment_id,
+                'callback_payment_id' => (int) $payment->id,
+            ]);
+            if ($bindMode === 'enforce') {
+                return false;
             }
         }
 
         $orderService = new OrderService($order);
-        if (!$orderService->paid($callbackNo)) {
+        // payment_id 在 paid() 持有订单行锁后再次复核，关闭上述预读与状态翻转间的 TOCTOU。
+        if (!$orderService->paid($callbackNo, (int) $payment->id, $bindMode === 'enforce')) {
             return false;
         }
 
@@ -116,13 +114,19 @@ class PaymentController extends Controller
      * 所有分支都会 return true 向网关 ACK（回调签名已验过，是真实支付，无需网关重投），
      * 但与旧实现的关键区别是：不再静默——每一种「无法自动开通」都有 error 日志 + 指标可追踪。
      */
-    private function handleLatePayment(Order $order, $callbackNo, $uuid)
+    private function handleLatePayment(Order $order, string $callbackNo, Payment $payment)
     {
         $status = (int) $order->status;
 
         // 已在开通中或已完成：正常的重复回调，幂等确认。
         if (in_array($status, [Order::STATUS_PROCESSING, Order::STATUS_COMPLETED], true)) {
-            return true;
+            if (
+                (int) $order->payment_id === (int) $payment->id
+                && hash_equals((string) ($order->callback_no ?? ''), $callbackNo)
+            ) {
+                return true;
+            }
+            return $this->flagLatePaymentForReview($order, $callbackNo, 'duplicate_callback_conflict');
         }
 
         // 非「已取消」的其它终态（如已折抵）：记录后 ACK，不自动处理。
@@ -131,32 +135,15 @@ class PaymentController extends Controller
         }
 
         // 已取消订单收到真实支付。重开是敏感操作，这里**强制**校验回调网关与订单
-        // checkout 绑定的 payment_id 同源（不依赖全局 payment_gateway_bind 的 warn/enforce 开关）：
-        //   - 精确同一网关记录 → 通过；
-        //   - 同一插件类的不同网关记录（如同一易支付商户拆的「支付宝」「微信」两条通道，
-        //     用户 checkout 后切换过支付方式导致 payment_id 指向另一条）→ 视为同源放行，
-        //     单独记指标便于观察；
-        //   - 跨插件 / 无绑定 / 找不到回调网关 → 转人工。
-        // 回调签名已在上游用接收 uuid 的凭证验过，是该网关的真实结算通知；同插件类等价
-        // 不弱于 pending 路径默认 warn 模式的既有行为（后者对跨网关回调仅记录不拒收）。
-        $payment = $uuid !== null ? Payment::where('uuid', $uuid)->first() : null;
+        // checkout 绑定的 payment_id 完全一致（不依赖全局 warn/off 开关）。同一插件的
+        // 两条配置也可能属于不同商户/密钥，不能仅凭插件类相同就视为同源。
         $boundPayment = $order->payment_id !== null ? Payment::find($order->payment_id) : null;
-        if (!$payment || !$boundPayment) {
+        if (!$boundPayment || (int) $boundPayment->id !== (int) $payment->id) {
             return $this->flagLatePaymentForReview($order, $callbackNo, 'gateway_mismatch');
-        }
-        if ((int) $boundPayment->id !== (int) $payment->id) {
-            if ((string) $boundPayment->payment !== (string) $payment->payment) {
-                return $this->flagLatePaymentForReview($order, $callbackNo, 'gateway_mismatch');
-            }
-            PaymentMetrics::warn('order.late_paid.gateway_family_match', [
-                'trade_no' => (string) $order->trade_no,
-                'order_payment_id' => (int) $boundPayment->id,
-                'callback_payment_id' => (int) $payment->id,
-            ]);
         }
 
         $orderService = new OrderService($order);
-        $result = $orderService->reopenFromCancelled($callbackNo);
+        $result = $orderService->reopenFromCancelled($callbackNo, (int) $payment->id);
 
         switch ($result) {
             case 'reopened':

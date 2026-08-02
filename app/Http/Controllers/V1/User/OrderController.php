@@ -117,17 +117,59 @@ class OrderController extends Controller
 
     public function checkout(Request $request)
     {
-        $tradeNo = $request->input('trade_no');
+        $request->validate([
+            'trade_no' => 'required|string',
+            'method' => 'nullable|integer',
+        ]);
+        $tradeNo = (string) $request->input('trade_no');
         $method = $request->input('method');
-        $order = Order::where('trade_no', $tradeNo)
-            ->where('user_id', $request->user()->id)
-            ->where('status', 0)
-            ->first();
-        if (!$order) {
-            return $this->fail([400, __('Order does not exist or has been paid')]);
-        }
-        // free process
-        if ($order->total_amount <= 0) {
+        $payment = $method !== null ? Payment::find((int) $method) : null;
+
+        $order = DB::transaction(function () use ($request, $tradeNo, $payment) {
+            $locked = Order::where('trade_no', $tradeNo)
+                ->where('user_id', $request->user()->id)
+                ->lockForUpdate()
+                ->first();
+            if (!$locked || (int) $locked->status !== Order::STATUS_PENDING) {
+                throw new ApiException(__('Order does not exist or has been paid'));
+            }
+
+            if ((int) $locked->total_amount < 0) {
+                throw new ApiException('订单金额异常，请重新下单');
+            }
+            if ((int) $locked->total_amount === 0) {
+                return $locked;
+            }
+            if (!$payment || !$payment->enable) {
+                throw new ApiException(__('Payment method is not available'));
+            }
+
+            // 首次 checkout 后支付配置不可变。否则旧通道收款链接和新的 payment_id/
+            // handling_amount 会脱钩，回调时无法可靠绑定金额与商户。
+            if ($locked->payment_id !== null && (int) $locked->payment_id !== (int) $payment->id) {
+                throw new ApiException('订单已绑定其他支付方式，请取消订单后重新下单');
+            }
+
+            if ($locked->payment_id === null) {
+                $fixedFee = max(0, (int) ($payment->handling_fee_fixed ?? 0));
+                $percentFee = max(0, min(100, (float) ($payment->handling_fee_percent ?? 0)));
+                $handlingAmount = (int) round(((int) $locked->total_amount * ($percentFee / 100)) + $fixedFee);
+                $locked->handling_amount = $handlingAmount > 0 ? $handlingAmount : null;
+                $locked->payment_id = $payment->id;
+                if (!$locked->save()) {
+                    throw new ApiException(__('Request failed, please try again later'));
+                }
+            }
+
+            if ((int) $locked->total_amount + (int) ($locked->handling_amount ?? 0) <= 0) {
+                throw new ApiException('订单应付金额异常，请重新下单');
+            }
+
+            return $locked;
+        });
+
+        // 只有恰好为 0 的合法优惠/余额全额抵扣订单才能进入免费流程；负数已在锁内拒绝。
+        if ((int) $order->total_amount === 0) {
             $orderService = new OrderService($order);
             if (!$orderService->paid($order->trade_no))
                 return $this->fail([400, '支付失败']);
@@ -136,21 +178,10 @@ class OrderController extends Controller
                 'data' => true
             ]);
         }
-        $payment = Payment::find($method);
-        if (!$payment || !$payment->enable) {
-            return $this->fail([400, __('Payment method is not available')]);
-        }
         $paymentService = new PaymentService($payment->payment, $payment->id);
-        $order->handling_amount = NULL;
-        if ($payment->handling_fee_fixed || $payment->handling_fee_percent) {
-            $order->handling_amount = (int) round(($order->total_amount * ($payment->handling_fee_percent / 100)) + $payment->handling_fee_fixed);
-        }
-        $order->payment_id = $method;
-        if (!$order->save())
-            return $this->fail([400, __('Request failed, please try again later')]);
         $result = $paymentService->pay([
             'trade_no' => $tradeNo,
-            'total_amount' => isset($order->handling_amount) ? ($order->total_amount + $order->handling_amount) : $order->total_amount,
+            'total_amount' => (int) $order->total_amount + (int) ($order->handling_amount ?? 0),
             'user_id' => $order->user_id,
             'stripe_token' => $request->input('token')
         ]);

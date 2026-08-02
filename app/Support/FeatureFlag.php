@@ -17,6 +17,10 @@ class FeatureFlag
     /** 布尔型 flag。 */
     public static function enabled(string $key): bool
     {
+        if (in_array($key, ['payment_amount_check', 'payment_gateway_bind'], true)) {
+            return self::mode($key) === 'enforce';
+        }
+
         $value = Config::get("feature_flags.{$key}");
 
         if (is_bool($value)) {
@@ -40,9 +44,11 @@ class FeatureFlag
             return $value ? 'enforce' : 'off';
         }
 
-        $normalized = is_string($value) ? strtolower($value) : 'off';
+        $secureByDefault = in_array($key, ['payment_amount_check', 'payment_gateway_bind'], true);
+        $fallback = $secureByDefault ? 'enforce' : 'off';
+        $normalized = is_string($value) ? strtolower($value) : $fallback;
 
-        return in_array($normalized, ['off', 'warn', 'enforce'], true) ? $normalized : 'off';
+        return in_array($normalized, ['off', 'warn', 'enforce'], true) ? $normalized : $fallback;
     }
 
     /** 比较 mode 是否等于给定值。 */

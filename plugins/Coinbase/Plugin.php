@@ -81,6 +81,9 @@ class Plugin extends AbstractPlugin implements PaymentInterface
     {
         $payload = trim(request()->getContent());
         $json_param = json_decode($payload, true);
+        if (!is_array($json_param)) {
+            throw new ApiException('Invalid webhook JSON', 400);
+        }
 
         $headerName = 'X-Cc-Webhook-Signature';
         $headers = getallheaders();
@@ -112,11 +115,23 @@ class Plugin extends AbstractPlugin implements PaymentInterface
         // 我们在 pay() 中以 CNY 设定 local_price，回调 pricing.local.amount 即为元。
         $mode = PaymentGuard::amountMode();
         if ($mode !== 'off') {
-            $local = $event['data']['pricing']['local']['amount'] ?? null;
-            $actualMinor = $local !== null ? (int) round(((float) $local) * 100) : null;
+            $local = $event['data']['pricing']['local'] ?? [];
+            $actualMinor = PaymentGuard::decimalToMinor($local['amount'] ?? null);
             if (!PaymentGuard::ensureAmount('Coinbase', $out_trade_no, $actualMinor, $mode)) {
                 throw new ApiException('Payment amount mismatch', 400);
             }
+            if (!PaymentGuard::ensureCurrency(
+                'Coinbase',
+                isset($local['currency']) ? (string) $local['currency'] : null,
+                'CNY',
+                $mode
+            )) {
+                throw new ApiException('Payment currency mismatch', 400);
+            }
+        }
+
+        if (!$pay_trade_no) {
+            throw new ApiException('Payment callback identifier missing', 400);
         }
 
         return [
@@ -161,4 +176,4 @@ class Plugin extends AbstractPlugin implements PaymentInterface
             return !$ret;
         }
     }
-} 
+}

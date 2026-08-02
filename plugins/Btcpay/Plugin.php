@@ -86,6 +86,9 @@ class Plugin extends AbstractPlugin implements PaymentInterface
         $headerName = 'Btcpay-Sig';
         $signraturHeader = isset($headers[$headerName]) ? $headers[$headerName] : '';
         $json_param = json_decode($payload, true);
+        if (!is_array($json_param) || empty($json_param['invoiceId'])) {
+            throw new ApiException('Invalid BTCPay webhook payload', 400);
+        }
 
         $computedSignature = "sha256=" . \hash_hmac('sha256', $payload, $this->getConfig('btcpay_webhook_key'));
 
@@ -118,7 +121,7 @@ class Plugin extends AbstractPlugin implements PaymentInterface
         }
 
         $out_trade_no = $invoiceDetail['metadata']["orderId"] ?? null;
-        $pay_trade_no = $json_param['invoiceId'] ?? null;
+        $pay_trade_no = $json_param['invoiceId'];
 
         // BTCPay 对 InvoiceCreated / ReceivedPayment / Processing / Expired / Invalid / Settled
         // 全部投递合法签名 webhook。只有发票真正结清才可开通：
@@ -137,10 +140,26 @@ class Plugin extends AbstractPlugin implements PaymentInterface
         // pay() 中以 CNY 设定 amount，发票 amount 即为元。
         $mode = PaymentGuard::amountMode();
         if ($mode !== 'off') {
-            $amount = $invoiceDetail['amount'] ?? null;
-            $actualMinor = $amount !== null ? (int) round(((float) $amount) * 100) : null;
+            if (!PaymentGuard::ensureMerchant(
+                'BTCPay',
+                'storeId',
+                isset($invoiceDetail['storeId']) ? (string) $invoiceDetail['storeId'] : null,
+                (string) $this->getConfig('btcpay_storeId'),
+                $mode
+            )) {
+                throw new ApiException('BTCPay store mismatch', 400);
+            }
+            $actualMinor = PaymentGuard::decimalToMinor($invoiceDetail['amount'] ?? null);
             if (!PaymentGuard::ensureAmount('BTCPay', $out_trade_no, $actualMinor, $mode)) {
                 throw new ApiException('Payment amount mismatch', 400);
+            }
+            if (!PaymentGuard::ensureCurrency(
+                'BTCPay',
+                isset($invoiceDetail['currency']) ? (string) $invoiceDetail['currency'] : null,
+                'CNY',
+                $mode
+            )) {
+                throw new ApiException('Payment currency mismatch', 400);
             }
         }
 
@@ -186,4 +205,4 @@ class Plugin extends AbstractPlugin implements PaymentInterface
             return !$ret;
         }
     }
-} 
+}

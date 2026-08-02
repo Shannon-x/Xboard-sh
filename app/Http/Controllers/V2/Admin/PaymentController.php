@@ -120,7 +120,7 @@ class PaymentController extends Controller
             'payment' => 'required',
             'config' => 'required',
             'notify_domain' => 'nullable|url',
-            'handling_fee_fixed' => 'nullable|integer',
+            'handling_fee_fixed' => 'nullable|integer|min:0',
             'handling_fee_percent' => 'nullable|numeric|between:0,100'
         ], [
             'name.required' => '显示名称不能为空',
@@ -128,6 +128,7 @@ class PaymentController extends Controller
             'config.required' => '配置参数不能为空',
             'notify_domain.url' => '自定义通知域名格式有误',
             'handling_fee_fixed.integer' => '固定手续费格式有误',
+            'handling_fee_fixed.min' => '固定手续费不能为负数',
             'handling_fee_percent.between' => '百分比手续费范围须在0-100之间'
         ]);
         if ($request->input('id')) {

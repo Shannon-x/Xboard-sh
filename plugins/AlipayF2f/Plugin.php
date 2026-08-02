@@ -82,7 +82,7 @@ class Plugin extends AbstractPlugin implements PaymentInterface
 
     public function notify($params): array|bool
     {
-        if ($params['trade_status'] !== 'TRADE_SUCCESS')
+        if (($params['trade_status'] ?? null) !== 'TRADE_SUCCESS')
             return false;
 
         $gateway = new AlipayF2F();
@@ -107,11 +107,14 @@ class Plugin extends AbstractPlugin implements PaymentInterface
                         return false;
                     }
                     // 金额绑定：当面付回调 total_amount 单位为元
-                    $total = $params['total_amount'] ?? null;
-                    $actualMinor = $total !== null ? (int) round(((float) $total) * 100) : null;
+                    $actualMinor = PaymentGuard::decimalToMinor($params['total_amount'] ?? null);
                     if (!PaymentGuard::ensureAmount('AlipayF2F', $params['out_trade_no'] ?? null, $actualMinor, $mode)) {
                         return false;
                     }
+                }
+
+                if (empty($params['out_trade_no']) || empty($params['trade_no'])) {
+                    return false;
                 }
 
                 return [

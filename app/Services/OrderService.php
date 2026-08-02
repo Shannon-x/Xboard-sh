@@ -448,12 +448,21 @@ class OrderService
      *      产生硬依赖，升级镜像后即使 Horizon 没起来也不会卡单；
      *   4. 任何环节抛异常都不向网关暴露，避免 webhook 重投把订单锁死在 PROCESSING。
      */
-    public function paid(string $callbackNo): bool
+    public function paid(
+        string $callbackNo,
+        ?int $callbackPaymentId = null,
+        bool $requireGatewayMatch = false
+    ): bool
     {
         $tradeNo = $this->order->trade_no;
 
+        if (trim($callbackNo) === '') {
+            PaymentMetrics::warn('order.paid.callback_missing', ['trade_no' => $tradeNo]);
+            return false;
+        }
+
         try {
-            $action = DB::transaction(function () use ($tradeNo, $callbackNo) {
+            $action = DB::transaction(function () use ($tradeNo, $callbackNo, $callbackPaymentId, $requireGatewayMatch) {
                 $locked = Order::where('trade_no', $tradeNo)->lockForUpdate()->first();
                 if (!$locked) {
                     return 'missing';
@@ -462,7 +471,30 @@ class OrderService
                     PaymentMetrics::inc('order.paid.duplicate', [
                         'status' => (string) $locked->status,
                     ]);
-                    return 'duplicate';
+                    if (
+                        in_array((int) $locked->status, [Order::STATUS_PROCESSING, Order::STATUS_COMPLETED], true)
+                        && hash_equals((string) ($locked->callback_no ?? ''), $callbackNo)
+                    ) {
+                        return 'duplicate';
+                    }
+                    return 'unexpected';
+                }
+                if (
+                    $requireGatewayMatch
+                    && ($callbackPaymentId === null || (int) $locked->payment_id !== $callbackPaymentId)
+                ) {
+                    PaymentMetrics::warn('webhook.payment_id_mismatch', [
+                        'trade_no' => $tradeNo,
+                        'order_payment_id' => $locked->payment_id,
+                        'callback_payment_id' => $callbackPaymentId,
+                    ]);
+                    return 'gateway_mismatch';
+                }
+                if (
+                    $callbackPaymentId !== null
+                    && !$this->reservePaymentCallback($locked, $callbackPaymentId, $callbackNo)
+                ) {
+                    return 'callback_conflict';
                 }
                 $locked->status = Order::STATUS_PROCESSING;
                 $locked->paid_at = time();
@@ -482,7 +514,7 @@ class OrderService
             return false;
         }
 
-        if ($action === 'missing') {
+        if (in_array($action, ['missing', 'unexpected', 'gateway_mismatch', 'callback_conflict'], true)) {
             return false;
         }
         if ($action === 'duplicate') {
@@ -524,12 +556,16 @@ class OrderService
      *
      * @return string 'reopened' | 'duplicate' | 'manual' | 'missing' | 'unexpected' | 'error'
      */
-    public function reopenFromCancelled(string $callbackNo): string
+    public function reopenFromCancelled(string $callbackNo, ?int $callbackPaymentId = null): string
     {
         $tradeNo = $this->order->trade_no;
 
+        if (trim($callbackNo) === '') {
+            return 'manual';
+        }
+
         try {
-            $action = DB::transaction(function () use ($tradeNo, $callbackNo) {
+            $action = DB::transaction(function () use ($tradeNo, $callbackNo, $callbackPaymentId) {
                 $locked = Order::where('trade_no', $tradeNo)->lockForUpdate()->first();
                 if (!$locked) {
                     return 'missing';
@@ -541,6 +577,12 @@ class OrderService
                 // 只对「已取消」重开；其余状态不在本方法处理范围。
                 if ((int) $locked->status !== Order::STATUS_CANCELLED) {
                     return 'unexpected';
+                }
+
+                // 网关绑定必须在持有订单行锁时复核，避免 controller 预读后 checkout
+                // 并发改写 payment_id 形成 TOCTOU。迟到支付路径不允许同插件不同配置等价。
+                if ($callbackPaymentId !== null && (int) $locked->payment_id !== $callbackPaymentId) {
+                    return 'manual';
                 }
 
                 // 安全闸门 0：迟到窗口，超过上限的复活转人工（见常量注释）。
@@ -630,6 +672,13 @@ class OrderService
                     }
                 }
 
+                if (
+                    $callbackPaymentId !== null
+                    && !$this->reservePaymentCallback($locked, $callbackPaymentId, $callbackNo)
+                ) {
+                    return 'manual';
+                }
+
                 $locked->status = Order::STATUS_PROCESSING;
                 $locked->paid_at = time();
                 $locked->callback_no = $callbackNo;
@@ -662,6 +711,35 @@ class OrderService
         }
 
         return $action;
+    }
+
+    /**
+     * 为外部网关流水号建立不可重复的 SHA-256 指纹。
+     *
+     * v2_order.callback_no 没有唯一约束，仅在代码里先查再写仍会被并发击穿。
+     * 独立表的唯一 fingerprint 让「同一支付配置 + 同一网关流水」最多绑定一张订单。
+     */
+    private function reservePaymentCallback(Order $order, int $paymentId, string $callbackNo): bool
+    {
+        $fingerprint = hash('sha256', $paymentId . "\0" . $callbackNo);
+        $existing = DB::table('v2_payment_callback')
+            ->where('fingerprint', $fingerprint)
+            ->lockForUpdate()
+            ->first();
+
+        if ($existing) {
+            return (int) $existing->order_id === (int) $order->id;
+        }
+
+        DB::table('v2_payment_callback')->insert([
+            'fingerprint' => $fingerprint,
+            'payment_id' => $paymentId,
+            'order_id' => (int) $order->id,
+            'trade_no' => (string) $order->trade_no,
+            'created_at' => time(),
+        ]);
+
+        return true;
     }
 
     public function cancel(): bool

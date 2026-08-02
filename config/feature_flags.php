@@ -18,16 +18,13 @@ return [
     /*
     | EPay webhook 金额/状态校验模式。
     |
-    | warn   : 默认。校验签名 + trade_status + 金额；任意校验失败仅记录 Log::warning
-    |          与 PaymentMetrics（不拒收，便于观察真实流量与诡异回调）
-    | enforce: 校验失败直接 return 'fail'，拒收 webhook
+    | warn   : 仅记录异常但不拒收，只用于发现升级兼容问题后的临时回滚
+    | enforce: 默认。校验失败直接 return 'fail'，拒收 webhook
     | off    : 完全跳过 trade_status / 金额校验，仅保留签名校验（不推荐）
     |
-    | 推荐路径：保留默认 warn 至少 24-48h，确认 PaymentMetrics
-    | webhook.amount_mismatch 与 webhook.trade_status_invalid 计数为 0 或全部可解释
-    | 后再切 enforce。回滚直接改回 warn 即可。
+    | 安全校验不能默认处于观察模式，否则低额支付仍会开通高价订单。
     */
-    'payment_amount_check' => env('FEATURE_PAYMENT_AMOUNT_CHECK', 'warn'),
+    'payment_amount_check' => env('FEATURE_PAYMENT_AMOUNT_CHECK', 'enforce'),
 
     /*
     | 支付回调「网关绑定」校验模式。
@@ -36,16 +33,13 @@ return [
     | checkout 时绑定的 payment_id 是否就是本次回调网关。开启后会比对二者，防止用 A 网关
     | 的合法回调翻转一个走 B 网关创建的订单（trade_no 可枚举）。
     |
-    | warn   : 默认。不一致仅记 PaymentMetrics `webhook.payment_id_mismatch` + Log，仍照常开通。
-    | enforce: 不一致直接拒收回调。
+    | warn   : 不一致仅记 PaymentMetrics，仍照常开通；仅用于临时兼容。
+    | enforce: 默认。不一致直接拒收回调。
     | off    : 完全跳过该校验。
     |
-    | ⚠️ 默认 warn 是刻意选择：用户可能对同一 PENDING 订单先 checkout 网关 A、再改用网关 B
-    |    （payment_id 被改写为 B），随后才真正支付 A——此时 A 的合法回调会与 payment_id 不一致。
-    |    先用 warn 观察 24-48h，确认该计数为 0 或全部可解释（即都是攻击而非上述合法切换），
-    |    再切 enforce。回滚直接改回 warn。
+    | checkout 会锁定订单并禁止切换已经绑定的支付配置；需要换通道时取消后重建订单。
     */
-    'payment_gateway_bind' => env('FEATURE_PAYMENT_GATEWAY_BIND', 'warn'),
+    'payment_gateway_bind' => env('FEATURE_PAYMENT_GATEWAY_BIND', 'enforce'),
 
     /*
     | Admin 端 Payment 列表是否隐藏 config 中的 secret 字段。

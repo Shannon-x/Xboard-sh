@@ -3,7 +3,6 @@
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Artisan;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 class AddTrafficResetFieldsToUsers extends Migration
@@ -41,9 +40,7 @@ class AddTrafficResetFieldsToUsers extends Migration
 
         // 索引单独 add，并且自检是否已存在 —— 原实现塞在上面 column-add 块里，
         // 一旦上方 hasColumn 短路就连索引也建不出来。
-        $hasIndex = collect(DB::select('SHOW INDEX FROM v2_user'))
-            ->pluck('Key_name')
-            ->contains('idx_next_reset_at');
+        $hasIndex = Schema::hasIndex('v2_user', 'idx_next_reset_at');
         if (!$hasIndex && Schema::hasColumn('v2_user', 'next_reset_at')) {
             Schema::table('v2_user', function (Blueprint $table) {
                 $table->index('next_reset_at', 'idx_next_reset_at');

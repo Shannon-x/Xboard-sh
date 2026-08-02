@@ -2,10 +2,10 @@
 
 namespace Plugin\Epay;
 
-use App\Models\Order;
 use App\Services\Plugin\AbstractPlugin;
 use App\Contracts\PaymentInterface;
 use App\Support\FeatureFlag;
+use App\Support\PaymentGuard;
 use App\Support\PaymentMetrics;
 
 class Plugin extends AbstractPlugin implements PaymentInterface
@@ -83,6 +83,7 @@ class Plugin extends AbstractPlugin implements PaymentInterface
     public function notify($params): array|bool
     {
         $sign = (string) ($params['sign'] ?? '');
+        $signType = strtoupper((string) ($params['sign_type'] ?? ''));
         unset($params['sign'], $params['sign_type']);
         ksort($params);
         $str = stripslashes(urldecode(http_build_query($params))) . $this->getConfig('key');
@@ -97,10 +98,15 @@ class Plugin extends AbstractPlugin implements PaymentInterface
 
         $mode = FeatureFlag::mode('payment_amount_check');
         if ($mode !== 'off') {
-            $verdict = $this->verifyEpayPayload($params, $mode);
+            $verdict = $this->verifyEpayPayload($params, $signType, $mode);
             if ($verdict === false) {
                 return false;
             }
+        }
+
+        if (empty($params['out_trade_no']) || empty($params['trade_no'])) {
+            PaymentMetrics::warn('webhook.identifiers_missing', ['gateway' => 'EPay']);
+            return false;
         }
 
         return [
@@ -114,16 +120,27 @@ class Plugin extends AbstractPlugin implements PaymentInterface
      *
      * 三级 flag：
      *   off     → 跳过校验（旧行为，默认）
-     *   warn    → 仅记录指标与日志，不拒收（用于灰度观察）
+     *   warn    → 仅记录指标与日志，不拒收（仅用于紧急兼容）
      *   enforce → 任意一项不一致即拒收
      */
-    private function verifyEpayPayload(array $params, string $mode): bool
+    private function verifyEpayPayload(array $params, string $signType, string $mode): bool
     {
         $tradeNo = $params['out_trade_no'] ?? null;
         $tradeStatus = $params['trade_status'] ?? null;
         $money = $params['money'] ?? null;
 
-        if ($tradeStatus !== null && $tradeStatus !== 'TRADE_SUCCESS') {
+        if ($signType !== 'MD5') {
+            PaymentMetrics::warn('webhook.sign_type_invalid', [
+                'gateway' => 'EPay',
+                'out_trade_no' => $tradeNo,
+                'sign_type' => $signType,
+            ]);
+            if ($mode === 'enforce') {
+                return false;
+            }
+        }
+
+        if ($tradeStatus !== 'TRADE_SUCCESS') {
             PaymentMetrics::warn('webhook.trade_status_invalid', [
                 'gateway' => 'EPay',
                 'out_trade_no' => $tradeNo,
@@ -134,35 +151,19 @@ class Plugin extends AbstractPlugin implements PaymentInterface
             }
         }
 
-        if ($tradeNo === null || $money === null) {
-            return true;
+        if (!PaymentGuard::ensureMerchant(
+            'EPay',
+            'pid',
+            isset($params['pid']) ? (string) $params['pid'] : null,
+            (string) $this->getConfig('pid'),
+            $mode
+        )) {
+            return false;
         }
 
-        $order = Order::where('trade_no', $tradeNo)->first();
-        if (!$order) {
-            // 订单不存在不在这里拒收（V1\PaymentController 的 handle 会处理 404 路径）
-            return true;
-        }
-
-        // EPay 的 money 单位为元；本地 total_amount/handling_amount 单位为分。
-        // 应付额 = total_amount + handling_amount：checkout 向网关发起的就是这个合计
-        // （OrderController::checkout），回调 money 也含手续费。与 PaymentGuard 口径完全一致：
-        //   - 用合计作为期望值，避免把「足额含手续费」误判为不一致；
-        //   - 只拦「欠额」（实付 < 应付），不拦溢付——溢付不是攻击方向。
-        // 原实现用 bccomp(...) !== 0 严格相等 + base-only，对任何有手续费的订单都会误报，
-        // warn 下污染 webhook.amount_mismatch 指标、enforce 下直接拒收足额订单。
-        $expectedMinor = (int) $order->total_amount + (int) ($order->handling_amount ?? 0);
-        $actualMinor = (int) round((float) $money * 100);
-        if ($actualMinor < $expectedMinor) {
-            PaymentMetrics::warn('webhook.amount_mismatch', [
-                'gateway' => 'EPay',
-                'out_trade_no' => $tradeNo,
-                'expected' => $expectedMinor,
-                'actual' => $actualMinor,
-            ]);
-            if ($mode === 'enforce') {
-                return false;
-            }
+        $actualMinor = PaymentGuard::decimalToMinor($money);
+        if (!PaymentGuard::ensureAmount('EPay', $tradeNo, $actualMinor, $mode)) {
+            return false;
         }
 
         return true;

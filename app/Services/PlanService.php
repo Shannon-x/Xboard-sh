@@ -76,7 +76,13 @@ class PlanService
         $periodKey = self::getPeriodKey($period);
         $price = $this->plan->prices[$periodKey] ?? null;
 
-        if ($price === null) {
+        $priceText = is_int($price) || is_float($price) || is_string($price) ? (string) $price : '';
+        if (
+            $price === null
+            || !preg_match('/^(0|[1-9]\d*)(?:\.\d{1,2})?$/D', $priceText)
+            || (float) $priceText <= 0
+            || (float) $priceText > 999999.99
+        ) {
             throw new ApiException(__('This payment period cannot be purchased, please choose another period'));
         }
 
@@ -157,7 +163,9 @@ class PlanService
             throw new ApiException(__('This subscription cannot be renewed, please change to another subscription'));
         }
 
-        if (!$this->plan->show && $this->plan->renew && !app(UserService::class)->isAvailable($user)) {
+        // 到这里 show=false 时 renew 必为 true（否则已被上面的售罄分支拒绝），
+        // 直接检查现有订阅是否仍可续费即可。
+        if (!$this->plan->show && !app(UserService::class)->isAvailable($user)) {
             throw new ApiException(__('This subscription has expired, please change to another subscription'));
         }
     }

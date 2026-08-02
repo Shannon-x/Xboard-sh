@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\OrderService;
 use App\Services\UserService;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Model;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 
@@ -23,6 +24,20 @@ class OrderPlanChangeTest extends TestCase
 {
     private const BYTES_PER_GB = 1073741824;
     private const DAY_SECONDS = 86400;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // 这些纯单元测试不启动 Laravel 数据库容器；关闭 mass-assignment 查询，
+        // 避免新版 Eloquent 为判断 guardable columns 而访问不存在的连接解析器。
+        Model::unguard();
+    }
+
+    protected function tearDown(): void
+    {
+        Model::reguard();
+        parent::tearDown();
+    }
 
     public function test_reset_day_uses_stored_next_reset_at(): void
     {

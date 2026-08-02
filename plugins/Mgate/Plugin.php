@@ -74,7 +74,8 @@ class Plugin extends AbstractPlugin implements PaymentInterface
 
         $curl = new Curl();
         $curl->setUserAgent('MGate');
-        $curl->setOpt(CURLOPT_SSL_VERIFYPEER, 0);
+        $curl->setOpt(CURLOPT_SSL_VERIFYPEER, true);
+        $curl->setOpt(CURLOPT_SSL_VERIFYHOST, 2);
         $curl->post($this->getConfig('mgate_url') . '/v1/gateway/fetch', http_build_query($params));
         $result = $curl->response;
 
@@ -107,13 +108,17 @@ class Plugin extends AbstractPlugin implements PaymentInterface
 
     public function notify($params): array|bool
     {
-        $sign = $params['sign'];
+        $sign = (string) ($params['sign'] ?? '');
         unset($params['sign']);
         ksort($params);
         reset($params);
         $str = http_build_query($params) . $this->getConfig('mgate_app_secret');
 
-        if ($sign !== md5($str)) {
+        if (!hash_equals(md5($str), $sign)) {
+            return false;
+        }
+
+        if (empty($params['out_trade_no']) || empty($params['trade_no'])) {
             return false;
         }
 
@@ -131,8 +136,7 @@ class Plugin extends AbstractPlugin implements PaymentInterface
                 return false;
             }
             // pay() 提交的 total_amount 单位为分，回调原样回传，按分比较
-            $total = $params['total_amount'] ?? null;
-            $actualMinor = $total !== null ? (int) round((float) $total) : null;
+            $actualMinor = PaymentGuard::integerMinor($params['total_amount'] ?? null);
             if (!PaymentGuard::ensureAmount('MGate', $params['out_trade_no'] ?? null, $actualMinor, $mode)) {
                 return false;
             }

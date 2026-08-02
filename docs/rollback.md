@@ -20,13 +20,13 @@
 
 ### Fix #5  EPay 金额/状态校验（FEATURE_PAYMENT_AMOUNT_CHECK）
 
-**默认值**：`warn`（仅记录日志，不拒收）。升级镜像后即生效，无需任何 .env 配置。
+**默认值**：`enforce`（金额、状态、商户或币种异常会拒收）。升级镜像后即生效，无需任何 .env 配置。
 
 **症状**：（仅 enforce 模式）合法订单 webhook 被拒，用户付款后订单仍是 PENDING。
 
 **回滚**：
 ```bash
-# 把 enforce 改回 warn 或 off
+# 只在网关字段与当前实现确有兼容问题时临时改回 warn；同时保留指标并尽快修复适配
 FEATURE_PAYMENT_AMOUNT_CHECK=warn
 php artisan config:cache
 ```
@@ -46,6 +46,22 @@ php artisan tinker
 >>> $order = App\Models\Order::where('trade_no', 'XXX')->first();
 >>> app(App\Services\OrderService::class, ['order' => $order])->paid('manual_recovery_' . time());
 ```
+
+### 支付配置绑定（FEATURE_PAYMENT_GATEWAY_BIND）
+
+**默认值**：`enforce`。外部回调必须与订单首次 checkout 绑定的 `payment_id` 完全一致；
+同一插件的两条配置也可能对应不同商户，因此不会互相等价。
+
+若旧业务允许用户对同一订单反复切换支付方式，升级前应先清理或人工核对这些 PENDING 订单。
+紧急兼容可临时设为 `warn`，但这会降低跨网关回调隔离强度：
+
+```bash
+FEATURE_PAYMENT_GATEWAY_BIND=warn
+php artisan config:cache
+```
+
+新版本还会通过 `v2_payment_callback` 的唯一指纹阻止同一网关流水绑定多张订单；
+该约束无 feature flag，回滚代码前不要删除此表，以保留审计记录。
 
 ---
 

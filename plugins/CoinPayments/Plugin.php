@@ -78,7 +78,8 @@ class Plugin extends AbstractPlugin implements PaymentInterface
 
     public function notify($params): array|string
     {
-        if (!isset($params['merchant']) || $params['merchant'] != trim($this->getConfig('coinpayments_merchant_id'))) {
+        $expectedMerchant = trim((string) $this->getConfig('coinpayments_merchant_id'));
+        if (!isset($params['merchant']) || !hash_equals($expectedMerchant, (string) $params['merchant'])) {
             throw new ApiException('No or incorrect Merchant ID passed');
         }
 
@@ -103,11 +104,22 @@ class Plugin extends AbstractPlugin implements PaymentInterface
             // amount1 = 以商户结算币种计的金额；pay() 中以 coinpayments_currency 提交 amountf。
             $mode = PaymentGuard::amountMode();
             if ($mode !== 'off') {
-                $amount1 = $params['amount1'] ?? null;
-                $actualMinor = $amount1 !== null ? (int) round(((float) $amount1) * 100) : null;
+                $actualMinor = PaymentGuard::decimalToMinor($params['amount1'] ?? null);
                 if (!PaymentGuard::ensureAmount('CoinPayments', $params['item_number'] ?? null, $actualMinor, $mode)) {
                     throw new ApiException('Payment amount mismatch', 400);
                 }
+                if (!PaymentGuard::ensureCurrency(
+                    'CoinPayments',
+                    isset($params['currency1']) ? (string) $params['currency1'] : null,
+                    (string) $this->getConfig('coinpayments_currency'),
+                    $mode
+                )) {
+                    throw new ApiException('Payment currency mismatch', 400);
+                }
+            }
+
+            if (empty($params['item_number']) || empty($params['txn_id'])) {
+                throw new ApiException('Payment identifiers missing', 400);
             }
 
             return [
@@ -128,4 +140,4 @@ class Plugin extends AbstractPlugin implements PaymentInterface
             ];
         }
     }
-} 
+}

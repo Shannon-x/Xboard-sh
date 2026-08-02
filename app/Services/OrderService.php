@@ -161,7 +161,7 @@ class OrderService
 
             match ((string) $order->period) {
                 Plan::PERIOD_ONETIME => $this->buyByOneTime($plan),
-                Plan::PERIOD_RESET_TRAFFIC => app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER),
+                Plan::PERIOD_RESET_TRAFFIC => $this->resetTrafficForOrder(),
                 default => $this->buyByPeriod($order, $plan),
             };
 
@@ -710,6 +710,24 @@ class OrderService
         $this->user->device_limit = $deviceLimit;
     }
 
+    /**
+     * 流量重置包订单的开通动作。
+     *
+     * 必须检查 performReset 的返回值：它内部 catch(\Exception) 后只记日志并 return false，
+     * u/d 清零会随内层事务一起回滚。原实现把返回值丢在 match 分支里，导致重置失败时
+     * 订单照样被置为 COMPLETED —— 用户付了钱、流量没恢复、连 TrafficResetLog 都没有，
+     * 且没有任何自愈路径（订单已终态，cron 不会再碰）。任何插件 hook 抛异常都能触发。
+     *
+     * 抛异常让外层 open() 事务整体回滚，订单停在 PROCESSING，由 check:order 每分钟重投
+     * OrderHandleJob 重试 —— 与套餐变更路径（buyByPeriod 内）保持完全一致的失败语义。
+     */
+    private function resetTrafficForOrder(): void
+    {
+        if (!app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER)) {
+            throw new \RuntimeException('流量重置包开通失败：流量重置未成功');
+        }
+    }
+
     private function buyByPeriod(Order $order, Plan $plan)
     {
         $isPlanChange = (int) $order->type === Order::TYPE_UPGRADE;
@@ -724,6 +742,10 @@ class OrderService
 
         // 续费 / 新购原有逻辑
         $oldExpiredAt = $this->user->expired_at;
+        // 必须在覆盖 transfer_enable 之前取，否则量到的是新配额而不是用户实际被发放并消耗掉的那份。
+        $usedTraffic = (int) ($this->user->u ?? 0) + (int) ($this->user->d ?? 0);
+        $oldTransferEnable = (int) ($this->user->transfer_enable ?? 0);
+
         $this->user->transfer_enable = $plan->transfer_enable * self::BYTES_PER_GB;
         // 从一次性转换到循环或者新购的时候，重置流量
         if ($oldExpiredAt === NULL || $order->type === Order::TYPE_NEW_PURCHASE) {
@@ -731,7 +753,64 @@ class OrderService
         }
         $this->user->plan_id = $plan->id;
         $this->user->group_id = $plan->group_id;
+
+        if ($this->shouldRestartRenewalCycle($order, $oldExpiredAt, $usedTraffic, $oldTransferEnable)) {
+            // 周期从付款时刻重开，并发一份新配额。旧周期剩下的那段是"零流量空壳"，
+            // 对用户没有使用价值，放弃它换取立即可用的配额。
+            $this->user->expired_at = $this->getTime((string) $order->period, time());
+            // performReset 内部按 user->plan + user->expired_at 推算 next_reset_at，
+            // 必须先把新到期日和 plan 关系装好再重置，否则锚点会落在旧周期上。
+            $this->user->setRelation('plan', $plan);
+            if (!app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER)) {
+                throw new \RuntimeException('续费重开周期失败：流量重置未成功');
+            }
+            return;
+        }
+
         $this->user->expired_at = $this->getTime($order->period, $this->user->expired_at);
+    }
+
+    /**
+     * 续费时是否应当「重开周期」——到期日从付款时刻重算，并立即重置流量。
+     *
+     * 解决的问题：月付用户第 5 天把流量跑完后再买一次同套餐，原逻辑把时间叠加到旧到期日
+     * 之后（1/1 买 → 2/1 到期；1/5 续费 → 3/1 到期）却不重置流量，用户付了钱在 2/1 之前
+     * 一滴流量都没有——他要的是"现在能上网"，拿到的是"3 月才到期"。
+     *
+     * 两个条件缺一不可：
+     *   ① 流量确实已耗尽 —— 挡住"手滑提前续费"。还剩 90GB / 29 天的用户若被重开，
+     *      会白丢 28 天；未达阈值就维持原叠加逻辑。
+     *   ② 从今天重开不会缩短到期日 —— 挡住"长周期用户买短周期"。年付剩 11 个月的用户
+     *      即使流量跑完也满足条件①，若只看条件① 就会被一张月付单把 11 个月烧成 1 个月。
+     *
+     * 阈值复用 advance_cycle_used_ratio：它和 AdvanceCycleService 问的是同一个问题
+     * （"流量算不算跑完了"），两处口径必须一致，不另立新配置项。
+     */
+    private function shouldRestartRenewalCycle(
+        Order $order,
+        ?int $oldExpiredAt,
+        int $usedTraffic,
+        int $transferEnable
+    ): bool {
+        if ((int) $order->type !== Order::TYPE_RENEWAL) {
+            return false;
+        }
+        // 一次性(永久)订阅没有周期可重开，且 expired_at 为 null 时条件② 无从比较。
+        if ($oldExpiredAt === null || $transferEnable <= 0) {
+            return false;
+        }
+
+        $ratio = admin_setting('advance_cycle_used_ratio', 0.95);
+        $ratio = is_numeric($ratio) ? (float) $ratio : 0.95;
+        $ratio = max(0.5, min(1.0, $ratio));
+
+        // 条件①：流量已耗尽
+        if ($usedTraffic < (int) ceil($transferEnable * $ratio)) {
+            return false;
+        }
+
+        // 条件②：重开后的到期日不得早于原到期日（长周期买短周期时自动落回叠加）
+        return $this->getTime((string) $order->period, time()) > $oldExpiredAt;
     }
 
     private function applyPlanChangeCycle(Order $order, Plan $plan): void

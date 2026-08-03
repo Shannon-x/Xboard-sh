@@ -57,8 +57,13 @@ class Helper
     {
         // 原 mt_rand 是 Mersenne-Twister，2^32 seed，可由 ~624 个连续输出还原内部状态。
         // 订单号被用在 Payment notify URL 等公开路径，必须用 CSPRNG。
+        //
+        // 时间段用 YmdHis。此前误写成 YmdHms——'m' 是月份不是分钟，导致订单号里月份
+        // 出现两次、完全没有分钟数：2026-08-03 09:11:21 与 09:08:21 都编码成
+        // 「20260803090821」。长度不变（都是 14 位），仅修正字段含义；排查时终于可以
+        // 直接从订单号读出分钟级时间，不会再算出凭空多出几分钟的假时间差。
         $randomChar = random_int(10000, 99999);
-        return date('YmdHms') . substr(microtime(), 2, 6) . $randomChar;
+        return date('YmdHis') . substr(microtime(), 2, 6) . $randomChar;
     }
 
     public static function exchange($from, $to)

@@ -10,6 +10,7 @@ use App\Models\Plan;
 use App\Models\TrafficResetLog;
 use App\Models\User;
 use App\Services\Plugin\HookManager;
+use App\Support\PaymentGatewayBinding;
 use App\Support\PaymentMetrics;
 use App\Utils\Helper;
 use Illuminate\Support\Facades\DB;
@@ -479,9 +480,14 @@ class OrderService
                     }
                     return 'unexpected';
                 }
+                // 同源判定与 controller 预检一致（插件类 + 商户凭证指纹），但必须在持有
+                // 行锁后重做一遍：预检与此处之间 payment_id 可能被并发 checkout 改写。
                 if (
                     $requireGatewayMatch
-                    && ($callbackPaymentId === null || (int) $locked->payment_id !== $callbackPaymentId)
+                    && !PaymentGatewayBinding::equivalent(
+                        $locked->payment_id === null ? null : (int) $locked->payment_id,
+                        $callbackPaymentId
+                    )
                 ) {
                     PaymentMetrics::warn('webhook.payment_id_mismatch', [
                         'trade_no' => $tradeNo,
@@ -580,8 +586,15 @@ class OrderService
                 }
 
                 // 网关绑定必须在持有订单行锁时复核，避免 controller 预读后 checkout
-                // 并发改写 payment_id 形成 TOCTOU。迟到支付路径不允许同插件不同配置等价。
-                if ($callbackPaymentId !== null && (int) $locked->payment_id !== $callbackPaymentId) {
+                // 并发改写 payment_id 形成 TOCTOU。同源判定只认「插件类 + 商户凭证指纹」，
+                // 仅凭插件类相同不算等价（那会放回跨商户翻单的口子）。
+                if (
+                    $callbackPaymentId !== null
+                    && !PaymentGatewayBinding::equivalent(
+                        $locked->payment_id === null ? null : (int) $locked->payment_id,
+                        $callbackPaymentId
+                    )
+                ) {
                     return 'manual';
                 }
 

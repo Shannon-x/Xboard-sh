@@ -9,6 +9,7 @@ use App\Services\OrderService;
 use App\Services\PaymentService;
 use App\Services\TelegramService;
 use App\Support\FeatureFlag;
+use App\Support\PaymentGatewayBinding;
 use App\Support\PaymentMetrics;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -75,21 +76,32 @@ class PaymentController extends Controller
             return $this->handleLatePayment($order, $callbackNo, $payment);
         }
 
-        // 回调网关必须与订单 checkout 时绑定的 payment_id 一致：
+        // 回调网关必须与订单 checkout 时绑定的网关同源：
         // 防止已知某 PENDING 订单 trade_no（可枚举）后，用攻击者掌握的另一网关 uuid
         // 端点提交「该网关验签通过的回调」来翻转目标订单。
         //
-        // 受 payment_gateway_bind 控制，默认 enforce。checkout 首次绑定后已禁止切换支付配置，
-        // 所以同插件下的不同配置也必须精确匹配；它们可能属于完全不同的商户和密钥。
+        // 受 payment_gateway_bind 控制，默认 enforce。「同源」不是 payment_id 精确相等：
+        // 同一个商户常被配成多条记录（「支付宝支付」「微信支付」两个按钮，url+pid+key
+        // 完全相同），用户在收银台切换按钮会让订单绑定的 payment_id 与他实际付款的收款
+        // 会话错位，合法回调因此被拒、钱到账却不开通。改为比对「插件类 + 商户凭证指纹」：
+        // 共用同一套密钥的配置放行，密钥/商户号不同的一律照拒（见 PaymentGatewayBinding）。
         $bindMode = FeatureFlag::mode('payment_gateway_bind');
-        if ($bindMode !== 'off' && (int) $order->payment_id !== (int) $payment->id) {
-            PaymentMetrics::warn('webhook.payment_id_mismatch', [
-                'trade_no' => $tradeNo,
-                'order_payment_id' => $order->payment_id,
-                'callback_payment_id' => (int) $payment->id,
-            ]);
-            if ($bindMode === 'enforce') {
-                return false;
+        $orderPaymentId = $order->payment_id === null ? null : (int) $order->payment_id;
+        $callbackPaymentId = (int) $payment->id;
+        if ($bindMode !== 'off' && $orderPaymentId !== $callbackPaymentId) {
+            if (PaymentGatewayBinding::equivalent($orderPaymentId, $callbackPaymentId)) {
+                // 同商户别名通道收款：合法，但仍留一条指标，便于发现「一个商户配了多条
+                // 记录」这类面板配置问题。只记指标不打 warning，避免把正常支付刷成告警。
+                PaymentMetrics::inc('webhook.gateway_alias_accepted');
+            } else {
+                PaymentMetrics::warn('webhook.payment_id_mismatch', [
+                    'trade_no' => $tradeNo,
+                    'order_payment_id' => $order->payment_id,
+                    'callback_payment_id' => $callbackPaymentId,
+                ]);
+                if ($bindMode === 'enforce') {
+                    return false;
+                }
             }
         }
 
@@ -121,7 +133,10 @@ class PaymentController extends Controller
         // 已在开通中或已完成：正常的重复回调，幂等确认。
         if (in_array($status, [Order::STATUS_PROCESSING, Order::STATUS_COMPLETED], true)) {
             if (
-                (int) $order->payment_id === (int) $payment->id
+                PaymentGatewayBinding::equivalent(
+                    $order->payment_id === null ? null : (int) $order->payment_id,
+                    (int) $payment->id
+                )
                 && hash_equals((string) ($order->callback_no ?? ''), $callbackNo)
             ) {
                 return true;
@@ -135,10 +150,11 @@ class PaymentController extends Controller
         }
 
         // 已取消订单收到真实支付。重开是敏感操作，这里**强制**校验回调网关与订单
-        // checkout 绑定的 payment_id 完全一致（不依赖全局 warn/off 开关）。同一插件的
-        // 两条配置也可能属于不同商户/密钥，不能仅凭插件类相同就视为同源。
+        // checkout 绑定的网关同源（不依赖全局 warn/off 开关）。同一插件的两条配置可能
+        // 属于不同商户/密钥，所以不能只比插件类；但共用同一套凭证的多通道配置必须放行，
+        // 否则「切过按钮的用户」迟到支付会被一律转人工——这正是 2026-07-14 事故的形态。
         $boundPayment = $order->payment_id !== null ? Payment::find($order->payment_id) : null;
-        if (!$boundPayment || (int) $boundPayment->id !== (int) $payment->id) {
+        if (!$boundPayment || !PaymentGatewayBinding::sameMerchant($boundPayment, $payment)) {
             return $this->flagLatePaymentForReview($order, $callbackNo, 'gateway_mismatch');
         }
 

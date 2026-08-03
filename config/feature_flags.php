@@ -37,7 +37,11 @@ return [
     | enforce: 默认。不一致直接拒收回调。
     | off    : 完全跳过该校验。
     |
-    | checkout 会锁定订单并禁止切换已经绑定的支付配置；需要换通道时取消后重建订单。
+    | 「一致」的判定是同源而非 payment_id 精确相等：同一商户常被配成多条记录（典型是
+    | 「支付宝支付」「微信支付」两个按钮，url+pid+key 完全相同），用户在收银台切换按钮
+    | 会让订单绑定的 payment_id 与实际付款的收款会话错位。App\Support\PaymentGatewayBinding
+    | 比对「插件类 + 商户凭证指纹」，共用同一套密钥的配置视为同源放行；密钥/商户号/回调
+    | 域名任一不同即判为不同源，照旧拒收。config 为空等无从判定的情形一律按不同源处理。
     */
     'payment_gateway_bind' => env('FEATURE_PAYMENT_GATEWAY_BIND', 'enforce'),
 

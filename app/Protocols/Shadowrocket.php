@@ -244,10 +244,10 @@ class Shadowrocket extends AbstractProtocol
         switch (data_get($protocol_settings, 'network')) {
             case 'tcp':
                 $header = data_get($networkSettings, 'header', []);
-                if (($header['type'] ?? '') === 'http') {
+                if (data_get($header, 'type') === 'http') {
                     $config['headerType'] = 'http';
-                    $config['host'] = $header['request']['headers']['Host'][0] ?? '';
-                    $config['path'] = $header['request']['path'][0] ?? '';
+                    $config['host'] = data_get($header, 'request.headers.Host.0', '');
+                    $config['path'] = data_get($header, 'request.path.0', '');
                 }
                 break;
             case 'ws':

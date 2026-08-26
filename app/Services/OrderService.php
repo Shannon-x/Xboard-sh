@@ -811,10 +811,15 @@ class OrderService
      *
      * 抛异常让外层 open() 事务整体回滚，订单停在 PROCESSING，由 check:order 每分钟重投
      * OrderHandleJob 重试 —— 与套餐变更路径（buyByPeriod 内）保持完全一致的失败语义。
+     *
+     * preserveSchedule: 重置包只清零流量、不动到期日，因此也不能改动已排定的下次重置日。
+     * 不传这个参数时 performReset 会按 expired_at 重新锚定 next_reset_at，一旦二者此前
+     * 因故障补偿等原因被拉开（补偿只 +expired_at 不动 next_reset_at），用户花钱买的重置包
+     * 反而会把本该到来的那次免费重置吞掉并往后推。详见 TrafficResetService。
      */
     private function resetTrafficForOrder(): void
     {
-        if (!app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER)) {
+        if (!app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER, preserveSchedule: true)) {
             throw new \RuntimeException('流量重置包开通失败：流量重置未成功');
         }
     }

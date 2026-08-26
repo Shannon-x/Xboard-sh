@@ -192,7 +192,8 @@ class GiftCardService
 
         if (isset($rewards['reset_package']) && $rewards['reset_package']) {
             if ($this->user->plan_id) {
-                app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_GIFT_CARD);
+                // 与付费重置包同一语义：只清零流量，不得把已排定的下次重置日往后推。
+                app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_GIFT_CARD, preserveSchedule: true);
             }
         }
 

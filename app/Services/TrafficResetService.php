@@ -30,23 +30,35 @@ class TrafficResetService
 
   /**
    * Perform the traffic reset for a user.
+   *
+   * @param bool $preserveSchedule 「只清零流量、不重排周期」的场景（流量重置包、礼品卡重置包）
+   *                               传 true，避免把已排定的重置日往后推。详见
+   *                               keepScheduledResetIfEarlier() 的注释。
    */
-  public function performReset(User $user, string $triggerSource = TrafficResetLog::SOURCE_MANUAL): bool
-  {
+  public function performReset(
+    User $user,
+    string $triggerSource = TrafficResetLog::SOURCE_MANUAL,
+    bool $preserveSchedule = false
+  ): bool {
     try {
-      return DB::transaction(function () use ($user, $triggerSource) {
+      return DB::transaction(function () use ($user, $triggerSource, $preserveSchedule) {
         $oldUpload = $user->u ?? 0;
         $oldDownload = $user->d ?? 0;
         $oldTotal = $oldUpload + $oldDownload;
 
         $nextResetTime = $this->calculateNextResetTime($user);
+        $nextResetAt = $nextResetTime?->timestamp;
+
+        if ($preserveSchedule) {
+          $nextResetAt = $this->keepScheduledResetIfEarlier($user, $nextResetAt);
+        }
 
         $user->update([
           'u' => 0,
           'd' => 0,
           'last_reset_at' => time(),
           'reset_count' => (int) $user->reset_count + 1,
-          'next_reset_at' => $nextResetTime ? $nextResetTime->timestamp : null,
+          'next_reset_at' => $nextResetAt,
         ]);
 
         $this->recordResetLog($user, [
@@ -74,6 +86,36 @@ class TrafficResetService
 
       return false;
     }
+  }
+
+  /**
+   * 「只清零流量」的重置不得把已排定的重置日往后推。
+   *
+   * 真实事故（user 10100 / 工单 #2444）：8-21 入口 IP 被墙的故障补偿用裸 SQL 只把
+   * expired_at +7 天（08-27 → 09-03），刻意没动 next_reset_at，用户面板上仍显示
+   * 「3 天后重置」。用户随后花 36.12 元买了流量重置包，performReset 顺手按**新的**
+   * expired_at 重新锚定 next_reset_at，把 08-27 那次重置推到了 09-03 —— 付费产品把
+   * 用户本就该拿到的一轮 550GB 吃掉了，面板上「3 天后」当场变成「10 天后」。
+   *
+   * 语义：重置包卖的是「立刻清零」，不是「重排周期」。只有 expired_at 真的变了
+   * （续费重开周期 / 套餐变更 / 新购）才该重新锚定，那些路径不传 $preserveSchedule。
+   *
+   * 仅在「原定时间仍在未来」且「重算结果比它更晚」时保留原值：
+   *  - 原定时间已过期必须重算，否则每分钟跑的 reset:traffic 会反复命中同一时间点无限重置；
+   *  - 重算结果更早时按重算走，本方法只会保留更早的排期，永远不会把重置日往后拖。
+   */
+  private function keepScheduledResetIfEarlier(User $user, ?int $recalculated): ?int
+  {
+    $scheduled = $user->next_reset_at;
+    $scheduled = $scheduled instanceof \DateTimeInterface
+      ? $scheduled->getTimestamp()
+      : ($scheduled !== null ? (int) $scheduled : null);
+
+    if ($scheduled === null || $recalculated === null) {
+      return $recalculated;
+    }
+
+    return ($scheduled > time() && $scheduled < $recalculated) ? $scheduled : $recalculated;
   }
 
   /**

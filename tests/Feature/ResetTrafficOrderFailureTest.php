@@ -38,8 +38,11 @@ class ResetTrafficOrderFailureTest extends TestCase
                 {
                 }
 
-                public function performReset(User $user, string $triggerSource = 'manual'): bool
-                {
+                public function performReset(
+                    User $user,
+                    string $triggerSource = 'manual',
+                    bool $preserveSchedule = false
+                ): bool {
                     return $this->result;
                 }
             }

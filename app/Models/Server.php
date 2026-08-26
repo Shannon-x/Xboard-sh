@@ -337,6 +337,27 @@ class Server extends Model
         ]
     ];
 
+    /**
+     * 递归地把 stdClass 转成数组。
+     * 仅做一层 (array) 强转会把嵌套对象原样留下（例如 network_settings.header），
+     * 下游用 $x['key'] 取值时会抛 "Cannot use object of type stdClass as array"。
+     */
+    private static function toArrayDeep($value)
+    {
+        if (is_object($value)) {
+            $value = get_object_vars($value);
+        }
+        if (!is_array($value)) {
+            return (array) $value;
+        }
+        foreach ($value as $key => $item) {
+            if (is_object($item) || is_array($item)) {
+                $value[$key] = self::toArrayDeep($item);
+            }
+        }
+        return $value;
+    }
+
     private function castValueWithConfig($value, array $config)
     {
         if ($value === null && $config['type'] !== 'object') {
@@ -347,7 +368,7 @@ class Server extends Model
             'integer' => (int) $value,
             'boolean' => (bool) $value,
             'string' => (string) $value,
-            'array' => (array) $value,
+            'array' => self::toArrayDeep($value),
             'object' => is_array($value) ?
             $this->castSettingsWithConfig($value, $config['fields']) :
             $config['default'] ?? null,
@@ -397,7 +418,7 @@ class Server extends Model
         
         $rawSettings = json_decode($value, false);
         if (isset($rawSettings->network_settings) && is_object($rawSettings->network_settings)) {
-            $settings['network_settings'] = (array) $rawSettings->network_settings;
+            $settings['network_settings'] = self::toArrayDeep($rawSettings->network_settings);
         }
 
         $configs = self::PROTOCOL_CONFIGURATIONS[$this->type] ?? [];
@@ -410,7 +431,7 @@ class Server extends Model
             $rawValue = json_decode($value, false);
             $value = json_decode($value, true) ?? [];
             if (isset($rawValue->network_settings) && is_object($rawValue->network_settings)) {
-                $value['network_settings'] = (array) $rawValue->network_settings;
+                $value['network_settings'] = self::toArrayDeep($rawValue->network_settings);
             }
         }
 

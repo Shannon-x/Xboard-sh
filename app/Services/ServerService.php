@@ -407,6 +407,13 @@ class ServerService
                 'provider'           => data_get($node['cert_config'], 'provider'),
                 'dns_env'            => data_get($node['cert_config'], 'dns_env'),
                 'reject_unknown_sni' => data_get($node['cert_config'], 'reject_unknown_sni'),
+                // remote 模式：证书由面板生成并持有，这里把内容下发给节点。
+                // 节点（V2bX CertMode=remote / v2node 同名模式）只负责落盘，
+                // 指纹则由面板写进订阅供客户端固定。
+                'tls_cert'           => data_get($node['cert_config'], 'tls_cert'),
+                'tls_key'            => data_get($node['cert_config'], 'tls_key'),
+                // 下发指纹只为让节点侧能在日志里核对，节点不用它做校验。
+                'pinned_peer_cert_sha256' => data_get($node['cert_config'], 'pinned_peer_cert_sha256'),
             ], fn($v) => !is_null($v));
 
             if (!empty($certFields) && isset($response['tls_settings'])) {

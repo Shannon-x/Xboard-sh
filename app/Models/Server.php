@@ -216,11 +216,29 @@ class Server extends Model
         ]
     ];
 
+    // 证书指纹固定。
+    //
+    // 用于「SNI 是伪装域名」的场景：此时任何真实证书都无法通过验证，
+    // 而 xray-core 已经移除 allowInsecure（配了直接报错，官方指定改用
+    // pinnedPeerCertSha256）。所以只能由面板生成一张长效自签证书、
+    // 把证书下发给节点、把指纹写进订阅，客户端靠指纹完成验证。
+    //
+    // 必须存两个值，因为各客户端固定的对象不同：
+    //   pinned_peer_cert_sha256  sha256(证书 DER)
+    //       -> xray 的 pinnedPeerCertSha256(pcs)、hysteria 的 tls.pinSHA256
+    //   pinned_public_key_sha256 sha256(公钥 SPKI)
+    //       -> sing-box 的 certificate_public_key_sha256
+    private const CERT_PIN_CONFIGURATION = [
+        'pinned_peer_cert_sha256' => ['type' => 'string', 'default' => null],
+        'pinned_public_key_sha256' => ['type' => 'string', 'default' => null],
+    ];
+
     private const TLS_SETTINGS_CONFIGURATION = [
         'type' => 'object',
         'fields' => [
             'server_name' => ['type' => 'string', 'default' => null],
             'allow_insecure' => ['type' => 'boolean', 'default' => false],
+            ...self::CERT_PIN_CONFIGURATION,
             ...self::ECH_CONFIGURATION,
         ]
     ];
@@ -230,6 +248,7 @@ class Server extends Model
         'fields' => [
             'server_name' => ['type' => 'string', 'default' => null],
             'allow_insecure' => ['type' => 'boolean', 'default' => false],
+            ...self::CERT_PIN_CONFIGURATION,
             ...self::ECH_CONFIGURATION,
         ]
     ];

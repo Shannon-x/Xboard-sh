@@ -331,6 +331,21 @@ class General extends AbstractProtocol
         }
         $params['insecure'] = data_get($protocol_settings, 'tls.allow_insecure') ? '1' : '0';
 
+        // 证书指纹固定。SNI 为伪装域名时真证书无法验证，而 xray-core 已经
+        // 移除 allowInsecure（配了直接报错，官方指定改用 pinnedPeerCertSha256）。
+        //
+        // 两个参数针对不同客户端，值相同（都是证书 DER 的 SHA256）：
+        //   pinSHA256  hysteria 官方客户端（app/cmd/client.go 的 tls.pinSHA256）
+        //              注意它是叠加在正常校验之上的，必须与 insecure=1 同时使用
+        //   pcs        xray 系客户端的 pinnedPeerCertSha256 简写
+        if ($pin = data_get($protocol_settings, 'tls.pinned_peer_cert_sha256')) {
+            $params['pinSHA256'] = $pin;
+            $params['pcs'] = $pin;
+            // 官方客户端的 pin 不会关闭链校验，自签证书下必须同时跳过链校验，
+            // 否则握手在 pin 生效之前就失败了。
+            $params['insecure'] = '1';
+        }
+
         $name = rawurlencode($server['name']);
         $addr = Helper::wrapIPv6($server['host']);
 

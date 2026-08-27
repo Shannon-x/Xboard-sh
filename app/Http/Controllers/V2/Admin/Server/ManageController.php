@@ -5,6 +5,7 @@ namespace App\Http\Controllers\V2\Admin\Server;
 use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ServerSave;
+use App\Support\CertPinHelper;
 use App\Models\Server;
 use App\Models\ServerGroup;
 use App\Services\ServerService;
@@ -83,6 +84,7 @@ class ManageController extends Controller
 
         $oldServer = $request->input('id') ? Server::find($request->input('id')) : null;
         $this->normalizeEchPayload($params, $oldServer);
+        $this->normalizeRemoteCert($params, $oldServer);
 
         if ($request->input('id')) {
             $server = $oldServer ?: Server::find($request->input('id'));
@@ -107,6 +109,94 @@ class ManageController extends Controller
         }
 
 
+    }
+
+    /**
+     * remote 证书模式：由面板生成自签证书并算出指纹。
+     *
+     * 用于节点 SNI 是伪装域名的场景 —— 这时任何真实证书都无法通过客户端验证，
+     * 而 xray-core 已经移除 allowInsecure（配了直接报错，官方指定改用
+     * pinnedPeerCertSha256）。于是改由面板持有证书：
+     *
+     *   面板生成证书 -> 下发 tls_cert/tls_key 给节点 -> 指纹写进订阅
+     *
+     * 节点侧只负责落盘（V2bX 的 CertMode=remote / v2node 同名模式）。
+     * 做法参考 wyx2685/v2board 的 V2nodeController。
+     *
+     * 证书只在缺失时生成一次并沿用，避免每次保存节点都换指纹
+     * —— 换了指纹等于让所有已下发的订阅全部失效。
+     */
+    private function normalizeRemoteCert(array &$params, ?Server $oldServer): void
+    {
+        if (data_get($params, 'cert_config.cert_mode') !== 'remote') {
+            return;
+        }
+
+        $old = $oldServer?->cert_config ?? [];
+
+        // 已经有证书就沿用，不重新生成。
+        foreach (['tls_cert', 'tls_key', 'pinned_peer_cert_sha256', 'pinned_public_key_sha256'] as $key) {
+            if (empty($params['cert_config'][$key]) && !empty($old[$key])) {
+                $params['cert_config'][$key] = $old[$key];
+            }
+        }
+        if (!empty($params['cert_config']['tls_cert']) && !empty($params['cert_config']['tls_key'])) {
+            $this->syncCertPinToProtocolSettings($params);
+            return;
+        }
+
+        // CN 用节点的 SNI；伪装域名同样可以签，反正客户端是靠指纹验证的。
+        $cn = data_get($params, 'protocol_settings.tls.server_name')
+            ?: data_get($params, 'protocol_settings.tls_settings.server_name')
+            ?: data_get($params, 'cert_config.server_name')
+            ?: data_get($params, 'host')
+            ?: 'example.com';
+
+        try {
+            $generated = CertPinHelper::generate((string) $cn);
+        } catch (\Throwable $e) {
+            Log::error('生成 remote 证书失败: ' . $e->getMessage());
+            return;
+        }
+
+        $params['cert_config']['tls_cert'] = $generated['cert'];
+        $params['cert_config']['tls_key'] = $generated['key'];
+        $params['cert_config']['pinned_peer_cert_sha256'] = $generated['cert_sha256'];
+        $params['cert_config']['pinned_public_key_sha256'] = $generated['pubkey_sha256'];
+
+        $this->syncCertPinToProtocolSettings($params);
+    }
+
+    /**
+     * 把指纹同步进 protocol_settings，订阅生成时从这里读。
+     *
+     * 两个值必须分开存，因为各客户端固定的对象不同：
+     *   pinned_peer_cert_sha256   证书 DER 哈希 -> xray pcs / hysteria pinSHA256
+     *   pinned_public_key_sha256  公钥 SPKI 哈希 -> sing-box certificate_public_key_sha256
+     * 填错客户端会直接连不上。
+     */
+    private function syncCertPinToProtocolSettings(array &$params): void
+    {
+        $certPin = data_get($params, 'cert_config.pinned_peer_cert_sha256');
+        $pubPin = data_get($params, 'cert_config.pinned_public_key_sha256');
+        if (empty($certPin) && empty($pubPin)) {
+            return;
+        }
+        if (!isset($params['protocol_settings']) || !is_array($params['protocol_settings'])) {
+            $params['protocol_settings'] = [];
+        }
+        // hysteria 用 tls.*，其余协议用 tls_settings.*，两处都写。
+        foreach (['tls', 'tls_settings'] as $key) {
+            if (!isset($params['protocol_settings'][$key]) || !is_array($params['protocol_settings'][$key])) {
+                $params['protocol_settings'][$key] = [];
+            }
+            if (!empty($certPin)) {
+                $params['protocol_settings'][$key]['pinned_peer_cert_sha256'] = $certPin;
+            }
+            if (!empty($pubPin)) {
+                $params['protocol_settings'][$key]['pinned_public_key_sha256'] = $pubPin;
+            }
+        }
     }
 
     private function normalizeEchPayload(array &$params, ?Server $oldServer): void

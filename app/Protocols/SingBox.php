@@ -579,6 +579,14 @@ class SingBox extends AbstractProtocol
         if ($serverName = data_get($protocol_settings, 'tls.server_name')) {
             $baseConfig['tls']['server_name'] = $serverName;
         }
+        // sing-box 固定的是**公钥 SPKI** 的哈希，与 hysteria/xray 用的
+        // 证书 DER 哈希是两个不同的值，不能混用。
+        // 它一旦生效会自动置 InsecureSkipVerify（common/tls/std_client.go:118），
+        // 所以不需要也不应该再单独开 insecure。
+        if ($pubPin = data_get($protocol_settings, 'tls.pinned_public_key_sha256')) {
+            $baseConfig['tls']['certificate_public_key_sha256'] = [$pubPin];
+            unset($baseConfig['tls']['insecure']);
+        }
         $this->appendEch($baseConfig['tls'], data_get($protocol_settings, 'tls.ech'));
         $speedConfig = [
             'up_mbps' => data_get($protocol_settings, 'bandwidth.up'),

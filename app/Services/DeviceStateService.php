@@ -342,7 +342,7 @@ class DeviceStateService
                     }
                 }
                 if (!empty($ips)) {
-                    $result[$userId] = array_unique($ips);
+                    $result[$userId] = array_values(array_unique($ips));
                 }
             }
         }

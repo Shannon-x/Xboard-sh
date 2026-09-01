@@ -37,12 +37,34 @@ class ManageController extends Controller
             ? Server::whereIn('id', $parentIds)->get()->keyBy('id')
             : collect();
 
-        $servers = $servers->map(function ($item) use ($groupMap, $parentMap) {
+        // 管理列表不需要证书/私钥本体（remote 模式的 tls_key 是服务端私钥），
+        // 以布尔占位键 tls_key_set / tls_cert_set 告知“已配置”。
+        // 只改内存模型——本方法内的模型（含 parentMap 中共享的 parent）绝不允许 save()，
+        // 否则脱敏后的 cert_config 会写回库，等价于清掉私钥。
+        $sanitizeCert = static function ($cert) {
+            if (!is_array($cert)) {
+                return $cert;
+            }
+            if (!empty($cert['tls_key'])) {
+                $cert['tls_key_set'] = true;
+            }
+            if (!empty($cert['tls_cert'])) {
+                $cert['tls_cert_set'] = true;
+            }
+            unset($cert['tls_key'], $cert['tls_cert']);
+            return $cert;
+        };
+        foreach ($parentMap as $parent) {
+            $parent->setAttribute('cert_config', $sanitizeCert($parent->cert_config));
+        }
+
+        $servers = $servers->map(function ($item) use ($groupMap, $parentMap, $sanitizeCert) {
             $item['groups'] = collect($item['group_ids'] ?? [])
                 ->map(fn ($gid) => $groupMap->get($gid))
                 ->filter()
                 ->values();
             $item['parent'] = $item->parent_id ? $parentMap->get($item->parent_id) : null;
+            $item->setAttribute('cert_config', $sanitizeCert($item->cert_config));
             return $item;
         });
         return $this->success($servers);
@@ -82,9 +104,29 @@ class ManageController extends Controller
             $params['protocol_settings']['network_settings'] = (array) $rawContent->protocol_settings->network_settings;
         }
 
+        // 不变量的属主在后端：null / 非数组 / 空 cert_mode 的 cert_config 一律视为
+        // "未管理该键"（旧版前端对多数协议显式发 cert_config:null，照单全收会把
+        // 库里的证书/私钥/双指纹整列清掉）。主动清空走 cert_mode:'none'，轮换走显式清库。
+        if (
+            array_key_exists('cert_config', $params)
+            && (
+                !is_array($params['cert_config'])
+                || trim((string) data_get($params['cert_config'], 'cert_mode', '')) === ''
+            )
+        ) {
+            unset($params['cert_config']);
+        }
+
+        if (isset($params['cert_config']) && is_array($params['cert_config'])) {
+            // getNodes 脱敏用的占位键，不得持久化进 cert_config
+            unset($params['cert_config']['tls_key_set'], $params['cert_config']['tls_cert_set']);
+        }
+
         $oldServer = $request->input('id') ? Server::find($request->input('id')) : null;
         $this->normalizeEchPayload($params, $oldServer);
+        $this->preserveServerHeldCert($params, $oldServer);
         $this->normalizeRemoteCert($params, $oldServer);
+        $this->resyncCertPinFromOldServer($params, $oldServer);
 
         if ($request->input('id')) {
             $server = $oldServer ?: Server::find($request->input('id'));
@@ -112,6 +154,54 @@ class ManageController extends Controller
     }
 
     /**
+     * 面板持有的证书材料（证书/私钥/两个指纹）对所有模式的保存做保留合并：
+     * 前端表单从不回传这些键（列表接口也已脱敏），提交值为空即按旧值回填。
+     * 效果：remote→http→remote 的模式往返不丢证书、不换指纹
+     * （换指纹 = 已发订阅全部失效）。主动轮换证书需显式清库。
+     */
+    private function preserveServerHeldCert(array &$params, ?Server $oldServer): void
+    {
+        if (!isset($params['cert_config']) || !is_array($params['cert_config'])) {
+            return;
+        }
+        $old = $oldServer?->cert_config ?? [];
+        foreach (['tls_cert', 'tls_key', 'pinned_peer_cert_sha256', 'pinned_public_key_sha256'] as $key) {
+            if (empty($params['cert_config'][$key]) && !empty($old[$key])) {
+                $params['cert_config'][$key] = $old[$key];
+            }
+        }
+    }
+
+    /**
+     * 前端只对部分协议提交 cert_config；remote 节点经其它协议表单编辑时
+     * cert_config 整键缺省（库列被保留），但 protocol_settings 仍会被模型按
+     * 白名单重建——订阅指纹必须从旧记录回写，否则订阅重新生成后
+     * pcs/certificate_public_key_sha256 消失，客户端对自签证书校验必败。
+     */
+    private function resyncCertPinFromOldServer(array &$params, ?Server $oldServer): void
+    {
+        if (
+            isset($params['cert_config'])
+            || !isset($params['protocol_settings'])
+            || !is_array($params['protocol_settings'])
+        ) {
+            return;
+        }
+        $oldCert = $oldServer?->cert_config ?? null;
+        // 仅限节点确实在用面板证书（remote）时回写：模式已切走的节点，
+        // cert_config 里由 preserveServerHeldCert 留存的历史指纹不能再钉进订阅
+        if (!is_array($oldCert) || data_get($oldCert, 'cert_mode') !== 'remote') {
+            return;
+        }
+        // 借 syncCertPinToProtocolSettings 的协议落点映射与非数组守卫；
+        // cert_config 只临时挂载，不写回 $params（该键保持缺省=库列不动）
+        $withCert = $params;
+        $withCert['cert_config'] = $oldCert;
+        $this->syncCertPinToProtocolSettings($withCert);
+        $params['protocol_settings'] = $withCert['protocol_settings'];
+    }
+
+    /**
      * remote 证书模式：由面板生成自签证书并算出指纹。
      *
      * 用于节点 SNI 是伪装域名的场景 —— 这时任何真实证书都无法通过客户端验证，
@@ -132,14 +222,7 @@ class ManageController extends Controller
             return;
         }
 
-        $old = $oldServer?->cert_config ?? [];
-
-        // 已经有证书就沿用，不重新生成。
-        foreach (['tls_cert', 'tls_key', 'pinned_peer_cert_sha256', 'pinned_public_key_sha256'] as $key) {
-            if (empty($params['cert_config'][$key]) && !empty($old[$key])) {
-                $params['cert_config'][$key] = $old[$key];
-            }
-        }
+        // 旧值回填已由 preserveServerHeldCert 在此之前完成（所有模式生效）。
         if (!empty($params['cert_config']['tls_cert']) && !empty($params['cert_config']['tls_key'])) {
             $this->syncCertPinToProtocolSettings($params);
             return;
@@ -168,6 +251,26 @@ class ManageController extends Controller
     }
 
     /**
+     * 指纹按协议 schema 写入对应落点：
+     *   tls 是对象(TLS_CONFIGURATION)的协议 -> tls.*
+     *   tls 是 0/1/2 整数枚举的协议        -> tls_settings.*
+     * 绝不能对后者写 tls 数组 —— 模型 cast 会把数组 (int) 强转成 1，
+     * REALITY(2)/关闭(0) 的原值被不可逆钳死。
+     */
+    private const CERT_PIN_TARGET_KEY = [
+        Server::TYPE_HYSTERIA => 'tls',
+        Server::TYPE_TUIC => 'tls',
+        Server::TYPE_ANYTLS => 'tls',
+        Server::TYPE_TROJAN => 'tls_settings',
+        Server::TYPE_VMESS => 'tls_settings',
+        Server::TYPE_VLESS => 'tls_settings',
+        Server::TYPE_SOCKS => 'tls_settings',
+        Server::TYPE_NAIVE => 'tls_settings',
+        Server::TYPE_HTTP => 'tls_settings',
+        // shadowsocks / mieru 无 TLS 字段：不写指纹
+    ];
+
+    /**
      * 把指纹同步进 protocol_settings，订阅生成时从这里读。
      *
      * 两个值必须分开存，因为各客户端固定的对象不同：
@@ -182,20 +285,30 @@ class ManageController extends Controller
         if (empty($certPin) && empty($pubPin)) {
             return;
         }
+        $type = Server::normalizeType($params['type'] ?? null);
+        $key = self::CERT_PIN_TARGET_KEY[$type] ?? null;
+        if ($key === null) {
+            return;
+        }
         if (!isset($params['protocol_settings']) || !is_array($params['protocol_settings'])) {
             $params['protocol_settings'] = [];
         }
-        // hysteria 用 tls.*，其余协议用 tls_settings.*，两处都写。
-        foreach (['tls', 'tls_settings'] as $key) {
-            if (!isset($params['protocol_settings'][$key]) || !is_array($params['protocol_settings'][$key])) {
-                $params['protocol_settings'][$key] = [];
-            }
-            if (!empty($certPin)) {
-                $params['protocol_settings'][$key]['pinned_peer_cert_sha256'] = $certPin;
-            }
-            if (!empty($pubPin)) {
-                $params['protocol_settings'][$key]['pinned_public_key_sha256'] = $pubPin;
-            }
+        // 目标键已存在且不是数组（如 REALITY 模式下 tls=2）时宁可不写指纹，也绝不覆盖原值。
+        if (isset($params['protocol_settings'][$key]) && !is_array($params['protocol_settings'][$key])) {
+            Log::warning("cert pin not synced: protocol_settings.{$key} is not an array", [
+                'server_id' => $params['id'] ?? null,
+                'type' => $type,
+            ]);
+            return;
+        }
+        if (!isset($params['protocol_settings'][$key])) {
+            $params['protocol_settings'][$key] = [];
+        }
+        if (!empty($certPin)) {
+            $params['protocol_settings'][$key]['pinned_peer_cert_sha256'] = $certPin;
+        }
+        if (!empty($pubPin)) {
+            $params['protocol_settings'][$key]['pinned_public_key_sha256'] = $pubPin;
         }
     }
 

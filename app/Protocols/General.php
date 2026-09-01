@@ -182,6 +182,11 @@ class General extends AbstractProtocol
                 if (data_get($protocol_settings, 'tls_settings.allow_insecure')) {
                     $config['allowInsecure'] = '1';
                 }
+                // remote 模式的面板自签证书：客户端靠指纹固定（同 buildHysteria 的 pcs 约定）
+                if ($pin = data_get($protocol_settings, 'tls_settings.pinned_peer_cert_sha256')) {
+                    $config['pcs'] = $pin;
+                    $config['allowInsecure'] = '1';
+                }
                 if ($ech = Helper::normalizeEchSettings(data_get($protocol_settings, 'tls_settings.ech'))) {
                     if ($echConfig = Helper::toUriEchConfig(data_get($ech, 'config'))) {
                         $config['ech'] = $echConfig;
@@ -278,6 +283,12 @@ class General extends AbstractProtocol
                     if ($echConfig = Helper::toUriEchConfig(data_get($ech, 'config'))) {
                         $array['ech'] = $echConfig;
                     }
+                }
+                // remote 模式的面板自签证书：客户端靠指纹固定
+                if ($pin = data_get($protocol_settings, 'tls_settings.pinned_peer_cert_sha256')) {
+                    $array['pcs'] = $pin;
+                    $array['allowInsecure'] = '1';
+                    $array['insecure'] = '1';
                 }
                 break;
         }
@@ -406,15 +417,21 @@ class General extends AbstractProtocol
             }
         }
 
-        // congestion_controller参数，默认cubic
+        // congestion_controller参数，默认cubic；存量脏值 "newreno" 归一为 new_reno
         $congestion = data_get($protocol_settings, 'congestion_control', 'cubic');
-        $queryParams['congestion_control'] = $congestion;
+        $queryParams['congestion_control'] = $congestion === 'newreno' ? 'new_reno' : $congestion;
 
         // udp_relay_mode参数，默认native
         $udpRelay = data_get($protocol_settings, 'udp_relay_mode', 'native');
         $queryParams['udp-relay-mode'] = $udpRelay;
 
         if (data_get($protocol_settings, 'tls.allow_insecure')) {
+            $queryParams['insecure'] = '1';
+        }
+
+        // remote 模式的面板自签证书：客户端靠指纹固定
+        if ($pin = data_get($protocol_settings, 'tls.pinned_peer_cert_sha256')) {
+            $queryParams['pcs'] = $pin;
             $queryParams['insecure'] = '1';
         }
 
@@ -445,6 +462,11 @@ class General extends AbstractProtocol
             'sni' => data_get($protocol_settings, 'tls.server_name'),
             'insecure' => data_get($protocol_settings, 'tls.allow_insecure')
         ];
+        // remote 模式的面板自签证书：客户端靠指纹固定
+        if ($pin = data_get($protocol_settings, 'tls.pinned_peer_cert_sha256')) {
+            $params['pcs'] = $pin;
+            $params['insecure'] = 1;
+        }
         $query = http_build_query($params);
         $addr = Helper::wrapIPv6($server['host']);
         $uri = "anytls://{$password}@{$addr}:{$server['port']}?{$query}#{$name}";

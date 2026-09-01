@@ -330,6 +330,19 @@ class ClashMeta extends AbstractProtocol
         return $array;
     }
 
+    /**
+     * remote 模式的面板自签证书：mihomo 系支持 proxy 级 fingerprint
+     * （sha256(证书 DER) 的 hex，即 pinned_peer_cert_sha256）做证书固定；
+     * 不认识该字段的核心退化为 skip-cert-verify 保连通。
+     */
+    private static function applyCertPin(array &$array, $protocol_settings, string $path): void
+    {
+        if ($pin = data_get($protocol_settings, $path)) {
+            $array['fingerprint'] = $pin;
+            $array['skip-cert-verify'] = true;
+        }
+    }
+
     public static function buildVmess($uuid, $server)
     {
         $protocol_settings = data_get($server, 'protocol_settings', []);
@@ -349,6 +362,7 @@ class ClashMeta extends AbstractProtocol
             $array['skip-cert-verify'] = (bool) data_get($protocol_settings, 'tls_settings.allow_insecure', false);
             $array['servername'] = data_get($protocol_settings, 'tls_settings.server_name');
             self::appendEch($array, data_get($protocol_settings, 'tls_settings.ech'));
+            self::applyCertPin($array, $protocol_settings, 'tls_settings.pinned_peer_cert_sha256');
         }
 
         self::appendUtls($array, $protocol_settings);
@@ -427,6 +441,7 @@ class ClashMeta extends AbstractProtocol
             case 1:
                 $array['tls'] = true;
                 $array['skip-cert-verify'] = (bool) data_get($protocol_settings, 'tls_settings.allow_insecure', false);
+                self::applyCertPin($array, $protocol_settings, 'tls_settings.pinned_peer_cert_sha256');
                 if ($serverName = data_get($protocol_settings, 'tls_settings.server_name')) {
                     $array['servername'] = $serverName;
                 }
@@ -556,6 +571,7 @@ class ClashMeta extends AbstractProtocol
             default: // Standard TLS
                 // use tls_settings.* first, fallback to legacy flat keys for backward compat
                 $array['skip-cert-verify'] = (bool) data_get($protocol_settings, 'tls_settings.allow_insecure', data_get($protocol_settings, 'allow_insecure', false));
+                self::applyCertPin($array, $protocol_settings, 'tls_settings.pinned_peer_cert_sha256');
                 if ($serverName = data_get($protocol_settings, 'tls_settings.server_name', data_get($protocol_settings, 'server_name'))) {
                     $array['sni'] = $serverName;
                 }
@@ -623,6 +639,7 @@ class ClashMeta extends AbstractProtocol
             'skip-cert-verify' => (bool) data_get($protocol_settings, 'tls.allow_insecure', false),
             'udp' => true,
         ];
+        self::applyCertPin($array, $protocol_settings, 'tls.pinned_peer_cert_sha256');
         if (isset($server['ports'])) {
             $array['ports'] = $server['ports'];
             $array['mport'] = $server['ports'];
@@ -673,6 +690,7 @@ class ClashMeta extends AbstractProtocol
         }
 
         $array['skip-cert-verify'] = (bool) data_get($protocol_settings, 'tls.allow_insecure', false);
+        self::applyCertPin($array, $protocol_settings, 'tls.pinned_peer_cert_sha256');
         if ($serverName = data_get($protocol_settings, 'tls.server_name')) {
             $array['sni'] = $serverName;
         }
@@ -681,7 +699,8 @@ class ClashMeta extends AbstractProtocol
             $array['alpn'] = $alpn;
         }
 
-        $array['congestion-controller'] = data_get($protocol_settings, 'congestion_control', 'cubic');
+        // 存量脏值兜底："newreno" 的规范值是 new_reno
+        $array['congestion-controller'] = ($cc = data_get($protocol_settings, 'congestion_control', 'cubic')) === 'newreno' ? 'new_reno' : $cc;
         $array['udp-relay-mode'] = data_get($protocol_settings, 'udp_relay_mode', 'native');
 
         return $array;
@@ -707,6 +726,7 @@ class ClashMeta extends AbstractProtocol
             $array['skip-cert-verify'] = (bool) $allowInsecure;
         }
         self::appendEch($array, data_get($protocol_settings, 'tls.ech'));
+        self::applyCertPin($array, $protocol_settings, 'tls.pinned_peer_cert_sha256');
 
         return $array;
     }
@@ -723,6 +743,12 @@ class ClashMeta extends AbstractProtocol
             'password' => $password,
             'transport' => strtoupper(data_get($protocol_settings, 'transport', 'TCP'))
         ];
+
+        // mihomo 的 mieru 出站枚举形如 MULTIPLEXING_LOW；非法值宁可不输出
+        $multiplexing = strtolower((string) data_get($protocol_settings, 'multiplexing', 'low'));
+        if (in_array($multiplexing, ['low', 'middle', 'high'], true)) {
+            $array['multiplexing'] = 'MULTIPLEXING_' . strtoupper($multiplexing);
+        }
 
         // 如果配置了端口范围
         if (isset($server['ports'])) {

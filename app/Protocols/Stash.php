@@ -237,6 +237,19 @@ class Stash extends AbstractProtocol
         return $array;
     }
 
+    /**
+     * remote 模式的面板自签证书：mihomo/Stash 支持 proxy 级 fingerprint
+     * （sha256(证书 DER) 的 hex，即 pinned_peer_cert_sha256）做证书固定；
+     * 不认识该字段的核心退化为 skip-cert-verify 保连通。
+     */
+    private static function applyCertPin(array &$array, $protocol_settings, string $path): void
+    {
+        if ($pin = data_get($protocol_settings, $path)) {
+            $array['fingerprint'] = $pin;
+            $array['skip-cert-verify'] = true;
+        }
+    }
+
     public static function buildVmess($uuid, $server)
     {
         $protocol_settings = $server['protocol_settings'];
@@ -252,6 +265,7 @@ class Stash extends AbstractProtocol
 
         $array['tls'] = (bool) data_get($protocol_settings, 'tls');
         $array['skip-cert-verify'] = (bool) data_get($protocol_settings, 'tls_settings.allow_insecure', false);
+        self::applyCertPin($array, $protocol_settings, 'tls_settings.pinned_peer_cert_sha256');
         if ($serverName = data_get($protocol_settings, 'tls_settings.server_name')) {
             $array['servername'] = $serverName;
         }
@@ -313,6 +327,7 @@ class Stash extends AbstractProtocol
             case 1:
                 $array['tls'] = true;
                 $array['skip-cert-verify'] = data_get($protocol_settings, 'tls_settings.allow_insecure');
+                self::applyCertPin($array, $protocol_settings, 'tls_settings.pinned_peer_cert_sha256');
                 if ($serverName = data_get($protocol_settings, 'tls_settings.server_name')) {
                     $array['servername'] = $serverName;
                 }
@@ -413,6 +428,7 @@ class Stash extends AbstractProtocol
                     $array['sni'] = $serverName;
                 }
                 $array['skip-cert-verify'] = (bool) data_get($protocol_settings, 'allow_insecure', false);
+                self::applyCertPin($array, $protocol_settings, 'tls_settings.pinned_peer_cert_sha256');
                 break;
         }
 
@@ -450,6 +466,7 @@ class Stash extends AbstractProtocol
         $array['up-speed'] = data_get($protocol_settings, 'bandwidth.up');
         $array['down-speed'] = data_get($protocol_settings, 'bandwidth.down');
         $array['skip-cert-verify'] = data_get($protocol_settings, 'tls.allow_insecure');
+        self::applyCertPin($array, $protocol_settings, 'tls.pinned_peer_cert_sha256');
         if ($serverName = data_get($protocol_settings, 'tls.server_name')) {
             $array['sni'] = $serverName;
         }
@@ -486,7 +503,8 @@ class Stash extends AbstractProtocol
             'type' => 'tuic',
             'server' => $server['host'],
             'port' => $server['port'],
-            'congestion-controller' => data_get($protocol_settings, 'congestion_control', 'cubic'),
+            // 存量脏值兜底："newreno" 的规范值是 new_reno
+            'congestion-controller' => ($cc = data_get($protocol_settings, 'congestion_control', 'cubic')) === 'newreno' ? 'new_reno' : $cc,
             'udp-relay-mode' => data_get($protocol_settings, 'udp_relay_mode', 'native'),
             'alpn' => data_get($protocol_settings, 'alpn', ['h3']),
             'reduce-rtt' => true,
@@ -505,6 +523,7 @@ class Stash extends AbstractProtocol
         }
 
         $array['skip-cert-verify'] = (bool) data_get($protocol_settings, 'tls.allow_insecure', false);
+        self::applyCertPin($array, $protocol_settings, 'tls.pinned_peer_cert_sha256');
         if ($serverName = data_get($protocol_settings, 'tls.server_name')) {
             $array['sni'] = $serverName;
         }
@@ -525,6 +544,7 @@ class Stash extends AbstractProtocol
             'skip-cert-verify' => (bool) data_get($protocol_settings, 'tls.allow_insecure', false),
             'udp' => true,
         ];
+        self::applyCertPin($array, $protocol_settings, 'tls.pinned_peer_cert_sha256');
 
         return $array;
     }

@@ -37,6 +37,7 @@ class UserRoute
             $router->post('/getQuickLoginUrl', [UserController::class, 'getQuickLoginUrl']);
             $router->get('/getActiveSession', [UserController::class, 'getActiveSession']);
             $router->post('/removeActiveSession', [UserController::class, 'removeActiveSession']);
+            $router->post('/logout', [UserController::class, 'logout']);
             $router->get('/traffic/advance-cycle/preview', [AdvanceCycleController::class, 'preview']);
             $router->post('/traffic/advance-cycle', [AdvanceCycleController::class, 'advance']);
             // Order

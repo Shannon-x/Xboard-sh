@@ -38,6 +38,8 @@ class ServerSave extends FormRequest
             'tls' => 'required|integer',
             'network' => 'required|string',
             'network_settings' => 'nullable|array',
+            // 无此规则时 validated() 会把编辑回传的 rules 静默剥离，模型重建后清成 null
+            'rules' => 'nullable|array',
             'tls_settings.server_name' => 'nullable|string',
             'tls_settings.allow_insecure' => 'nullable|boolean',
             'tls_settings.ech' => 'nullable|array',
@@ -100,18 +102,30 @@ class ServerSave extends FormRequest
         ],
         'tuic' => [
             'version' => 'nullable|integer',
-            'congestion_control' => 'nullable|string',
+            // sing-quic 只认这三个值；"newreno" 会让节点 TUIC inbound 起不来
+            'congestion_control' => 'nullable|string|in:bbr,cubic,new_reno',
             'alpn' => 'nullable|array',
             'udp_relay_mode' => 'nullable|string',
+            // tls 带 array 规则且有嵌套规则时，validated() 只收集有规则的子键
+            // （excludeUnvalidatedArrayKeys）——server_name/allow_insecure 必须显式列出，
+            // 否则被静默剥离入库
             'tls' => 'nullable|array',
+            'tls.server_name' => 'nullable|string',
+            'tls.allow_insecure' => 'nullable|boolean',
             'tls.ech' => 'nullable|array',
         ],
         'mieru' => [
             'transport' => 'required|string|in:TCP,UDP',
-            'traffic_pattern' => 'string'
+            // ConvertEmptyStringsToNull 会把空串转成 null，无 nullable 则编辑必 422
+            'traffic_pattern' => 'nullable|string',
+            'multiplexing' => 'nullable|string|in:low,middle,high',
         ],
         'anytls' => [
+            // 保留 array 规则：旧前端发整数 tls=2 仍 422 快速失败，而不是静默入脏数据
             'tls' => 'nullable|array',
+            // 同 tuic：子键必须显式列出，否则 validated() 把 tls 剥成 {"ech":null}，SNI 静默丢失
+            'tls.server_name' => 'nullable|string',
+            'tls.allow_insecure' => 'nullable|boolean',
             'tls.ech' => 'nullable|array',
             'alpn' => 'nullable|string',
             'padding_scheme' => 'nullable|array',

@@ -432,6 +432,7 @@ class SingBox extends AbstractProtocol
             if ($serverName = data_get($protocol_settings, 'tls_settings.server_name')) {
                 $array['tls']['server_name'] = $serverName;
             }
+            $this->applyPublicKeyPin($array['tls'], $protocol_settings, 'tls_settings.pinned_public_key_sha256');
         }
 
         $this->appendMultiplex($array, $protocol_settings);
@@ -474,6 +475,7 @@ class SingBox extends AbstractProtocol
                         $tlsConfig['server_name'] = $serverName;
                     }
                     $this->appendEch($tlsConfig, data_get($protocol_settings, 'tls_settings.ech'));
+                    $this->applyPublicKeyPin($tlsConfig, $protocol_settings, 'tls_settings.pinned_public_key_sha256');
                     break;
                 case 2:
                     $tlsConfig['server_name'] = data_get($protocol_settings, 'reality_settings.server_name');
@@ -540,6 +542,7 @@ class SingBox extends AbstractProtocol
                 if ($serverName = data_get($protocol_settings, 'tls_settings.server_name', data_get($protocol_settings, 'server_name'))) {
                     $tlsConfig['server_name'] = $serverName;
                 }
+                $this->applyPublicKeyPin($tlsConfig, $protocol_settings, 'tls_settings.pinned_public_key_sha256');
                 break;
         }
 
@@ -552,6 +555,36 @@ class SingBox extends AbstractProtocol
             $array['transport'] = $transport;
         }
         return $array;
+    }
+
+    /**
+     * remote 模式的面板自签证书：为 sing-box 固定公钥 SPKI 哈希。
+     *
+     * 库里的 pinned_public_key_sha256 是小写 hex（hysteria pinSHA256 / xray pcs
+     * 也用 hex），而 sing-box 的 certificate_public_key_sha256 按 []byte 解码、
+     * 要求 base64——hex 直发会被静默解码成 48 字节，与 32 字节哈希永远比不上，
+     * 连接全量失败且极难排查。该字段 1.13.0 才引入，且 sing-box 严格解码
+     * （未知字段拒载整份配置），旧核心/未知版本退化为 insecure 保连通。
+     * pin 生效时 sing-box 自动置 InsecureSkipVerify（common/tls/std_client.go），
+     * 不需要也不应该再单独开 insecure。
+     */
+    private function applyPublicKeyPin(array &$tlsConfig, $protocol_settings, string $path): void
+    {
+        $pubPin = (string) data_get($protocol_settings, $path, '');
+        if ($pubPin === '') {
+            return;
+        }
+        if (
+            strlen($pubPin) === 64
+            && ctype_xdigit($pubPin)
+            && $this->supportsFeature('sing-box', '1.13.0')
+        ) {
+            $tlsConfig['certificate_public_key_sha256'] = [base64_encode(hex2bin($pubPin))];
+            unset($tlsConfig['insecure']);
+            return;
+        }
+        // 自签证书 + 无法下发 pin：只能退化 insecure，否则客户端证书校验必败
+        $tlsConfig['insecure'] = true;
     }
 
     protected function buildHysteria($password, $server): array
@@ -579,14 +612,7 @@ class SingBox extends AbstractProtocol
         if ($serverName = data_get($protocol_settings, 'tls.server_name')) {
             $baseConfig['tls']['server_name'] = $serverName;
         }
-        // sing-box 固定的是**公钥 SPKI** 的哈希，与 hysteria/xray 用的
-        // 证书 DER 哈希是两个不同的值，不能混用。
-        // 它一旦生效会自动置 InsecureSkipVerify（common/tls/std_client.go:118），
-        // 所以不需要也不应该再单独开 insecure。
-        if ($pubPin = data_get($protocol_settings, 'tls.pinned_public_key_sha256')) {
-            $baseConfig['tls']['certificate_public_key_sha256'] = [$pubPin];
-            unset($baseConfig['tls']['insecure']);
-        }
+        $this->applyPublicKeyPin($baseConfig['tls'], $protocol_settings, 'tls.pinned_public_key_sha256');
         $this->appendEch($baseConfig['tls'], data_get($protocol_settings, 'tls.ech'));
         $speedConfig = [
             'up_mbps' => data_get($protocol_settings, 'bandwidth.up'),
@@ -623,7 +649,8 @@ class SingBox extends AbstractProtocol
             'tag' => $server['name'],
             'server' => $server['host'],
             'server_port' => $server['port'],
-            'congestion_control' => data_get($protocol_settings, 'congestion_control', 'cubic'),
+            // 存量脏值兜底：sing-box 只认 bbr/cubic/new_reno，"newreno" 会让整份配置拒载
+            'congestion_control' => ($cc = data_get($protocol_settings, 'congestion_control', 'cubic')) === 'newreno' ? 'new_reno' : $cc,
             'udp_relay_mode' => data_get($protocol_settings, 'udp_relay_mode', 'native'),
             'zero_rtt_handshake' => true,
             'heartbeat' => '10s',
@@ -638,6 +665,7 @@ class SingBox extends AbstractProtocol
             $array['tls']['server_name'] = $serverName;
         }
         $this->appendEch($array['tls'], data_get($protocol_settings, 'tls.ech'));
+        $this->applyPublicKeyPin($array['tls'], $protocol_settings, 'tls.pinned_public_key_sha256');
 
         if (data_get($protocol_settings, 'version') === 4) {
             $array['token'] = $password;
@@ -669,6 +697,7 @@ class SingBox extends AbstractProtocol
             $array['tls']['server_name'] = $serverName;
         }
         $this->appendEch($array['tls'], data_get($protocol_settings, 'tls.ech'));
+        $this->applyPublicKeyPin($array['tls'], $protocol_settings, 'tls.pinned_public_key_sha256');
 
         return $array;
     }

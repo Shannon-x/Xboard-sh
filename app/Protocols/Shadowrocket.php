@@ -429,7 +429,8 @@ class Shadowrocket extends AbstractProtocol
             'alpn' => data_get($protocol_settings, 'alpn'),
             'sni' => data_get($protocol_settings, 'tls.server_name'),
             'insecure' => data_get($protocol_settings, 'tls.allow_insecure'),
-            'congestion_control' => data_get($protocol_settings, 'congestion_control', 'cubic')
+            // 存量脏值兜底："newreno" 的规范值是 new_reno
+            'congestion_control' => ($cc = data_get($protocol_settings, 'congestion_control', 'cubic')) === 'newreno' ? 'new_reno' : $cc
         ];
         if (data_get($protocol_settings, 'version') === 4) {
             $params['token'] = $password;

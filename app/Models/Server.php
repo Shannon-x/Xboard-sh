@@ -352,6 +352,7 @@ class Server extends Model
         self::TYPE_MIERU => [
             'transport' => ['type' => 'string', 'default' => 'TCP'],
             'traffic_pattern' => ['type' => 'string', 'default' => ''],
+            'multiplexing' => ['type' => 'string', 'default' => 'low'],
             ...self::MULTIPLEX_CONFIGURATION,
         ]
     ];

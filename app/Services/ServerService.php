@@ -338,8 +338,11 @@ class ServerService
                 ...$baseConfig,
                 'version' => (int) $protocolSettings['version'],
                 'server_port' => (int) $serverPort,
-                'server_name' => $protocolSettings['tls']['server_name'],
-                'congestion_control' => $protocolSettings['congestion_control'],
+                'server_name' => data_get($protocolSettings, 'tls.server_name'),
+                // 存量脏值兜底：sing-quic 只认 new_reno，"newreno" 会让 inbound 起不来
+                'congestion_control' => $protocolSettings['congestion_control'] === 'newreno'
+                    ? 'new_reno'
+                    : $protocolSettings['congestion_control'],
                 'tls_settings' => data_get($protocolSettings, 'tls_settings'),
                 'auth_timeout' => '3s',
                 'zero_rtt_handshake' => false,
@@ -348,7 +351,7 @@ class ServerService
             'anytls' => [
                 ...$baseConfig,
                 'server_port' => (int) $serverPort,
-                'server_name' => $protocolSettings['tls']['server_name'],
+                'server_name' => data_get($protocolSettings, 'tls.server_name'),
                 'padding_scheme' => $protocolSettings['padding_scheme'],
             ],
             'socks' => [

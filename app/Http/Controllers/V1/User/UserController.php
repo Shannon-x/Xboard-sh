@@ -44,6 +44,16 @@ class UserController extends Controller
         return $this->success($authService->removeSession($request->input('session_id')));
     }
 
+    public function logout(Request $request)
+    {
+        // instanceof 防 TransientToken；sanctum guard 下 Bearer 请求恒为 PersonalAccessToken
+        $token = $request->user()?->currentAccessToken();
+        if ($token instanceof \Laravel\Sanctum\PersonalAccessToken) {
+            $token->delete();
+        }
+        return $this->success(true);
+    }
+
     public function checkLogin(Request $request)
     {
         $data = [

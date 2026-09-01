@@ -176,13 +176,16 @@ class SingBox extends AbstractProtocol
 
     /**
      * 根据客户端版本自适应配置格式
-     * 模板基准格式: 1.13.0+ (最新)
+     * 模板基准格式: 1.11.0+ rule action 写法（对 1.14.0 亦有效）
      */
     protected function adaptConfigForVersion(): void
     {
         $coreVersion = $this->getSingBoxCoreVersion();
         if (empty($coreVersion)) {
-            return;
+            // 版本未知时按最保守的 1.12.0 处理：猜高会让整份配置解码失败
+            // (例如 1.13 才有的 ech.query_server_name)，猜低只损失个别节点的
+            // ECH——风险不对称，宁可猜低。
+            $coreVersion = '1.12.0';
         }
 
         // >= 1.13.0: 移除已删除的 block/dns 出站
@@ -196,9 +199,20 @@ class SingBox extends AbstractProtocol
             $this->restoreDeprecatedInboundFields();
         }
 
-        // < 1.12.0: DNS type+server → 旧 address 格式
+        // < 1.12.0: DNS type+server → 旧 address 格式; default_domain_resolver → dns 出站规则项
         if (version_compare($coreVersion, '1.12.0', '<')) {
             $this->convertDnsServersToLegacy();
+            $this->convertDomainResolverToLegacy();
+        }
+
+        // < 1.13.0: tls.ech.query_server_name 尚不存在，留着会解码失败
+        if (version_compare($coreVersion, '1.13.0', '<')) {
+            $this->stripEchQueryServerName();
+        }
+
+        // >= 1.14.0: independent_cache 已废弃（DNS 缓存恒按 transport 隔离）
+        if (version_compare($coreVersion, '1.14.0', '>=')) {
+            unset($this->config['dns']['independent_cache']);
         }
 
         // < 1.10.0: tun address 数组 → inet4_address/inet6_address
@@ -212,9 +226,9 @@ class SingBox extends AbstractProtocol
      */
     private function getSingBoxCoreVersion(): ?string
     {
-        // 优先从 UA 提取核心版本
+        // 优先从 UA 提取核心版本 (SFI/SFA/SFM 括号内、Karing 能力串、sing-box/x.y.z)
         if (!empty($this->userAgent)) {
-            if (preg_match('/sing-box\s+v?(\d+(?:\.\d+){0,2})/i', $this->userAgent, $matches)) {
+            if (preg_match('/sing-box[\/\s]+v?(\d+(?:\.\d+){0,2})/i', $this->userAgent, $matches)) {
                 return $matches[1];
             }
         }
@@ -223,11 +237,14 @@ class SingBox extends AbstractProtocol
             return null;
         }
 
-        if ($this->clientName === 'sing-box') {
+        // clientName 是靠 UA 里出现 "sing-box" 字样匹配出来的，而 clientVersion 可能
+        // 来自应用自身版本号（如 HiddifyNext/4.1.1 → "4.1.1"）。sing-box 内核至今
+        // 都是 1.x，主版本不是 1 就说明这不是内核版本，不能拿来做版本门槛。
+        if ($this->clientName === 'sing-box' && str_starts_with($this->clientVersion, '1.')) {
             return $this->clientVersion;
         }
 
-        return '1.13.0';
+        return null;
     }
 
     /**
@@ -302,21 +319,89 @@ class SingBox extends AbstractProtocol
     }
 
     /**
-     * sing-box < 1.11.0: 恢复废弃的入站字段
+     * sing-box < 1.11.0: 将 sniff/resolve rule action 还原为废弃的入站字段
+     *
+     * 模板基准是 rule action 写法（legacy 入站字段自 1.13.4 起解码即失败），
+     * 若不反向还原，1.11 以下客户端拿到的配置将没有域名嗅探与域名解析。
      */
     private function restoreDeprecatedInboundFields(): void
     {
         if (!isset($this->config['inbounds'])) {
             return;
         }
+
+        $sniff = false;
+        $domainStrategy = null;
+
+        if (isset($this->config['route']['rules'])) {
+            $kept = [];
+            foreach ($this->config['route']['rules'] as $rule) {
+                switch ($rule['action'] ?? null) {
+                    case 'sniff':
+                        $sniff = true;
+                        continue 2;
+                    case 'resolve':
+                        $domainStrategy = $rule['strategy'] ?? null;
+                        continue 2;
+                }
+                $kept[] = $rule;
+            }
+            $this->config['route']['rules'] = $kept;
+        }
+
         foreach ($this->config['inbounds'] as &$inbound) {
             if ($inbound['type'] === 'tun') {
                 $inbound['endpoint_independent_nat'] = true;
             }
-            if (!empty($inbound['sniff'])) {
+            if ($sniff || !empty($inbound['sniff'])) {
+                $inbound['sniff'] = true;
                 $inbound['sniff_override_destination'] = true;
             }
+            if ($domainStrategy !== null && !isset($inbound['domain_strategy'])) {
+                $inbound['domain_strategy'] = $domainStrategy;
+            }
         }
+        unset($inbound);
+    }
+
+    /**
+     * sing-box < 1.13.0: 移除 tls.ech.query_server_name（该字段 1.13.0 才引入）
+     */
+    private function stripEchQueryServerName(): void
+    {
+        if (!isset($this->config['outbounds'])) {
+            return;
+        }
+        foreach ($this->config['outbounds'] as &$outbound) {
+            if (isset($outbound['tls']['ech']['query_server_name'])) {
+                unset($outbound['tls']['ech']['query_server_name']);
+            }
+        }
+        unset($outbound);
+    }
+
+    /**
+     * sing-box < 1.12.0: route.default_domain_resolver 还原为 dns 出站规则项
+     */
+    private function convertDomainResolverToLegacy(): void
+    {
+        $resolver = $this->config['route']['default_domain_resolver'] ?? null;
+        if ($resolver === null) {
+            return;
+        }
+        unset($this->config['route']['default_domain_resolver']);
+
+        $server = is_array($resolver) ? ($resolver['server'] ?? null) : $resolver;
+        if (empty($server)) {
+            return;
+        }
+        if (!isset($this->config['dns']['rules']) || !is_array($this->config['dns']['rules'])) {
+            $this->config['dns']['rules'] = [];
+        }
+        array_unshift($this->config['dns']['rules'], [
+            'outbound' => ['any'],
+            'server' => $server,
+        ]);
     }
 
     /**
@@ -328,6 +413,10 @@ class SingBox extends AbstractProtocol
             return;
         }
         foreach ($this->config['dns']['servers'] as &$server) {
+            // 1.12 起 DNS 传输默认直连，detour:direct 反被拒绝启动；旧版需显式补回
+            if (!isset($server['detour'])) {
+                $server['detour'] = 'direct';
+            }
             if (!isset($server['type'])) {
                 continue;
             }
@@ -454,7 +543,10 @@ class SingBox extends AbstractProtocol
             "uuid" => $password,
             "packet_encoding" => "xudp",
         ];
-        if ($flow = data_get($protocol_settings, 'flow')) {
+        // sing-box 仅接受 xtls-rprx-vision；面板存的 "none" 会让整份配置启动失败
+        // (unsupported flow: none)，必须整字段省略而不是下发空值
+        $flow = data_get($protocol_settings, 'flow');
+        if ($flow && $flow !== 'none') {
             $array['flow'] = $flow;
         }
 
@@ -574,10 +666,14 @@ class SingBox extends AbstractProtocol
         if ($pubPin === '') {
             return;
         }
+        // 不能用 supportsFeature()：它直接比较 clientVersion，而 clientVersion 可能是
+        // 应用版本而非内核版本（HiddifyNext/4.1.1 会被判成 >= 1.13）。
+        $coreVersion = $this->getSingBoxCoreVersion();
         if (
             strlen($pubPin) === 64
             && ctype_xdigit($pubPin)
-            && $this->supportsFeature('sing-box', '1.13.0')
+            && $coreVersion !== null
+            && version_compare($coreVersion, '1.13.0', '>=')
         ) {
             $tlsConfig['certificate_public_key_sha256'] = [base64_encode(hex2bin($pubPin))];
             unset($tlsConfig['insecure']);
@@ -843,10 +939,19 @@ class SingBox extends AbstractProtocol
         if (!$normalized = Helper::normalizeEchSettings($ech)) {
             return;
         }
+        // sing-box 的 ech.config 只接受 PEM 形式的 ECHConfigList（逐行一个数组元素）。
+        // 面板 type=cloudflare 存的是 Xray 语法 "domain+doh-url"，直接下发会
+        // "invalid ECH configs pem" 致整份配置启动失败；此时省略 config，
+        // 由 sing-box 自行按 query_server_name / SNI 查 HTTPS 记录取回 ECH 配置。
+        $rawConfig = (string) data_get($normalized, 'config');
+        $config = str_contains($rawConfig, 'BEGIN ECH CONFIGS')
+            ? preg_split('/\R/', trim($rawConfig))
+            : null;
+
         // Client outbound only needs the public ECH config, not the server's private key
         $tlsConfig['ech'] = array_filter([
             'enabled'           => true,
-            'config'            => data_get($normalized, 'config') ? [data_get($normalized, 'config')] : null,
+            'config'            => $config ?: null,
             'query_server_name' => data_get($normalized, 'query_server_name'),
         ], fn($value) => $value !== null);
     }

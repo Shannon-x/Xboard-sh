@@ -7,6 +7,7 @@ use App\Http\Requests\Admin\ConfigSave;
 use App\Models\SubscribeTemplate;
 use App\Services\Auth\GoogleLoginService;
 use App\Services\MailService;
+use App\Services\Commission\WithdrawalConfig;
 use App\Services\TelegramService;
 use App\Services\ThemeService;
 use App\Services\TicketAttachment\AttachmentConfig;
@@ -137,7 +138,9 @@ class ConfigController extends Controller
                 'commission_distribution_enable' => (bool) admin_setting('commission_distribution_enable', 0),
                 'commission_distribution_l1' => admin_setting('commission_distribution_l1'),
                 'commission_distribution_l2' => admin_setting('commission_distribution_l2'),
-                'commission_distribution_l3' => admin_setting('commission_distribution_l3')
+                'commission_distribution_l3' => admin_setting('commission_distribution_l3'),
+                // 提现工作流：链列表 / 单笔上限 / USDT 参考汇率 / 是否必须二维码 / 结算感谢语（默认值集中在 WithdrawalConfig）
+                ...WithdrawalConfig::fromSettings()->toAdminArray(),
             ],
             'site' => [
                 'logo' => admin_setting('logo'),

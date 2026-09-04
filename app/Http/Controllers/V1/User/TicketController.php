@@ -10,6 +10,8 @@ use App\Models\Order;
 use App\Models\Ticket;
 use App\Models\TicketMessage;
 use App\Models\User;
+use App\Services\Commission\WithdrawalConfig;
+use App\Services\CommissionWithdrawalService;
 use App\Services\TicketAttachmentService;
 use App\Services\TicketService;
 use App\Utils\Dict;
@@ -171,24 +173,28 @@ class TicketController extends Controller
         if ($limit > ($user->commission_balance / 100)) {
             return $this->fail([422, __('The current required minimum withdrawal commission is :limit', ['limit' => $limit])]);
         }
-        try {
-            $ticketService = new TicketService();
-            $subject = __('[Commission Withdrawal Request] This ticket is opened by the system');
-            $message = sprintf(
-                "%s\r\n%s",
-                __('Withdrawal method') . "：" . $request->input('withdraw_method'),
-                __('Withdrawal account') . "：" . $request->input('withdraw_account')
-            );
-            $ticket = $ticketService->createTicket(
-                $request->user()->id,
-                $subject,
-                2,
-                $message
-            );
-        } catch (\Exception $e) {
-            throw $e;
-        }
-        HookManager::call('ticket.create.after', $ticket);
+
+        // 老前端的接口：只给「方式 + 账号」，按全部余额走新的提现工作流（申请即冻结、自动开工单、后台结算）。
+        // 方式若能对上后台配置的链就用那条链的地址校验，否则合成一条不校验格式的链。
+        $service = new CommissionWithdrawalService();
+        $method = (string) $request->input('withdraw_method');
+        $chain = $service->config()->findChain(WithdrawalConfig::slug($method))
+            ?? $service->config()->findChain(WithdrawalConfig::slug('usdt_' . $method))
+            ?? [
+                'code' => WithdrawalConfig::slug($method) ?: 'legacy',
+                'name' => mb_substr($method, 0, 64),
+                'network' => '',
+                'preset' => 'none',
+                'explorer_tx' => '',
+                'hint' => '',
+                'pattern' => null,
+            ];
+        $service->apply(
+            $user,
+            (int) $user->commission_balance,
+            $chain,
+            (string) $request->input('withdraw_account')
+        );
         return $this->success(true);
     }
 }

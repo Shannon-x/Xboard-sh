@@ -1,5 +1,11 @@
 {
     "Article does not exist": "Article does not exist",
+    "The withdrawal address format is invalid": "The withdrawal address format is invalid for the selected chain",
+    "The maximum amount per withdrawal is :limit": "The maximum amount per withdrawal is :limit",
+    "Please upload the QR code of your receiving address": "Please upload the QR code of your receiving address",
+    "You already have a pending withdrawal, please wait for it to be processed": "You already have a pending withdrawal, please wait for it to be processed",
+    "The withdrawal request does not exist": "The withdrawal request does not exist",
+    "The withdrawal request has already been processed": "The withdrawal request has already been processed",
     "Ticket attachments are disabled": "Ticket attachments are disabled",
     "Attachment file is invalid": "Attachment file is invalid",
     "Attachment exceeds the size limit of :size MB": "Attachment exceeds the size limit of :size MB",

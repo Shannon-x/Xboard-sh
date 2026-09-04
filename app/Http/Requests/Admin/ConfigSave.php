@@ -38,6 +38,22 @@ class ConfigSave extends FormRequest
         'currency' => '',
         'currency_symbol' => '',
         'ticket_must_wait_reply' => '',
+        // ticket attachment（硬上限见 AttachmentConfig::HARD_MAX_*，超过会被 Swoole / PHP 请求体上限掐断）
+        'ticket_attachment_enable' => 'boolean',
+        'ticket_attachment_driver' => 'in:local,s3',
+        'ticket_attachment_max_size_mb' => 'integer|min:1|max:20',
+        'ticket_attachment_max_count' => 'integer|min:1|max:10',
+        'ticket_attachment_allowed_extensions' => 'nullable|string|max:255|regex:/^[a-z0-9.]+(\s*[,，;\s]\s*[a-z0-9.]+)*$/i',
+        'ticket_attachment_daily_quota_mb' => 'integer|min:0|max:10240',
+        'ticket_attachment_retention_days' => 'integer|min:0|max:3650',
+        'ticket_attachment_s3_endpoint' => 'nullable|url|max:255',
+        'ticket_attachment_s3_region' => 'nullable|string|max:64',
+        'ticket_attachment_s3_bucket' => 'nullable|string|max:128',
+        'ticket_attachment_s3_access_key' => 'nullable|string|max:255',
+        'ticket_attachment_s3_secret_key' => 'nullable|string|max:255',
+        'ticket_attachment_s3_path_style' => 'boolean',
+        'ticket_attachment_s3_prefix' => 'nullable|string|max:128|regex:/^[\w\-\/.]*$/',
+        'ticket_attachment_s3_public_url' => 'nullable|url|max:255',
         // subscribe
         'plan_change_enable' => '',
         'reset_traffic_method' => 'in:0,1,2,3,4',
@@ -196,7 +212,13 @@ class ConfigSave extends FormRequest
             'recaptcha_v3_score_threshold.numeric' => 'reCAPTCHA v3 分数阈值必须为数字',
             'recaptcha_v3_score_threshold.min' => 'reCAPTCHA v3 分数阈值不能小于0',
             'recaptcha_v3_score_threshold.max' => 'reCAPTCHA v3 分数阈值不能大于1',
-            'google_redirect_uri.url' => 'Google OAuth 回调地址格式不正确，必须携带 http(s)://'
+            'google_redirect_uri.url' => 'Google OAuth 回调地址格式不正确，必须携带 http(s)://',
+            'ticket_attachment_max_size_mb.max' => '单个附件上限最大 20 MB（受 Swoole / PHP 请求体上限约束）',
+            'ticket_attachment_max_count.max' => '每条消息附件数量最多 10 个',
+            'ticket_attachment_allowed_extensions.regex' => '允许的扩展名只能是字母数字，用逗号分隔，例如 jpg,png,pdf',
+            'ticket_attachment_s3_endpoint.url' => 'S3 Endpoint 格式不正确，必须携带 http(s)://',
+            'ticket_attachment_s3_public_url.url' => 'S3 公开访问地址格式不正确，必须携带 http(s)://',
+            'ticket_attachment_s3_prefix.regex' => 'S3 存储前缀只能包含字母数字、-_./',
         ];
     }
 }

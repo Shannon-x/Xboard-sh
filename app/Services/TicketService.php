@@ -13,15 +13,21 @@ use App\Services\Plugin\HookManager;
 
 class TicketService
 {
-    public function reply($ticket, $message, $userId)
+    /**
+     * @param int[] $attachmentIds 已上传、待绑定的附件 id（调用方需先经 TicketAttachmentService::validatePendingIds 校验）
+     */
+    public function reply($ticket, $message, $userId, array $attachmentIds = [])
     {
         try {
             DB::beginTransaction();
             $ticketMessage = TicketMessage::create([
                 'user_id' => $userId,
                 'ticket_id' => $ticket->id,
-                'message' => $message
+                'message' => (string) $message
             ]);
+            if ($ticketMessage && $attachmentIds) {
+                (new TicketAttachmentService())->attachToMessage($attachmentIds, $ticketMessage, $userId);
+            }
             if ($userId !== $ticket->user_id) {
                 $ticket->reply_status = Ticket::STATUS_OPENING;
             } else {
@@ -38,7 +44,10 @@ class TicketService
         }
     }
 
-    public function replyByAdmin($ticketId, $message, $userId): void
+    /**
+     * @param int[] $attachmentIds 管理员先经 admin ticket/attachment/upload 上传的待绑定附件 id
+     */
+    public function replyByAdmin($ticketId, $message, $userId, array $attachmentIds = []): void
     {
         $ticket = Ticket::where('id', $ticketId)
             ->first();
@@ -51,8 +60,11 @@ class TicketService
             $ticketMessage = TicketMessage::create([
                 'user_id' => $userId,
                 'ticket_id' => $ticket->id,
-                'message' => $message
+                'message' => (string) $message
             ]);
+            if ($ticketMessage && $attachmentIds) {
+                (new TicketAttachmentService())->attachToMessage($attachmentIds, $ticketMessage, $userId);
+            }
             if ($userId !== $ticket->user_id) {
                 $ticket->reply_status = Ticket::STATUS_OPENING;
             } else {
@@ -70,7 +82,10 @@ class TicketService
         $this->sendEmailNotify($ticket, $ticketMessage);
     }
 
-    public function createTicket($userId, $subject, $level, $message)
+    /**
+     * @param int[] $attachmentIds 已上传、待绑定的附件 id，随首条消息一起绑定
+     */
+    public function createTicket($userId, $subject, $level, $message, array $attachmentIds = [])
     {
         try {
             DB::beginTransaction();
@@ -95,6 +110,9 @@ class TicketService
                 DB::rollBack();
                 throw new ApiException('工单消息创建失败');
             }
+            if ($attachmentIds) {
+                (new TicketAttachmentService())->attachToMessage($attachmentIds, $ticketMessage, $userId);
+            }
             DB::commit();
             return $ticket;
         } catch (\Exception $e) {
@@ -110,6 +128,12 @@ class TicketService
         $cacheKey = 'ticket_sendEmailNotify_' . $ticket->user_id;
         if (!Cache::get($cacheKey)) {
             Cache::put($cacheKey, 1, 1800);
+            $content = (string) $ticketMessage->message;
+            // 只发附件不写正文时，邮件里至少说明有附件，而不是一句空的「回复内容：」
+            $attachmentCount = $ticketMessage->attachments()->count();
+            if ($attachmentCount > 0) {
+                $content = trim($content . "\r\n[附件 x {$attachmentCount}]");
+            }
             SendEmailJob::dispatch([
                 'email' => $user->email,
                 'subject' => '您在' . admin_setting('app_name', 'XBoard') . '的工单得到了回复',
@@ -117,7 +141,7 @@ class TicketService
                 'template_value' => [
                     'name' => admin_setting('app_name', 'XBoard'),
                     'url' => admin_setting('app_url'),
-                    'content' => "主题：{$ticket->subject}\r\n回复内容：{$ticketMessage->message}"
+                    'content' => "主题：{$ticket->subject}\r\n回复内容：{$content}"
                 ]
             ]);
         }

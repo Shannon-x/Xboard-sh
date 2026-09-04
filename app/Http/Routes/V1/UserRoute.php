@@ -13,6 +13,7 @@ use App\Http\Controllers\V1\User\PlanController;
 use App\Http\Controllers\V1\User\ServerController;
 use App\Http\Controllers\V1\User\StatController;
 use App\Http\Controllers\V1\User\TelegramController;
+use App\Http\Controllers\V1\User\TicketAttachmentController;
 use App\Http\Controllers\V1\User\TicketController;
 use App\Http\Controllers\V1\User\UserController;
 use Illuminate\Contracts\Routing\Registrar;
@@ -69,6 +70,11 @@ class UserRoute
             $router->post('/ticket/save', [TicketController::class, 'save']);
             $router->get('/ticket/fetch', [TicketController::class, 'fetch']);
             $router->post('/ticket/withdraw', [TicketController::class, 'withdraw']);
+            // Ticket attachment（先上传拿 id，再随 save / reply 的 attachment_ids 绑定）
+            // 新增端点务必同步到 sufe-middleware-rs 的 pathname.rs 路径表，否则 stealth 模式下永久 404
+            $router->post('/ticket/attachment/upload', [TicketAttachmentController::class, 'upload'])
+                ->middleware('throttle:ticket-attachment-upload');
+            $router->post('/ticket/attachment/delete', [TicketAttachmentController::class, 'delete']);
             // Server
             $router->get('/server/fetch', [ServerController::class, 'fetch']);
             // Coupon

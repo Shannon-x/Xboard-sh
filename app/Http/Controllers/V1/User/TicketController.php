@@ -10,6 +10,7 @@ use App\Models\Order;
 use App\Models\Ticket;
 use App\Models\TicketMessage;
 use App\Models\User;
+use App\Services\TicketAttachmentService;
 use App\Services\TicketService;
 use App\Utils\Dict;
 use Illuminate\Http\Request;
@@ -28,7 +29,7 @@ class TicketController extends Controller
             if (!$ticket) {
                 return $this->fail([400, __('Ticket does not exist')]);
             }
-            $ticket['message'] = TicketMessage::where('ticket_id', $ticket->id)->get();
+            $ticket['message'] = TicketMessage::where('ticket_id', $ticket->id)->with('attachments')->get();
             $ticket['message']->each(function ($message) use ($ticket) {
                 $message['is_me'] = ($message['user_id'] == $ticket->user_id);
             });
@@ -46,12 +47,19 @@ class TicketController extends Controller
             return $this->fail([400, __('Please purchase a subscription, earn affiliate commission, or place an order before opening a ticket')]);
         }
 
+        // 附件是先上传后绑定的：这里只校验归属与数量，真正绑定在创建消息的事务里完成
+        $attachmentIds = (new TicketAttachmentService())->validatePendingIds(
+            $request->input('attachment_ids', []),
+            $request->user()->id
+        );
+
         $ticketService = new TicketService();
         $ticket = $ticketService->createTicket(
             $request->user()->id,
             $request->input('subject'),
             $request->input('level'),
-            $request->input('message')
+            $request->input('message'),
+            $attachmentIds
         );
         HookManager::call('ticket.create.after', $ticket);
         return $this->success(true);
@@ -63,8 +71,17 @@ class TicketController extends Controller
         if (empty($request->input('id'))) {
             return $this->fail([400, __('Invalid parameter')]);
         }
-        if (empty($request->input('message'))) {
+        $attachmentIds = (new TicketAttachmentService())->validatePendingIds(
+            $request->input('attachment_ids', []),
+            $request->user()->id
+        );
+        // 带附件时允许正文为空（只发一张截图是最常见的用法）
+        $message = is_string($request->input('message')) ? trim($request->input('message')) : '';
+        if ($message === '' && empty($attachmentIds)) {
             return $this->fail([400, __('Message cannot be empty')]);
+        }
+        if (mb_strlen($message) > 10000) {
+            return $this->fail([400, __('Invalid parameter')]);
         }
         $ticket = Ticket::where('id', $request->input('id'))
             ->where('user_id', $request->user()->id)
@@ -82,8 +99,9 @@ class TicketController extends Controller
         if (
             !$ticketService->reply(
                 $ticket,
-                $request->input('message'),
-                $request->user()->id
+                $message,
+                $request->user()->id,
+                $attachmentIds
             )
         ) {
             return $this->fail([400, __('Ticket reply failed')]);

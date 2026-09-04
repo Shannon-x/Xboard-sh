@@ -8,10 +8,12 @@ use App\Http\Requests\Admin\UserSendMail;
 use App\Http\Requests\Admin\UserUpdate;
 use App\Jobs\SendEmailJob;
 use App\Models\Plan;
+use App\Models\TicketAttachment;
 use App\Models\User;
 use App\Services\AuthService;
 use App\Services\NodeSyncService;
 use App\Services\Plugin\HookManager;
+use App\Services\TicketAttachmentService;
 use App\Services\UserService;
 use App\Traits\QueryOperators;
 use App\Utils\Helper;
@@ -792,6 +794,13 @@ class UserController extends Controller
 
             // 工单消息需手动清理：原 hasMany Tickets()->delete() 不会级联到 v2_ticket_message
             $ticketIds = $user->tickets()->pluck('id')->all();
+            // 附件：先记下要删的对象，事务提交后再删存储里的文件（文件删除不可回滚，不放进事务）
+            $attachments = TicketAttachment::where('user_id', $userId)
+                ->when(!empty($ticketIds), fn($q) => $q->orWhereIn('ticket_id', $ticketIds))
+                ->get();
+            if ($attachments->isNotEmpty()) {
+                TicketAttachment::whereIn('id', $attachments->pluck('id')->all())->delete();
+            }
             if (!empty($ticketIds)) {
                 DB::table('v2_ticket_message')->whereIn('ticket_id', $ticketIds)->delete();
             }
@@ -818,6 +827,13 @@ class UserController extends Controller
 
             $user->delete();
             DB::commit();
+
+            if ($attachments->isNotEmpty()) {
+                $attachmentService = new TicketAttachmentService();
+                foreach ($attachments as $attachment) {
+                    $attachmentService->deleteFile($attachment);
+                }
+            }
 
             HookManager::call('admin.user.destroy.after', [
                 'user' => $user,

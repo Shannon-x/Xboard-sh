@@ -20,12 +20,15 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string $chain_name
  * @property string|null $network
  * @property string $address
- * @property string|null $usdt_rate
- * @property string|null $usdt_amount
+ * @property string|null $usdt_rate 申请时汇率
+ * @property string|null $usdt_fee 申请时锁定的通道费（USDT）
+ * @property string|null $usdt_amount 扣除通道费后的预计到账 USDT
  * @property int $status
  * @property int|null $admin_id
  * @property string|null $txid
  * @property string|null $paid_usdt
+ * @property string|null $settle_rate 打款时汇率
+ * @property string|null $rate_source 汇率来源
  * @property string|null $remark
  * @property string|null $reject_reason
  * @property int|null $settled_at

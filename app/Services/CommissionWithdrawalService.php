@@ -98,6 +98,8 @@ class CommissionWithdrawalService
                 throw new ApiException(__('Save failed'));
             }
 
+            // 申请时的行情只是快照：真正到账多少以结算那一刻的汇率为准（见 settle()）
+            $quote = $this->config->quote($amountCents, $chain);
             $withdrawal = CommissionWithdrawal::create([
                 'user_id' => $locked->id,
                 'amount' => $amountCents,
@@ -106,8 +108,10 @@ class CommissionWithdrawalService
                 'chain_name' => $chain['name'],
                 'network' => $chain['network'] ?? '',
                 'address' => $address,
-                'usdt_rate' => $this->config->usdtRate > 0 ? number_format($this->config->usdtRate, 4, '.', '') : null,
-                'usdt_amount' => $this->config->estimateUsdt($amountCents),
+                'usdt_rate' => $quote['rate'] !== null ? WithdrawalConfig::money($quote['rate']) : null,
+                'usdt_fee' => $quote['fee'],
+                'usdt_amount' => $quote['net'],
+                'rate_source' => $this->config->rateSnapshot()['source'],
                 'status' => CommissionWithdrawal::STATUS_PENDING,
             ]);
 
@@ -213,10 +217,16 @@ class CommissionWithdrawalService
                 throw new ApiException('该申请已处理过（' . (CommissionWithdrawal::$statusMap[$withdrawal->status] ?? $withdrawal->status) . '）');
             }
 
+            // 打款那一刻重新按实时汇率折算：申请可能是几小时前提的，行情早就变了。
+            // 管理员手填了实付金额就以手填为准（比如他在交易所看到的真实扣费）。
+            $settleQuote = $this->config->quote((int) $withdrawal->amount, $this->config->findChain($withdrawal->chain_code));
             $withdrawal->status = CommissionWithdrawal::STATUS_COMPLETED;
             $withdrawal->admin_id = $admin->id;
             $withdrawal->txid = $txid !== null && trim($txid) !== '' ? mb_substr(trim($txid), 0, 255) : null;
-            $withdrawal->paid_usdt = $paidUsdt !== null && is_numeric($paidUsdt) ? number_format((float) $paidUsdt, 4, '.', '') : null;
+            $withdrawal->paid_usdt = $paidUsdt !== null && is_numeric($paidUsdt)
+                ? WithdrawalConfig::money((float) $paidUsdt)
+                : $settleQuote['net'];
+            $withdrawal->settle_rate = $settleQuote['rate'] !== null ? WithdrawalConfig::money($settleQuote['rate']) : null;
             $withdrawal->remark = $remark !== null && trim($remark) !== '' ? mb_substr(trim($remark), 0, 500) : null;
             $withdrawal->settled_at = time();
             $withdrawal->save();
@@ -336,13 +346,16 @@ class CommissionWithdrawalService
     {
         $lines = [
             "提现申请 #{$w->id}",
-            "金额：{$this->config->currencySymbol}" . number_format($w->amount / 100, 2, '.', '')
-                . ($w->usdt_amount !== null ? "（≈ {$w->usdt_amount} USDT，参考汇率 {$w->usdt_rate}）" : ''),
-            '链：' . ($w->network ? "{$w->chain_name} · {$w->network}" : $w->chain_name),
-            "地址：{$w->address}",
-            '',
-            '本工单由系统发出，佣金已冻结；管理员打款后会在此回复并关闭工单。',
+            "金额：{$this->config->currencySymbol}" . number_format($w->amount / 100, 2, '.', ''),
         ];
+        if ($w->usdt_amount !== null) {
+            $lines[] = "预计到账：≈ {$w->usdt_amount} USDT" . $this->feeSuffix($w) . "（汇率 {$w->usdt_rate}）";
+        }
+        $lines[] = '链：' . ($w->network ? "{$w->chain_name} · {$w->network}" : $w->chain_name);
+        $lines[] = "地址：{$w->address}";
+        $lines[] = '';
+        $lines[] = '本工单由系统发出，佣金已冻结；管理员打款后会在此回复并关闭工单。';
+        $lines[] = '最终到账金额以打款时的实时汇率与通道费为准。';
         return implode("\n", $lines);
     }
 
@@ -350,17 +363,30 @@ class CommissionWithdrawalService
     {
         $lines = [
             "✅ 提现 #{$w->id} 已完成",
-            "金额：{$this->config->currencySymbol}" . number_format($w->amount / 100, 2, '.', '')
-                . ($w->paid_usdt !== null ? "，实付 {$w->paid_usdt} USDT" : ($w->usdt_amount !== null ? "（≈ {$w->usdt_amount} USDT）" : '')),
-            '链：' . ($w->network ? "{$w->chain_name} · {$w->network}" : $w->chain_name),
-            "地址：{$w->address}",
+            "金额：{$this->config->currencySymbol}" . number_format($w->amount / 100, 2, '.', ''),
         ];
+        if ($w->paid_usdt !== null) {
+            $lines[] = "实付：{$w->paid_usdt} USDT" . $this->feeSuffix($w)
+                . ($w->settle_rate !== null ? "（打款汇率 {$w->settle_rate}）" : '');
+        } elseif ($w->usdt_amount !== null) {
+            $lines[] = "预计到账：≈ {$w->usdt_amount} USDT" . $this->feeSuffix($w);
+        }
+        $lines[] = '链：' . ($w->network ? "{$w->chain_name} · {$w->network}" : $w->chain_name);
+        $lines[] = "地址：{$w->address}";
         if ($w->txid) {
             $lines[] = "交易哈希：{$w->txid}";
         }
         $lines[] = '';
         $lines[] = $this->config->thanks;
         return implode("\n", $lines);
+    }
+
+    /** 有通道费时补一句「已扣通道费 x USDT」，没有就不啰嗦 */
+    private function feeSuffix(CommissionWithdrawal $w): string
+    {
+        return $w->usdt_fee !== null && (float) $w->usdt_fee > 0
+            ? "（已扣通道费 " . rtrim(rtrim((string) $w->usdt_fee, '0'), '.') . " USDT）"
+            : '';
     }
 
     /**
@@ -423,6 +449,8 @@ class CommissionWithdrawalService
                     'amount' => $this->config->currencySymbol . number_format($w->amount / 100, 2, '.', ''),
                     'usdt' => $w->paid_usdt ?? $w->usdt_amount,
                     'usdt_is_actual' => $w->paid_usdt !== null,
+                    'usdt_fee' => $w->usdt_fee !== null && (float) $w->usdt_fee > 0 ? rtrim(rtrim((string) $w->usdt_fee, '0'), '.') : null,
+                    'usdt_rate' => $w->settle_rate ?? $w->usdt_rate,
                     'chain' => $w->network ? "{$w->chain_name} · {$w->network}" : $w->chain_name,
                     'address' => $w->address,
                     'txid' => $w->txid,

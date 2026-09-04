@@ -29,8 +29,11 @@ class ConfigSave extends FormRequest
         'commission_withdraw_chains.*.code' => 'nullable|string|max:32',
         'commission_withdraw_chains.*.name' => 'required_with:commission_withdraw_chains.*|string|max:64',
         'commission_withdraw_chains.*.network' => 'nullable|string|max:64',
-        'commission_withdraw_chains.*.preset' => 'nullable|in:tron,evm,solana,ton,none',
+        'commission_withdraw_chains.*.preset' => 'nullable|in:tron,evm,solana,ton,aptos,none',
+        'commission_withdraw_chains.*.network_key' => 'nullable|string|max:32',
         'commission_withdraw_chains.*.explorer_tx' => 'nullable|string|max:255',
+        'commission_withdraw_chains.*.fee' => 'nullable|numeric|min:0|max:10000',
+        'commission_withdraw_rate_source' => 'nullable|in:auto,manual',
         'commission_withdraw_usdt_rate' => 'nullable|numeric|min:0|max:100000',
         'commission_withdraw_require_qrcode' => 'boolean',
         'commission_withdraw_thanks' => 'nullable|string|max:1000',
@@ -231,7 +234,9 @@ class ConfigSave extends FormRequest
             'ticket_attachment_s3_public_url.url' => 'S3 公开访问地址格式不正确，必须携带 http(s)://',
             'ticket_attachment_s3_prefix.regex' => 'S3 存储前缀只能包含字母数字、-_./',
             'commission_withdraw_chains.*.name.required_with' => '提现链的名称不能为空',
-            'commission_withdraw_chains.*.preset.in' => '地址格式预设只能是 tron / evm / solana / ton / none',
+            'commission_withdraw_chains.*.preset.in' => '地址格式预设只能是 tron / evm / solana / ton / aptos / none',
+            'commission_withdraw_chains.*.fee.numeric' => '通道费必须是数字（以 USDT 计）',
+            'commission_withdraw_rate_source.in' => '汇率来源只能是 auto（自动获取）或 manual（手动固定）',
             'commission_withdraw_chains.max' => '提现链最多配置 20 条',
         ];
     }

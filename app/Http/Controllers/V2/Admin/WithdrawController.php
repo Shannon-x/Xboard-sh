@@ -5,6 +5,7 @@ namespace App\Http\Controllers\V2\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\CommissionWithdrawal;
 use App\Models\TicketMessage;
+use App\Services\Commission\UsdtRateService;
 use App\Services\Commission\WithdrawalConfig;
 use App\Services\CommissionWithdrawalService;
 use Illuminate\Http\Request;
@@ -51,6 +52,52 @@ class WithdrawController extends Controller
         ]);
     }
 
+    /**
+     * 当前实时汇率 + 按某笔申请重算的 USDT 报价。
+     * 设置页用它显示「现在能不能取到行情」，结算弹窗用它预填实付金额。
+     */
+    public function rate(Request $request)
+    {
+        $config = WithdrawalConfig::fromSettings();
+        $force = $request->boolean('force');
+        $service = new UsdtRateService();
+        $snapshot = $config->rateSource === WithdrawalConfig::RATE_SOURCE_AUTO
+            ? $service->snapshot($config->currency, $force)
+            : $config->rateSnapshot();
+        // 取不到时把原因一并回显：服务器缺 CA 证书 / 出不了网时，只说「取不到」等于没说
+        $error = $snapshot['rate'] === null ? $service->lastError() : null;
+        if ($snapshot['rate'] === null && $config->fallbackRate > 0) {
+            $snapshot = $config->rateSnapshot();
+        }
+
+        $data = [
+            'rate' => $snapshot['rate'],
+            'source' => $snapshot['source'],
+            'source_label' => $snapshot['source_label'],
+            'fetched_at' => $snapshot['fetched_at'],
+            'is_live' => $snapshot['is_live'],
+            'is_stale' => $snapshot['is_stale'],
+            'currency' => $config->currency,
+            'currency_symbol' => $config->currencySymbol,
+            'rate_source_mode' => $config->rateSource,
+            'error' => $error,
+        ];
+
+        // 带 id 时顺便把这笔申请按最新汇率重算一份，管理员不用自己按计算器
+        if ($request->filled('id')) {
+            $withdrawal = CommissionWithdrawal::find((int) $request->input('id'));
+            if ($withdrawal) {
+                $data['quote'] = $config->quote(
+                    (int) $withdrawal->amount,
+                    $config->findChain($withdrawal->chain_code),
+                    $snapshot['rate']
+                );
+            }
+        }
+
+        return $this->success($data);
+    }
+
     public function detail(Request $request)
     {
         $request->validate(['id' => 'required|integer|min:1']);
@@ -71,6 +118,12 @@ class WithdrawController extends Controller
                 $data['attachments'] = $firstMessage->attachments->toArray();
             }
         }
+        // 打款前按当前行情重算：申请可能是几小时前提的
+        $config = WithdrawalConfig::fromSettings();
+        $data['live_quote'] = $config->quote(
+            (int) $withdrawal->amount,
+            $config->findChain($withdrawal->chain_code)
+        );
         $data['user_commission_balance'] = $withdrawal->user ? (int) $withdrawal->user->commission_balance : null;
         // 风控参考：这个地址 / 这个用户历史成功打款次数。首次打款到新地址值得多看一眼二维码与工单
         $data['same_address_paid_count'] = (int) CommissionWithdrawal::where('address', $withdrawal->address)
@@ -139,8 +192,11 @@ class WithdrawController extends Controller
             'network' => $w->network,
             'address' => $w->address,
             'usdt_rate' => $w->usdt_rate,
+            'usdt_fee' => $w->usdt_fee,
             'usdt_amount' => $w->usdt_amount,
             'paid_usdt' => $w->paid_usdt,
+            'settle_rate' => $w->settle_rate,
+            'rate_source' => $w->rate_source,
             'status' => (int) $w->status,
             'status_text' => CommissionWithdrawal::$statusMap[$w->status] ?? (string) $w->status,
             'admin_id' => $w->admin_id,

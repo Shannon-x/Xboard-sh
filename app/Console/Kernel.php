@@ -39,6 +39,9 @@ class Kernel extends ConsoleKernel
         // reset
         $schedule->command('reset:traffic')->everyMinute()->onOneServer()->withoutOverlapping(10);
         $schedule->command('reset:log')->daily()->onOneServer();
+        // 提现估算用的 USDT 实时汇率：定时焐热缓存，用户端请求就不必等行情接口
+        $schedule->command('commission:refresh-usdt-rate')->everyTenMinutes()->onOneServer()->withoutOverlapping(5);
+
         // 工单附件：按后台配置的保留期清理，另回收未随消息发出 / 工单已删的孤儿文件
         $schedule->command('ticket:clean-attachments')->dailyAt('3:20')->onOneServer()->withoutOverlapping(120);
         // Redis TTL expiration does not execute PHP, so reconcile the DB display snapshot.

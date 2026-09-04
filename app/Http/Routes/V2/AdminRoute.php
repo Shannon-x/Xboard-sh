@@ -162,6 +162,7 @@ class AdminRoute
                 $router->any('/fetch', [WithdrawController::class, 'fetch']);
                 $router->get('/stats', [WithdrawController::class, 'stats']);
                 $router->get('/detail', [WithdrawController::class, 'detail']);
+                $router->get('/rate', [WithdrawController::class, 'rate']);
                 $router->post('/settle', [WithdrawController::class, 'settle']);
                 $router->post('/reject', [WithdrawController::class, 'reject']);
             });

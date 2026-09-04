@@ -11,6 +11,8 @@ use App\Models\User;
 use App\Support\Setting;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -34,6 +36,8 @@ class CommissionWithdrawalTest extends TestCase
         parent::setUp();
         Storage::fake('local');
         Queue::fake();
+        // 汇率走 auto 时会打行情接口：测试里一律拦下，未打桩的请求直接失败而不是偷偷联网
+        Http::preventStrayRequests();
 
         $stub = new class extends Setting {
             public array $store = [];
@@ -62,6 +66,8 @@ class CommissionWithdrawalTest extends TestCase
         $this->settings = [
             'commission_withdraw_limit' => 10,     // ¥10
             'commission_withdraw_max' => 500,      // ¥500
+            // 汇率固定成手动，测试不打行情接口；auto 模式的取数逻辑见 UsdtRateServiceTest
+            'commission_withdraw_rate_source' => 'manual',
             'commission_withdraw_usdt_rate' => 7.2,
             'ticket_attachment_enable' => 1,
             'ticket_attachment_driver' => 'local',
@@ -117,7 +123,10 @@ class CommissionWithdrawalTest extends TestCase
         $resp->assertStatus(200)
             ->assertJsonPath('data.status', 0)
             ->assertJsonPath('data.amount', 12345)
-            ->assertJsonPath('data.usdt_amount', '17.1458');
+            ->assertJsonPath('data.usdt_rate', '7.2000')
+            ->assertJsonPath('data.usdt_fee', '1.0000')
+            // 到账金额已扣掉 TRC20 的 1 USDT 通道费
+            ->assertJsonPath('data.usdt_amount', '16.1458');
 
         $this->assertSame(20000 - 12345, $user->fresh()->commission_balance, '申请即冻结扣除');
 
@@ -314,6 +323,91 @@ class CommissionWithdrawalTest extends TestCase
             $this->assertTrue(view()->exists("mail.{$theme}.withdrawCompleted"), "{$theme} 缺 withdrawCompleted");
             $this->assertTrue(view()->exists("mail.{$theme}.withdrawRejected"), "{$theme} 缺 withdrawRejected");
         }
+    }
+
+    /**
+     * 结算时按打款那一刻的实时汇率重算：申请可能是几小时前提的，行情早变了。
+     * 管理员没填实付金额时由系统自动折算，并记下当时的汇率备查。
+     */
+    public function test_settle_recomputes_usdt_with_live_rate(): void
+    {
+        $this->settings['commission_withdraw_rate_source'] = 'auto';
+        // 第一次取到 7.20（申请），缓存清掉后第二次取到 6.50（打款）
+        Http::fake(['p2p.binance.com/*' => Http::sequence()
+            ->push(['data' => [['adv' => ['price' => '7.20']]]])
+            ->push(['data' => [['adv' => ['price' => '6.50']]]])]);
+
+        $user = $this->makeUser();
+        $admin = $this->makeUser(['is_admin' => 1]);
+        Sanctum::actingAs($user);
+        $id = $this->postJson('/api/v1/user/withdraw/apply', [
+            'amount' => 5000,
+            'chain' => 'usdt_trc20',
+            'address' => self::TRON_ADDRESS,
+        ])->assertStatus(200)->json('data.id');
+
+        $applied = CommissionWithdrawal::findOrFail($id);
+        // SQLite 取回 decimal 是 float，按数值比
+        $this->assertEqualsWithDelta(7.2, (float) $applied->usdt_rate, 0.0001);
+        $this->assertEqualsWithDelta(5.9444, (float) $applied->usdt_amount, 0.0001, '50/7.2 - 1 通道费');
+        $this->assertSame('binance_p2p', $applied->rate_source);
+
+        // 打款时行情变成 6.50，管理员不填实付金额 —— 清掉缓存逼它重新取
+        Cache::flush();
+        (new \App\Services\CommissionWithdrawalService())->settle($id, $admin, 'tx-live');
+
+        $settled = CommissionWithdrawal::findOrFail($id);
+        $this->assertEqualsWithDelta(6.5, (float) $settled->settle_rate, 0.0001);
+        $this->assertEqualsWithDelta(6.6923, (float) $settled->paid_usdt, 0.0001, '50/6.5 - 1 通道费，按打款时汇率');
+        $this->assertEqualsWithDelta(5.9444, (float) $settled->usdt_amount, 0.0001, '申请时的估算原样留档');
+    }
+
+    /**
+     * 后台汇率接口：设置页与结算弹窗都靠它。直接调控制器方法（管理端路由带 secure_path，
+     * 不适合在这里拼），重点是让这段代码真的跑起来——只做静态检查漏得掉未加引号的参数名之类的错。
+     */
+    public function test_admin_rate_endpoint_returns_live_quote(): void
+    {
+        $this->settings['commission_withdraw_rate_source'] = 'auto';
+        Http::fake(['p2p.binance.com/*' => Http::response(['data' => [['adv' => ['price' => '6.60']]]])]);
+
+        $user = $this->makeUser();
+        Sanctum::actingAs($user);
+        $id = $this->postJson('/api/v1/user/withdraw/apply', [
+            'amount' => 10000,
+            'chain' => 'usdt_trc20',
+            'address' => self::TRON_ADDRESS,
+        ])->assertStatus(200)->json('data.id');
+
+        $controller = new \App\Http\Controllers\V2\Admin\WithdrawController();
+        $response = $controller->rate(\Illuminate\Http\Request::create('/rate', 'GET', ['id' => $id, 'force' => 0]));
+        $payload = json_decode($response->getContent(), true);
+
+        $this->assertSame(6.6, $payload['data']['rate']);
+        $this->assertSame('binance_p2p', $payload['data']['source']);
+        $this->assertSame('CNY', $payload['data']['currency']);
+        $this->assertSame('auto', $payload['data']['rate_source_mode']);
+        $this->assertNull($payload['data']['error']);
+        // ¥100 / 6.6 = 15.1515，减 TRC20 的 1 USDT 通道费
+        $this->assertSame('15.1515', $payload['data']['quote']['gross']);
+        $this->assertSame('1.0000', $payload['data']['quote']['fee']);
+        $this->assertSame('14.1515', $payload['data']['quote']['net']);
+    }
+
+    /** 取不到行情时要把失败原因带出来，否则管理员只看到「未取到」无从排查 */
+    public function test_admin_rate_endpoint_reports_failure_reason(): void
+    {
+        $this->settings['commission_withdraw_rate_source'] = 'auto';
+        $this->settings['commission_withdraw_usdt_rate'] = 0;
+        Http::fake(['*' => Http::response([], 503)]);
+
+        $controller = new \App\Http\Controllers\V2\Admin\WithdrawController();
+        $response = $controller->rate(\Illuminate\Http\Request::create('/rate', 'GET', ['force' => 1]));
+        $payload = json_decode($response->getContent(), true);
+
+        $this->assertNull($payload['data']['rate']);
+        $this->assertNotEmpty($payload['data']['error']);
+        $this->assertStringContainsString('binance_p2p', $payload['data']['error']);
     }
 
     public function test_legacy_ticket_withdraw_endpoint_uses_new_workflow(): void

@@ -2,7 +2,6 @@
 
 namespace Plugin\Telegram;
 
-use App\Models\Order;
 use App\Models\Ticket;
 use App\Models\TicketMessage;
 use App\Models\User;
@@ -44,30 +43,41 @@ class Plugin extends AbstractPlugin
     $this->listen('payment.notify.success', [$this, 'sendPaymentNotify'], 10);
   }
 
-  public function sendPaymentNotify(Order $order): void
+  /**
+   * 收款通知。
+   *
+   * 载荷不一定是 Order：余额充值一类的插件按同一个钩子传的是普通对象（只有 trade_no /
+   * total_amount / user_id / type）。原先声明成 Order 会让这些调用直接抛 TypeError，
+   * 结果是「钱收到了、管理员一条通知都没有」。这里放宽成任意对象并逐字段兜底。
+   */
+  public function sendPaymentNotify(object $order): void
   {
     if (!$this->getConfig('enable_payment_notify', true)) {
       return;
     }
 
-    $payment = $order->payment;
-    if (!$payment) {
-      Log::warning('支付通知失败：订单关联的支付方式不存在', ['order_id' => $order->id]);
+    $tradeNo = (string) ($order->trade_no ?? '');
+    if ($tradeNo === '') {
+      Log::warning('支付通知跳过：载荷里没有 trade_no', ['payload' => get_debug_type($order)]);
       return;
     }
 
+    $payment = $order->payment ?? null;
     $e = [TelegramService::class, 'escapeHtml'];
-    $message = sprintf(
-      "💰 <b>成功收款 %s 元</b>\n" .
-      "———————————————\n" .
-      "支付接口：%s\n" .
-      "支付渠道：%s\n" .
-      "本站订单：<code>%s</code>",
-      $order->total_amount / 100,
-      $e((string) $payment->payment),
-      $e((string) $payment->name),
-      $e((string) $order->trade_no)
-    );
+
+    $message = sprintf("💰 <b>成功收款 %s 元</b>\n———————————————\n", ((int) ($order->total_amount ?? 0)) / 100);
+    if ($payment) {
+      $message .= sprintf(
+        "支付接口：%s\n支付渠道：%s\n",
+        $e((string) ($payment->payment ?? '')),
+        $e((string) ($payment->name ?? ''))
+      );
+    } elseif (!empty($order->type) && !is_numeric($order->type)) {
+      // 非 Order 载荷（如余额充值）用 type 说明业务来源，避免通知里只剩一个订单号
+      $message .= sprintf("业务类型：%s\n", $e((string) $order->type));
+    }
+    $message .= sprintf("本站订单：<code>%s</code>", $e($tradeNo));
+
     $this->telegramService->sendMessageWithAdmin($message, true, 'html');
   }
 

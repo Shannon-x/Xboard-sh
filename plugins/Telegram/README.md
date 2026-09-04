@@ -20,6 +20,9 @@ XBoard 的 Telegram Bot 插件，提供用户账号绑定、流量查询、订�
 
 ## 升级注意
 
+1.1.1 起收款通知不再限定 `Order` 类型：按 `payment.notify.success` 传普通对象的插件（余额充值等）此前会抛 TypeError，导致「钱收到了但管理员没有任何通知」。同时附件推送在 Telegram 拒收图片（`IMAGE_PROCESS_FAILED` 等）时自动改用文件形式重发。
+
+
 1.1.0 起插件用 HTML parse_mode 发送通知并只转义动态值；所有 Bot API 调用改为 POST（此前 GET 在工单内容较长时会因 URL 超长而整条失败）。
 
 ## 可用命令

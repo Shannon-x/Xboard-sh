@@ -61,9 +61,23 @@ class SendTelegramAttachmentJob implements ShouldQueue
             && in_array($attachment->mime, self::PHOTO_MIMES, true)
             && strlen($contents) <= TelegramService::MAX_PHOTO_BYTES;
 
-        if ($asPhoto) {
+        if (!$asPhoto) {
+            $telegram->sendDocument($this->telegramId, $contents, $attachment->original_name, $this->caption);
+            return;
+        }
+
+        try {
             $telegram->sendPhoto($this->telegramId, $contents, $attachment->original_name, $this->caption);
-        } else {
+        } catch (\Throwable $e) {
+            // Telegram 会拒收一部分合法图片（尺寸过小 / 长宽比过于极端 / CMYK JPEG 等，报
+            // IMAGE_PROCESS_FAILED 或 PHOTO_INVALID_DIMENSIONS）。此时按文件重发，管理员照样拿得到，
+            // 而不是重试三次后进死信队列、通知里那张截图无声消失。
+            Log::warning('[telegram] sendPhoto 被拒，改用 sendDocument 重发', [
+                'attachment_id' => $attachment->id,
+                'mime' => $attachment->mime,
+                'size' => strlen($contents),
+                'error' => $e->getMessage(),
+            ]);
             $telegram->sendDocument($this->telegramId, $contents, $attachment->original_name, $this->caption);
         }
     }

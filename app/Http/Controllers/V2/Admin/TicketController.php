@@ -4,6 +4,7 @@ namespace App\Http\Controllers\V2\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Ticket;
+use App\Services\TicketAttachmentService;
 use App\Services\TicketService;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
@@ -89,7 +90,7 @@ class TicketController extends Controller
      */
     private function fetchTicketById(Request $request)
     {
-        $ticket = Ticket::with('messages', 'user')->find($request->input('id'));
+        $ticket = Ticket::with('messages.attachments', 'user')->find($request->input('id'));
 
         if (!$ticket) {
             return $this->fail([400202, '工单不存在']);
@@ -145,16 +146,26 @@ class TicketController extends Controller
     {
         $request->validate([
             'id' => 'required|numeric',
-            'message' => 'required|string'
+            'message' => 'nullable|string|max:10000',
+            'attachment_ids' => 'nullable|array|max:10',
+            'attachment_ids.*' => 'integer|min:1',
         ], [
             'id.required' => '工单ID不能为空',
-            'message.required' => '消息不能为空'
         ]);
+        $attachmentIds = (new TicketAttachmentService())->validatePendingIds(
+            $request->input('attachment_ids', []),
+            $request->user()->id
+        );
+        $message = trim((string) $request->input('message', ''));
+        if ($message === '' && empty($attachmentIds)) {
+            return $this->fail([422, '消息不能为空']);
+        }
         $ticketService = new TicketService();
         $ticketService->replyByAdmin(
             $request->input('id'),
-            $request->input('message'),
-            $request->user()->id
+            $message,
+            $request->user()->id,
+            $attachmentIds
         );
         return $this->success(true);
     }
@@ -183,7 +194,7 @@ class TicketController extends Controller
         $ticket = Ticket::with([
             'user',
             'messages' => function ($query) {
-                $query->with(['user']); // 如果需要用户信息
+                $query->with(['user', 'attachments']); // 如果需要用户信息
             }
         ])->findOrFail($ticketId);
 

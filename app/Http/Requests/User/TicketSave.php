@@ -18,6 +18,9 @@ class TicketSave extends FormRequest
             'subject' => 'required|string|max:200',
             'level' => 'required|in:0,1,2',
             'message' => 'required|string|max:10000',
+            // 先经 /ticket/attachment/upload 拿到的待绑定附件 id；归属与数量在 TicketAttachmentService 里校验
+            'attachment_ids' => 'nullable|array|max:10',
+            'attachment_ids.*' => 'integer|min:1',
         ];
     }
 

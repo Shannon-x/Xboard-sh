@@ -8,6 +8,7 @@ use Closure;
 class RequestLog
 {
     private const REDACTED_VALUE = '[REDACTED]';
+    private const MAX_LOGGED_VALUE_LENGTH = 8192;
     private const SENSITIVE_KEYS = [
         'password',
         'passwd',
@@ -83,6 +84,12 @@ class RequestLog
 
             if (is_array($value)) {
                 $data[$key] = $this->redactSensitiveData($value);
+                continue;
+            }
+
+            // 附件的 base64 内容之类的大字段不进审计日志：一条记录塞进几 MB 既没意义又拖慢查询
+            if (is_string($value) && strlen($value) > self::MAX_LOGGED_VALUE_LENGTH) {
+                $data[$key] = '[TRUNCATED ' . strlen($value) . ' bytes]';
             }
         }
 

@@ -9,11 +9,38 @@ use App\Services\Auth\GoogleLoginService;
 use App\Services\MailService;
 use App\Services\TelegramService;
 use App\Services\ThemeService;
+use App\Services\TicketAttachment\AttachmentConfig;
+use App\Services\TicketAttachment\AttachmentStorageFactory;
 use App\Utils\Dict;
 use Illuminate\Http\Request;
 
 class ConfigController extends Controller
 {
+    /**
+     * 工单附件「测试存储连接」：用请求里的表单值（未保存也行）覆盖已保存配置，
+     * 写入 → 读回 → 删除一个探针对象。失败把驱动侧的原话带回去，方便对照 R2 / MinIO 的报错。
+     */
+    public function testTicketAttachmentStorage(Request $request)
+    {
+        $override = array_filter(
+            $request->only(array_keys(AttachmentConfig::DEFAULTS)),
+            static fn($v) => $v !== null && $v !== ''
+        );
+        $config = AttachmentConfig::fromSettings($override);
+        try {
+            $storage = AttachmentStorageFactory::make($config);
+            $storage->probe();
+        } catch (\Throwable $e) {
+            return $this->fail([400, '存储测试失败：' . $e->getMessage()]);
+        }
+        return $this->success([
+            'driver' => $config->driver,
+            'endpoint' => $config->driver === AttachmentConfig::DRIVER_S3
+                ? ($config->s3['endpoint'] ?: "https://s3.{$config->s3['region']}.amazonaws.com")
+                : storage_path('app/ticket-attachments'),
+            'bucket' => $config->driver === AttachmentConfig::DRIVER_S3 ? $config->s3['bucket'] : null,
+        ]);
+    }
 
 
     public function getEmailTemplate()
@@ -127,6 +154,8 @@ class ConfigController extends Controller
                 'currency_symbol' => admin_setting('currency_symbol', '¥'),
                 'ticket_must_wait_reply' => (bool) admin_setting('ticket_must_wait_reply', 0),
             ],
+            // 工单附件（存储驱动 / 体积与数量限制 / 自动清理）—— 默认值集中在 AttachmentConfig
+            'ticket' => AttachmentConfig::fromSettings()->toAdminArray(),
             'subscribe' => [
                 'plan_change_enable' => (bool) admin_setting('plan_change_enable', 1),
                 'reset_traffic_method' => (int) admin_setting('reset_traffic_method', 0),

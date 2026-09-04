@@ -39,6 +39,8 @@ class Kernel extends ConsoleKernel
         // reset
         $schedule->command('reset:traffic')->everyMinute()->onOneServer()->withoutOverlapping(10);
         $schedule->command('reset:log')->daily()->onOneServer();
+        // 工单附件：按后台配置的保留期清理，另回收未随消息发出 / 工单已删的孤儿文件
+        $schedule->command('ticket:clean-attachments')->dailyAt('3:20')->onOneServer()->withoutOverlapping(120);
         // Redis TTL expiration does not execute PHP, so reconcile the DB display snapshot.
         $schedule->command('device:reconcile-online-counts')
             ->everyMinute()

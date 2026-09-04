@@ -39,3 +39,7 @@ tmp_repos/
 
 # 安全审计报告：含未修复漏洞的利用细节，公开仓库禁止入库
 docs/AUDIT_REPORT_*.md
+
+# phpunit 结果缓存与 Storage::fake 产物
+/.phpunit.cache/
+/storage/framework/testing/

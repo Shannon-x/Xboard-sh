@@ -226,4 +226,22 @@ return [
 
     'max_execution_time' => 60,
 
+    /*
+    |--------------------------------------------------------------------------
+    | Swoole Server Options
+    |--------------------------------------------------------------------------
+    |
+    | package_max_length 是 Swoole 单个 HTTP 请求体的硬上限（Octane 默认 10MB），
+    | 超过的连接会被直接切断、PHP 层根本收不到请求。工单附件单文件硬上限 20MB
+    | （AttachmentConfig::HARD_MAX_SIZE_MB），base64 JSON 形态约 27MB，因此放到 32MB，
+    | 与 .docker/usr/local/etc/php/conf.d/zz-xboard-uploads.ini 的 post_max_size 对齐。
+    |
+    */
+
+    'swoole' => [
+        'options' => [
+            'package_max_length' => 32 * 1024 * 1024,
+        ],
+    ],
+
 ];

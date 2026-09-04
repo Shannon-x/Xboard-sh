@@ -117,6 +117,21 @@ class RouteServiceProvider extends ServiceProvider
                 Limit::perMinute(30)->by('invite_delete:ip:' . $request->ip()),
             ];
         });
+
+        // 工单附件上传：体积 / 每日额度在业务层另有限制，这里只拦脚本式高频写入。
+        // 剪贴板连续粘贴几张截图也远到不了每分钟 20 次。
+        RateLimiter::for('ticket-attachment-upload', function (Request $request) use ($byUserOrIp) {
+            return [
+                Limit::perMinute(20)->by($byUserOrIp($request, 'ticket_attachment_upload')),
+                Limit::perMinute(60)->by('ticket_attachment_upload:ip:' . $request->ip()),
+            ];
+        });
+
+        // 附件下载是免登录的能力 URL（128 位随机 key），按 IP 限流防枚举扫描；
+        // 一个工单详情页几十张图的正常加载不会触碰这个阈值。
+        RateLimiter::for('ticket-attachment-download', function (Request $request) {
+            return Limit::perMinute(240)->by('ticket_attachment_download:ip:' . $request->ip());
+        });
     }
 
     /**

@@ -19,6 +19,8 @@ class MessageResource extends JsonResource
             "ticket_id" => $this['ticket_id'],
             "is_me" => $this['is_from_user'],
             "message"  => $this["message"],
+            // 只有预加载了 attachments 才输出，未加载时不触发 N+1
+            "attachments" => $this->whenLoaded('attachments', fn() => TicketAttachmentResource::collection($this->resource->attachments)),
             "created_at" => $this['created_at'],
             "updated_at" => $this['updated_at']
         ];

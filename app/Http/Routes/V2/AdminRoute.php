@@ -10,6 +10,7 @@ use App\Http\Controllers\V2\Admin\OrderController;
 use App\Http\Controllers\V2\Admin\UserController;
 use App\Http\Controllers\V2\Admin\StatController;
 use App\Http\Controllers\V2\Admin\NoticeController;
+use App\Http\Controllers\V2\Admin\TicketAttachmentController;
 use App\Http\Controllers\V2\Admin\TicketController;
 use App\Http\Controllers\V2\Admin\CouponController;
 use App\Http\Controllers\V2\Admin\GiftCardController;
@@ -38,6 +39,7 @@ class AdminRoute
                 $router->get('/getThemeTemplate', [ConfigController::class, 'getThemeTemplate']);
                 $router->post('/setTelegramWebhook', [ConfigController::class, 'setTelegramWebhook']);
                 $router->post('/testSendMail', [ConfigController::class, 'testSendMail']);
+                $router->post('/testTicketAttachmentStorage', [ConfigController::class, 'testTicketAttachmentStorage']);
             });
 
             // Plan
@@ -148,6 +150,8 @@ class AdminRoute
                 $router->any('/fetch', [TicketController::class, 'fetch']);
                 $router->post('/reply', [TicketController::class, 'reply']);
                 $router->post('/close', [TicketController::class, 'close']);
+                $router->post('/attachment/upload', [TicketAttachmentController::class, 'upload']);
+                $router->post('/attachment/delete', [TicketAttachmentController::class, 'delete']);
             });
 
             // Coupon

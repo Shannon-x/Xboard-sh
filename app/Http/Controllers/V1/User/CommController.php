@@ -5,6 +5,7 @@ namespace App\Http\Controllers\V1\User;
 use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Payment;
+use App\Services\TicketAttachment\AttachmentConfig;
 use App\Utils\Dict;
 use Illuminate\Http\Request;
 
@@ -23,7 +24,9 @@ class CommController extends Controller
             'commission_distribution_enable' => (int)admin_setting('commission_distribution_enable', 0),
             'commission_distribution_l1' => admin_setting('commission_distribution_l1'),
             'commission_distribution_l2' => admin_setting('commission_distribution_l2'),
-            'commission_distribution_l3' => admin_setting('commission_distribution_l3')
+            'commission_distribution_l3' => admin_setting('commission_distribution_l3'),
+            // 工单附件的公开限制（前端据此决定是否显示上传入口、做本地预检）
+            'ticket_attachment' => AttachmentConfig::fromSettings()->toPublicArray(),
         ];
         return $this->success($data);
     }

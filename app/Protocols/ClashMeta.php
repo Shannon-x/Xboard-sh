@@ -3,6 +3,7 @@
 namespace App\Protocols;
 
 use App\Models\Server;
+use App\Support\CertPinHelper;
 use App\Utils\Helper;
 use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
@@ -335,12 +336,18 @@ class ClashMeta extends AbstractProtocol
      * （sha256(证书 DER) 的 hex，即 pinned_peer_cert_sha256）做证书固定；
      * 不认识该字段的核心退化为 skip-cert-verify 保连通。
      */
-    private static function applyCertPin(array &$array, $protocol_settings, string $path): void
+    private static function applyCertPin(array &$array, $protocol_settings, string $path, bool $supportsFingerprint = true): void
     {
-        if ($pin = data_get($protocol_settings, $path)) {
-            $array['fingerprint'] = $pin;
-            $array['skip-cert-verify'] = true;
+        $pin = CertPinHelper::normalizePin(data_get($protocol_settings, $path));
+        if ($pin === null) {
+            return;
         }
+        if ($supportsFingerprint) {
+            $array['fingerprint'] = $pin;
+        }
+        // 有指纹 = 面板自签证书。mihomo 用 fingerprint 时内核本就自置 InsecureSkipVerify；
+        // 老内核 / 不支持指纹的出站（hysteria v1）则靠这个键保连通。两种情况都要 true。
+        $array['skip-cert-verify'] = true;
     }
 
     public static function buildVmess($uuid, $server)
@@ -639,7 +646,13 @@ class ClashMeta extends AbstractProtocol
             'skip-cert-verify' => (bool) data_get($protocol_settings, 'tls.allow_insecure', false),
             'udp' => true,
         ];
-        self::applyCertPin($array, $protocol_settings, 'tls.pinned_peer_cert_sha256');
+        // hysteria v1 出站没有 fingerprint 字段，写了无效，只给 skip-cert-verify
+        self::applyCertPin(
+            $array,
+            $protocol_settings,
+            'tls.pinned_peer_cert_sha256',
+            (int) data_get($protocol_settings, 'version', 2) === 2
+        );
         if (isset($server['ports'])) {
             $array['ports'] = $server['ports'];
             $array['mport'] = $server['ports'];

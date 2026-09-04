@@ -2,6 +2,7 @@
 
 namespace App\Protocols;
 
+use App\Support\CertPinHelper;
 use App\Utils\Helper;
 use App\Support\AbstractProtocol;
 use App\Models\Server;
@@ -357,6 +358,16 @@ class Shadowrocket extends AbstractProtocol
         return $uri;
     }
 
+    /**
+     * 有指纹就说明证书是面板自签的，链校验必失败。
+     * Shadowrocket 不认任何指纹字段，只能跳过校验——否则这个节点在小火箭上根本用不了。
+     */
+    private static function insecureFor($protocol_settings, string $pinPath): int
+    {
+        $pin = CertPinHelper::normalizePin(data_get($protocol_settings, $pinPath));
+        return ($pin !== null || data_get($protocol_settings, 'tls.allow_insecure')) ? 1 : 0;
+    }
+
     public static function buildHysteria($password, $server)
     {
         $protocol_settings = $server['protocol_settings'];
@@ -378,7 +389,7 @@ class Shadowrocket extends AbstractProtocol
                     $params["obfs"] = "xplus";
                     $params["obfsParam"] = data_get($protocol_settings, 'obfs.password');
                 }
-                $params['insecure'] = data_get($protocol_settings, 'tls.allow_insecure');
+                $params['insecure'] = self::insecureFor($protocol_settings, 'tls.pinned_peer_cert_sha256');
                 if (isset($server['ports']))
                     $params['mport'] = $server['ports'];
                 $query = http_build_query($params);
@@ -405,7 +416,7 @@ class Shadowrocket extends AbstractProtocol
                     $params['obfs'] = data_get($protocol_settings, 'obfs.type');
                     $params['obfs-password'] = data_get($protocol_settings, 'obfs.password');
                 }
-                $params['insecure'] = data_get($protocol_settings, 'tls.allow_insecure');
+                $params['insecure'] = self::insecureFor($protocol_settings, 'tls.pinned_peer_cert_sha256');
                 if (isset($protocol_settings['hop_interval'])) {
                     $params['keepalive'] = data_get($protocol_settings, 'hop_interval');
                 }
@@ -428,7 +439,7 @@ class Shadowrocket extends AbstractProtocol
         $params = [
             'alpn' => data_get($protocol_settings, 'alpn'),
             'sni' => data_get($protocol_settings, 'tls.server_name'),
-            'insecure' => data_get($protocol_settings, 'tls.allow_insecure'),
+            'insecure' => self::insecureFor($protocol_settings, 'tls.pinned_peer_cert_sha256'),
             // 存量脏值兜底："newreno" 的规范值是 new_reno
             'congestion_control' => ($cc = data_get($protocol_settings, 'congestion_control', 'cubic')) === 'newreno' ? 'new_reno' : $cc
         ];
@@ -451,7 +462,7 @@ class Shadowrocket extends AbstractProtocol
         $name = rawurlencode($server['name']);
         $params = [
             'sni' => data_get($protocol_settings, 'tls.server_name'),
-            'insecure' => data_get($protocol_settings, 'tls.allow_insecure')
+            'insecure' => self::insecureFor($protocol_settings, 'tls.pinned_peer_cert_sha256')
         ];
         $query = http_build_query($params);
         $addr = Helper::wrapIPv6($server['host']);

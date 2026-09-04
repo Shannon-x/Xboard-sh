@@ -3,6 +3,7 @@
 namespace App\Protocols;
 
 use App\Support\AbstractProtocol;
+use App\Support\CertPinHelper;
 use App\Models\Server;
 
 class Loon extends AbstractProtocol
@@ -330,8 +331,14 @@ class Loon extends AbstractProtocol
             $password,
             $protocol_settings['tls']['server_name'] ? "sni={$protocol_settings['tls']['server_name']}" : "(null)"
         ];
-        if (data_get($protocol_settings, 'tls.allow_insecure'))
-            $config[] = "skip-cert-verify=true";
+        // Loon 不支持 hysteria2 的证书指纹固定：有指纹（= 面板自签证书）时只能跳过链校验，
+        // 否则该节点在 Loon 上必然握手失败
+        if (
+            data_get($protocol_settings, 'tls.allow_insecure')
+            || CertPinHelper::normalizePin(data_get($protocol_settings, 'tls.pinned_peer_cert_sha256')) !== null
+        ) {
+            $config[] = 'skip-cert-verify=true';
+        }
         if ($down = data_get($protocol_settings, 'bandwidth.down')) {
             $config[] = "download-bandwidth={$down}";
         }

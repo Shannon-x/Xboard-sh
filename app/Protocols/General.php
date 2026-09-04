@@ -3,6 +3,7 @@
 namespace App\Protocols;
 
 use App\Models\Server;
+use App\Support\CertPinHelper;
 use App\Utils\Helper;
 use Illuminate\Support\Arr;
 use App\Support\AbstractProtocol;
@@ -340,21 +341,19 @@ class General extends AbstractProtocol
         if ($serverName = data_get($protocol_settings, 'tls.server_name')) {
             $params['sni'] = $serverName;
         }
-        $params['insecure'] = data_get($protocol_settings, 'tls.allow_insecure') ? '1' : '0';
+        $pin = CertPinHelper::normalizePin(data_get($protocol_settings, 'tls.pinned_peer_cert_sha256'));
 
-        // 证书指纹固定。SNI 为伪装域名时真证书无法验证，而 xray-core 已经
-        // 移除 allowInsecure（配了直接报错，官方指定改用 pinnedPeerCertSha256）。
-        //
-        // 两个参数针对不同客户端，值相同（都是证书 DER 的 SHA256）：
-        //   pinSHA256  hysteria 官方客户端（app/cmd/client.go 的 tls.pinSHA256）
-        //              注意它是叠加在正常校验之上的，必须与 insecure=1 同时使用
-        //   pcs        xray 系客户端的 pinnedPeerCertSha256 简写
-        if ($pin = data_get($protocol_settings, 'tls.pinned_peer_cert_sha256')) {
+        // 有指纹 = 面板自签证书，链校验必失败；官方客户端的 pin 是「叠加」在标准校验之上的
+        // （Go 会先跑链校验，失败就直接中断握手，pin 回调根本轮不到），所以必须同时 insecure=1。
+        // 这不是放弃校验：insecure 关掉的是「谁签发的」，pinSHA256 检查的是「必须是这一张」。
+        $params['insecure'] = (data_get($protocol_settings, 'tls.allow_insecure') || $pin) ? '1' : '0';
+
+        // 只发 pinSHA256，不发 pcs：pcs 是 xray 的 pinnedPeerCertSha256 简写，
+        // 而 xray-core 根本没有 hysteria/hysteria2 出站，塞进 hy2 链接纯属冗余，
+        // 还可能让严格解析的客户端因未知参数报错。
+        // hysteria v1 的官方客户端不支持 pinSHA256，只有 v2 发。
+        if ($pin !== null && $version === 2) {
             $params['pinSHA256'] = $pin;
-            $params['pcs'] = $pin;
-            // 官方客户端的 pin 不会关闭链校验，自签证书下必须同时跳过链校验，
-            // 否则握手在 pin 生效之前就失败了。
-            $params['insecure'] = '1';
         }
 
         $name = rawurlencode($server['name']);

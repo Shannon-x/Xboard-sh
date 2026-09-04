@@ -19,6 +19,29 @@ namespace App\Support;
 class CertPinHelper
 {
     /**
+     * 把订阅侧读到的指纹归一成小写无分隔的 64 位 hex。
+     *
+     * 各家写法不一（openssl 输出是大写带冒号，hysteria 会自行 ToLower 去冒号去短横线，
+     * mihomo 只去冒号），非法值一律返回 null —— 订阅侧当「没有指纹」处理，
+     * 总比下发一个永远比不上的哈希、让用户面对「配置正常但就是连不上」强。
+     */
+    public static function normalizePin(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+        $hex = strtolower(str_replace([':', '-', ' '], '', trim($value)));
+        return strlen($hex) === 64 && ctype_xdigit($hex) ? $hex : null;
+    }
+
+    /** sing-box / xray 用：base64(raw 32 bytes)，它们按 []byte 解码，hex 直发会被静默解错 */
+    public static function pinToBase64(mixed $value): ?string
+    {
+        $hex = self::normalizePin($value);
+        return $hex === null ? null : base64_encode(hex2bin($hex));
+    }
+
+    /**
      * 生成一张自签证书，并返回证书、私钥与两种指纹。
      *
      * @param  string  $commonName  证书的 CN/SAN，通常就是节点的伪装 SNI

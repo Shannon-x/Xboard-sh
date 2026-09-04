@@ -112,6 +112,7 @@ https://github.com/wyx2685/V2bX
 - 上游开发文档（部分仍可参考）：[docs/](./docs/)
 - 工单附件（上传 / 存储 / 自动清理）：[docs/ticket-attachments.md](./docs/ticket-attachments.md)
 - 佣金提现工作流（USDT 链 / 冻结结算 / 专用邮件）：[docs/commission-withdrawal.md](./docs/commission-withdrawal.md)
+- Hysteria2 证书指纹与「允许不安全」的关系：[docs/hysteria-cert-pin.md](./docs/hysteria-cert-pin.md)
 - 插件开发（行为可能与上游不同）：[Plugin Development Guide](./docs/en/development/plugin-development-guide.md)
 - 部署相关文档在 [docs/en/installation/](./docs/en/installation/)，但**请视为参考，不保证对本仓库 100% 适用**
 

@@ -2,6 +2,7 @@
 
 namespace App\Protocols;
 
+use App\Support\CertPinHelper;
 use App\Utils\Helper;
 use Illuminate\Support\Facades\File;
 use App\Support\AbstractProtocol;
@@ -251,8 +252,13 @@ class Surge extends AbstractProtocol
         if (data_get($protocol_settings, 'bandwidth.down')) {
             $config[] = "download-bandwidth={$protocol_settings['bandwidth']['down']}";
         }
-        if (data_get($protocol_settings, 'tls.allow_insecure')) {
-            $config[] = !!data_get($protocol_settings, 'tls.allow_insecure') ? 'skip-cert-verify=true' : 'skip-cert-verify=false';
+        // Surge 不支持 hysteria2 的证书指纹固定：有指纹（= 面板自签证书）时只能跳过链校验，
+        // 否则该节点在 Surge 上必然握手失败。原来那个三元永远取 true 分支，等于写死。
+        if (
+            data_get($protocol_settings, 'tls.allow_insecure')
+            || CertPinHelper::normalizePin(data_get($protocol_settings, 'tls.pinned_peer_cert_sha256')) !== null
+        ) {
+            $config[] = 'skip-cert-verify=true';
         }
         $config = array_filter($config);
         $uri = implode(',', $config);

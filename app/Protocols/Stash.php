@@ -3,6 +3,7 @@
 namespace App\Protocols;
 
 use Symfony\Component\Yaml\Yaml;
+use App\Support\CertPinHelper;
 use App\Utils\Helper;
 use Illuminate\Support\Facades\File;
 use App\Support\AbstractProtocol;
@@ -242,12 +243,18 @@ class Stash extends AbstractProtocol
      * （sha256(证书 DER) 的 hex，即 pinned_peer_cert_sha256）做证书固定；
      * 不认识该字段的核心退化为 skip-cert-verify 保连通。
      */
-    private static function applyCertPin(array &$array, $protocol_settings, string $path): void
+    private static function applyCertPin(array &$array, $protocol_settings, string $path, bool $supportsFingerprint = true): void
     {
-        if ($pin = data_get($protocol_settings, $path)) {
-            $array['fingerprint'] = $pin;
-            $array['skip-cert-verify'] = true;
+        $pin = CertPinHelper::normalizePin(data_get($protocol_settings, $path));
+        if ($pin === null) {
+            return;
         }
+        if ($supportsFingerprint) {
+            $array['fingerprint'] = $pin;
+        }
+        // Stash 是闭源核，是否支持 proxy 级 fingerprint 无法确认；
+        // skip-cert-verify 是确定支持的，作为兜底保证带指纹的节点一定连得上。
+        $array['skip-cert-verify'] = true;
     }
 
     public static function buildVmess($uuid, $server)
@@ -465,8 +472,14 @@ class Stash extends AbstractProtocol
         $array['port'] = $server['port'];
         $array['up-speed'] = data_get($protocol_settings, 'bandwidth.up');
         $array['down-speed'] = data_get($protocol_settings, 'bandwidth.down');
-        $array['skip-cert-verify'] = data_get($protocol_settings, 'tls.allow_insecure');
-        self::applyCertPin($array, $protocol_settings, 'tls.pinned_peer_cert_sha256');
+        // 未配置时 data_get 返回 null，YAML 里会渲染成空值而不是 false
+        $array['skip-cert-verify'] = (bool) data_get($protocol_settings, 'tls.allow_insecure', false);
+        self::applyCertPin(
+            $array,
+            $protocol_settings,
+            'tls.pinned_peer_cert_sha256',
+            (int) data_get($protocol_settings, 'version', 2) === 2
+        );
         if ($serverName = data_get($protocol_settings, 'tls.server_name')) {
             $array['sni'] = $serverName;
         }

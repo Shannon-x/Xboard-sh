@@ -1,7 +1,7 @@
 {
     "name": "Telegram Bot 集成",
     "code": "telegram",
-    "version": "1.0.1",
+    "version": "1.1.0",
     "description": "Telegram Bot 消息处理和命令系统",
     "author": "XBoard Team",
     "require": {
@@ -13,6 +13,12 @@
             "default": true,
             "label": "开启工单通知",
             "description": "是否开启工单创建和回复的 Telegram 通知功能"
+        },
+        "notify_ticket_attachments": {
+            "type": "boolean",
+            "default": true,
+            "label": "通知附带工单附件",
+            "description": "工单通知后把用户上传的截图 / 文件逐个推送给管理员（图片以照片形式、其它以文件形式）。关闭后通知里仅列出附件名"
         },
         "enable_payment_notify": {
             "type": "boolean",

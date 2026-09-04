@@ -21,6 +21,9 @@ interface AttachmentStorage
     /** 删除对象；对象不存在视为成功。失败抛异常。 */
     public function delete(string $key): void;
 
+    /** 读取整个对象内容（附件上限 20MB，直接进内存即可）。不存在 / 失败抛异常。 */
+    public function get(string $key): string;
+
     /**
      * 浏览器可直接访问的临时链接（预签名 / 公共 URL）。
      * 返回 null 表示该驱动不支持，由 response() 走后端流式输出。

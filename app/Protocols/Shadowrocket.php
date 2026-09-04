@@ -360,7 +360,8 @@ class Shadowrocket extends AbstractProtocol
 
     /**
      * 有指纹就说明证书是面板自签的，链校验必失败。
-     * Shadowrocket 不认任何指纹字段，只能跳过校验——否则这个节点在小火箭上根本用不了。
+     * 对于 Shadowrocket 里**没有**指纹输入口的协议，只能跳过校验，否则节点直接不可用。
+     * hysteria2 有指纹口（见 buildHysteria），走 pinSHA256，不要用这个。
      */
     private static function insecureFor($protocol_settings, string $pinPath): int
     {
@@ -416,7 +417,14 @@ class Shadowrocket extends AbstractProtocol
                     $params['obfs'] = data_get($protocol_settings, 'obfs.type');
                     $params['obfs-password'] = data_get($protocol_settings, 'obfs.password');
                 }
-                $params['insecure'] = self::insecureFor($protocol_settings, 'tls.pinned_peer_cert_sha256');
+                // Shadowrocket 的 TLS 设置页有「SHA256」证书指纹输入口，对应标准 hysteria2 URI
+                // 的 pinSHA256(小写 hex)。指纹在这里是**替代**链校验的：实测「允许不安全」关着、
+                // 只填指纹即可连上，所以不要强开 insecure —— 强开反而可能让它跳过指纹校验。
+                $pin = CertPinHelper::normalizePin(data_get($protocol_settings, 'tls.pinned_peer_cert_sha256'));
+                if ($pin !== null) {
+                    $params['pinSHA256'] = $pin;
+                }
+                $params['insecure'] = data_get($protocol_settings, 'tls.allow_insecure') ? 1 : 0;
                 if (isset($protocol_settings['hop_interval'])) {
                     $params['keepalive'] = data_get($protocol_settings, 'hop_interval');
                 }

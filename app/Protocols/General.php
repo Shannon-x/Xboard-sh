@@ -343,14 +343,18 @@ class General extends AbstractProtocol
         }
         $pin = CertPinHelper::normalizePin(data_get($protocol_settings, 'tls.pinned_peer_cert_sha256'));
 
-        // 有指纹 = 面板自签证书，链校验必失败；官方客户端的 pin 是「叠加」在标准校验之上的
-        // （Go 会先跑链校验，失败就直接中断握手，pin 回调根本轮不到），所以必须同时 insecure=1。
-        // 这不是放弃校验：insecure 关掉的是「谁签发的」，pinSHA256 检查的是「必须是这一张」。
+        // 这条链接主要给 hysteria **原生内核**（v2rayN 等）用，而原生内核的 pin 是「叠加」在
+        // 标准校验之上的：fillTLSConfig 里 InsecureSkipVerify 只跟 tls.insecure 走，pin 另挂在
+        // VerifyPeerCertificate 上，而 Go 的链校验一旦失败就直接中断握手、回调根本不执行。
+        // 所以自签证书下必须 insecure=1 + pinSHA256 同时给，否则连不上。
+        // 这不是放弃校验：insecure 关掉的是「谁签发的」，pinSHA256 检查的是「必须是这一张」，
+        // 基于 xray 的客户端即使拿到 insecure=1 也照样会校验 pinnedPeerCertSha256。
         $params['insecure'] = (data_get($protocol_settings, 'tls.allow_insecure') || $pin) ? '1' : '0';
 
-        // 只发 pinSHA256，不发 pcs：pcs 是 xray 的 pinnedPeerCertSha256 简写，
-        // 而 xray-core 根本没有 hysteria/hysteria2 出站，塞进 hy2 链接纯属冗余，
-        // 还可能让严格解析的客户端因未知参数报错。
+        // 只发标准的 pinSHA256(小写 hex)，不发 pcs：hysteria2 URI 规范里指纹参数就叫 pinSHA256，
+        // 基于 xray-core 的客户端(HAPP / v2rayN 等)也是读这个参数再映射到
+        // tlsSettings.pinnedPeerCertSha256 —— 那边同样要求 64 位小写 hex，给 base64 会直接
+        // 报 "encoding/hex: invalid byte"。pcs 是 VLESS/Trojan 分享链接的约定，hy2 用不上。
         // hysteria v1 的官方客户端不支持 pinSHA256，只有 v2 发。
         if ($pin !== null && $version === 2) {
             $params['pinSHA256'] = $pin;

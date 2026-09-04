@@ -311,16 +311,14 @@ class ManageController extends Controller
             $params['protocol_settings'][$key]['pinned_public_key_sha256'] = $pubPin;
         }
 
-        // 有指纹 ⇒ 这张证书是面板自签的 ⇒ 任何客户端的证书链校验都必然失败。
+        // 这里刻意**不**动 allow_insecure。
         //
-        // 能钉指纹的客户端（hysteria 官方 / mihomo / Stash / sing-box 1.13+）由指纹完成校验，
-        // 但 Go 的 TLS 是「链校验失败就直接中断握手，VerifyPeerCertificate 根本不会被调用」，
-        // 所以它们同样需要跳过链校验，指纹才有机会生效；不能钉指纹的（Shadowrocket / Surge / Loon）
-        // 则只剩跳过校验这一条路，否则节点在这些客户端上直接连不上。
-        //
-        // 因此有指纹时 allow_insecure 是派生值而不是管理员的自由开关。
-        // 注意这不等于「不校验」：insecure 关掉的是「谁签发的」，指纹检查的是「必须是这一张」。
-        $params['protocol_settings'][$key]['allow_insecure'] = true;
+        // 「有指纹是否还要跳过链校验」是按内核而异的，不能在这里一刀切：
+        //   · hysteria 原生内核：pin 挂在 VerifyPeerCertificate 上，而 Go 的链校验失败会直接
+        //     中断握手、回调根本不执行，所以自签证书下必须 insecure=1 配合（由 General.php 负责）
+        //   · Shadowrocket / mihomo / sing-box 1.13+ / 新版 Xray：pin **替代**链校验，
+        //     此时再强开 insecure 反而可能让客户端跳过指纹校验，把站长开的安全特性废掉
+        // 所以下发策略交给各订阅生成器按目标客户端决定，见 docs/hysteria-cert-pin.md。
     }
 
     private function normalizeEchPayload(array &$params, ?Server $oldServer): void

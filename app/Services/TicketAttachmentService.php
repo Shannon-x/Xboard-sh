@@ -206,6 +206,22 @@ class TicketAttachmentService
     }
 
     /**
+     * 复制一个已有附件为新的待绑定附件（提现「沿用上次二维码」：旧图绑在旧工单上，新申请需要自己的一份）。
+     *
+     * @throws ApiException
+     */
+    public function duplicate(TicketAttachment $source, User $owner): TicketAttachment
+    {
+        try {
+            $contents = $this->storage($source->driver)->get($source->path);
+        } catch (\Throwable $e) {
+            Log::warning('[ticket-attachment] duplicate read failed', ['id' => $source->id, 'error' => $e->getMessage()]);
+            throw new ApiException(__('Attachment does not exist'));
+        }
+        return $this->storeFromContents($source->original_name, $contents, $owner, true);
+    }
+
+    /**
      * 归一化并校验 attachment_ids：必须是本人上传、尚未绑定、数量不超上限。
      *
      * @return int[]

@@ -16,6 +16,7 @@ use App\Http\Controllers\V1\User\TelegramController;
 use App\Http\Controllers\V1\User\TicketAttachmentController;
 use App\Http\Controllers\V1\User\TicketController;
 use App\Http\Controllers\V1\User\UserController;
+use App\Http\Controllers\V1\User\WithdrawController;
 use Illuminate\Contracts\Routing\Registrar;
 
 class UserRoute
@@ -75,6 +76,14 @@ class UserRoute
             $router->post('/ticket/attachment/upload', [TicketAttachmentController::class, 'upload'])
                 ->middleware('throttle:ticket-attachment-upload');
             $router->post('/ticket/attachment/delete', [TicketAttachmentController::class, 'delete']);
+            // Commission withdraw（新工作流；/ticket/withdraw 保留给老前端并已转发到同一服务）
+            // 同样需要登记进 sufe-middleware-rs 的 pathname.rs
+            $router->get('/withdraw/config', [WithdrawController::class, 'config']);
+            $router->get('/withdraw/fetch', [WithdrawController::class, 'fetch']);
+            $router->post('/withdraw/apply', [WithdrawController::class, 'apply'])
+                ->middleware('throttle:withdraw-apply');
+            $router->post('/withdraw/cancel', [WithdrawController::class, 'cancel']);
+            $router->post('/withdraw/saved/clear', [WithdrawController::class, 'clearSaved']);
             // Server
             $router->get('/server/fetch', [ServerController::class, 'fetch']);
             // Coupon

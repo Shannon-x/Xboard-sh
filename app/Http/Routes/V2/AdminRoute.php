@@ -19,6 +19,7 @@ use App\Http\Controllers\V2\Admin\PaymentController;
 use App\Http\Controllers\V2\Admin\SystemController;
 use App\Http\Controllers\V2\Admin\ThemeController;
 use App\Http\Controllers\V2\Admin\TrafficResetController;
+use App\Http\Controllers\V2\Admin\WithdrawController;
 use Illuminate\Contracts\Routing\Registrar;
 
 class AdminRoute
@@ -152,6 +153,17 @@ class AdminRoute
                 $router->post('/close', [TicketController::class, 'close']);
                 $router->post('/attachment/upload', [TicketAttachmentController::class, 'upload']);
                 $router->post('/attachment/delete', [TicketAttachmentController::class, 'delete']);
+            });
+
+            // Commission withdraw 结算工作流
+            $router->group([
+                'prefix' => 'withdraw'
+            ], function ($router) {
+                $router->any('/fetch', [WithdrawController::class, 'fetch']);
+                $router->get('/stats', [WithdrawController::class, 'stats']);
+                $router->get('/detail', [WithdrawController::class, 'detail']);
+                $router->post('/settle', [WithdrawController::class, 'settle']);
+                $router->post('/reject', [WithdrawController::class, 'reject']);
             });
 
             // Coupon

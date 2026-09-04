@@ -23,6 +23,17 @@ class ConfigSave extends FormRequest
         'commission_distribution_l1' => 'nullable|numeric|min:0|max:100',
         'commission_distribution_l2' => 'nullable|numeric|min:0|max:100',
         'commission_distribution_l3' => 'nullable|numeric|min:0|max:100',
+        // commission withdraw workflow
+        'commission_withdraw_max' => 'nullable|numeric|min:0',
+        'commission_withdraw_chains' => 'nullable|array|max:20',
+        'commission_withdraw_chains.*.code' => 'nullable|string|max:32',
+        'commission_withdraw_chains.*.name' => 'required_with:commission_withdraw_chains.*|string|max:64',
+        'commission_withdraw_chains.*.network' => 'nullable|string|max:64',
+        'commission_withdraw_chains.*.preset' => 'nullable|in:tron,evm,solana,ton,none',
+        'commission_withdraw_chains.*.explorer_tx' => 'nullable|string|max:255',
+        'commission_withdraw_usdt_rate' => 'nullable|numeric|min:0|max:100000',
+        'commission_withdraw_require_qrcode' => 'boolean',
+        'commission_withdraw_thanks' => 'nullable|string|max:1000',
         // site
         'logo' => 'nullable|url',
         'force_https' => '',
@@ -219,6 +230,9 @@ class ConfigSave extends FormRequest
             'ticket_attachment_s3_endpoint.url' => 'S3 Endpoint 格式不正确，必须携带 http(s)://',
             'ticket_attachment_s3_public_url.url' => 'S3 公开访问地址格式不正确，必须携带 http(s)://',
             'ticket_attachment_s3_prefix.regex' => 'S3 存储前缀只能包含字母数字、-_./',
+            'commission_withdraw_chains.*.name.required_with' => '提现链的名称不能为空',
+            'commission_withdraw_chains.*.preset.in' => '地址格式预设只能是 tron / evm / solana / ton / none',
+            'commission_withdraw_chains.max' => '提现链最多配置 20 条',
         ];
     }
 }

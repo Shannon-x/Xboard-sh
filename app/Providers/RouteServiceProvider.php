@@ -129,6 +129,14 @@ class RouteServiceProvider extends ServiceProvider
 
         // 附件下载是免登录的能力 URL（128 位随机 key），按 IP 限流防枚举扫描；
         // 一个工单详情页几十张图的正常加载不会触碰这个阈值。
+        // 提现申请：每人同时只能有一笔待处理，限流只防脚本刷提交
+        RateLimiter::for('withdraw-apply', function (Request $request) use ($byUserOrIp) {
+            return [
+                Limit::perMinute(5)->by($byUserOrIp($request, 'withdraw_apply')),
+                Limit::perMinute(20)->by('withdraw_apply:ip:' . $request->ip()),
+            ];
+        });
+
         RateLimiter::for('ticket-attachment-download', function (Request $request) {
             return Limit::perMinute(240)->by('ticket_attachment_download:ip:' . $request->ip());
         });

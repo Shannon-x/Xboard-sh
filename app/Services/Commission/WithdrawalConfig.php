@@ -22,7 +22,7 @@ final class WithdrawalConfig
         'evm' => ['pattern' => '^0x[0-9a-fA-F]{40}$', 'hint' => '0x 开头的 42 位地址'],
         'solana' => ['pattern' => '^[1-9A-HJ-NP-Za-km-z]{32,44}$', 'hint' => 'Base58 编码，32–44 位'],
         'ton' => ['pattern' => '^(EQ|UQ)[A-Za-z0-9_-]{46}$', 'hint' => 'EQ / UQ 开头的 48 位地址'],
-        'aptos' => ['pattern' => '^0x[0-9a-fA-F]{1,64}$', 'hint' => '0x 开头的十六进制地址（最长 64 位）'],
+        'aptos' => ['pattern' => '^0x[0-9a-fA-F]{64}$', 'hint' => '0x 开头的 66 位地址（64 位十六进制，比 EVM 地址长）'],
         'none' => ['pattern' => null, 'hint' => ''],
     ];
 
@@ -31,6 +31,9 @@ final class WithdrawalConfig
      *
      * 通道费取的是各大交易所提 USDT 时的常见档位，只是默认值，管理员可以按自己实际的
      * 打款成本改。ERC20 贵是因为以太坊主网 gas，TRC20 便宜且到账快，所以放在第一位。
+     *
+     * 新增网络时注意：preset 必须是 PRESETS 里已有的 key，否则 normalizeChains 会静默回落到
+     * 'none'（等于该链地址完全不校验）；fee 单位固定为 USDT，不要填法币值。
      */
     public const NETWORKS = [
         'trc20' => ['label' => 'TRC20 (Tron)', 'preset' => 'tron', 'explorer_tx' => 'https://tronscan.org/#/transaction/{txid}', 'fee' => 1.0],
@@ -43,7 +46,7 @@ final class WithdrawalConfig
         'avalanche' => ['label' => 'Avalanche C-Chain', 'preset' => 'evm', 'explorer_tx' => 'https://snowtrace.io/tx/{txid}', 'fee' => 0.5],
         'solana' => ['label' => 'Solana (SPL)', 'preset' => 'solana', 'explorer_tx' => 'https://solscan.io/tx/{txid}', 'fee' => 1.0],
         'ton' => ['label' => 'TON', 'preset' => 'ton', 'explorer_tx' => 'https://tonviewer.com/transaction/{txid}', 'fee' => 0.5],
-        'aptos' => ['label' => 'Aptos', 'preset' => 'aptos', 'explorer_tx' => 'https://explorer.aptoslabs.com/txn/{txid}', 'fee' => 0.5],
+        'aptos' => ['label' => 'Aptos', 'preset' => 'aptos', 'explorer_tx' => 'https://explorer.aptoslabs.com/txn/{txid}?network=mainnet', 'fee' => 0.5],
         'custom' => ['label' => '', 'preset' => 'none', 'explorer_tx' => '', 'fee' => 0.0],
     ];
 

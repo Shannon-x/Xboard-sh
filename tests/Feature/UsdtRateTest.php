@@ -124,10 +124,58 @@ class UsdtRateTest extends TestCase
         $this->assertGreaterThan(0, $sentAfterFirst);
     }
 
+    /** 非 C2C 深度法币不该去打币安 P2P —— 那边挂单稀薄，打了也是白等一次超时 */
+    public function test_non_p2p_currency_never_calls_binance(): void
+    {
+        Http::fake([
+            'api.coingecko.com/*' => Http::response(['tether' => ['usd' => 1.0]]),
+        ]);
+
+        $snapshot = (new UsdtRateService())->snapshot('USD');
+
+        $this->assertSame('coingecko', $snapshot['source']);
+        Http::assertNotSent(fn($request) => str_contains($request->url(), 'p2p.binance.com'));
+    }
+
+    /** CNY 仍然优先走 C2C 场外价 —— 那才是用户实际能换到的价 */
+    public function test_cny_prefers_binance_over_other_providers(): void
+    {
+        Http::fake([
+            'p2p.binance.com/*' => Http::response(['data' => [['adv' => ['price' => '6.66']]]]),
+            '*' => Http::response(['tether' => ['cny' => 7.0]]),
+        ]);
+
+        $snapshot = (new UsdtRateService())->snapshot('CNY');
+
+        $this->assertSame(6.66, $snapshot['rate']);
+        $this->assertSame('binance_p2p', $snapshot['source']);
+    }
+
+    /**
+     * 冷缓存时只放一个进程去抓行情：拿不到锁的直接回落，不排队等接口。
+     * 否则一次冷启动会被放大成站点级卡顿——每个打开提现弹窗的用户都在等同一批请求。
+     */
+    public function test_cold_cache_without_lock_falls_back_instead_of_blocking(): void
+    {
+        Http::fake(['*' => Http::response(['tether' => ['cny' => 6.8]])]);
+        // 先把锁占住，模拟「另一个进程正在抓」
+        $held = Cache::lock('commission:usdt_rate_lock:CNY', 15);
+        $this->assertTrue($held->get());
+
+        $snapshot = (new UsdtRateService())->cached('CNY');
+
+        $this->assertNull($snapshot['rate'], '拿不到锁时应立即回落，而不是自己也去打接口');
+        Http::assertNothingSent();
+
+        $held->release();
+        $this->assertSame(6.8, (new UsdtRateService())->cached('CNY')['rate'], '锁释放后照常获取');
+    }
+
     public function test_sanity_band_rejects_out_of_range_values(): void
     {
         $this->assertTrue(UsdtRateService::isSane('CNY', 6.7));
         $this->assertFalse(UsdtRateService::isSane('CNY', 0.0001));
+        $this->assertFalse(UsdtRateService::isSane('CNY', 4.5), '人民币场外价不可能低到 4.5');
         $this->assertFalse(UsdtRateService::isSane('CNY', 999.0));
         $this->assertFalse(UsdtRateService::isSane('USD', 0.0));
         // 没有区间数据的币种只要求是正数

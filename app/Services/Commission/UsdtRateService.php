@@ -27,6 +27,7 @@ final class UsdtRateService
 {
     private const CACHE_PREFIX = 'commission:usdt_rate:';
     private const COOLDOWN_PREFIX = 'commission:usdt_rate_cooldown:';
+    private const LOCK_PREFIX = 'commission:usdt_rate_lock:';
 
     /** 缓存多久算新鲜（秒）——行情波动对提现估算而言 10 分钟足够 */
     public const FRESH_TTL = 600;
@@ -46,7 +47,7 @@ final class UsdtRateService
      * 防止接口改版 / 返回错字段时把汇率写成 0.0001 这种能把提现算爆的值。
      */
     public const SANITY = [
-        'CNY' => [4.0, 12.0],
+        'CNY' => [5.0, 12.0],
         'USD' => [0.8, 1.2],
         'EUR' => [0.6, 1.3],
         'GBP' => [0.5, 1.2],
@@ -70,6 +71,9 @@ final class UsdtRateService
 
     /** 最近一轮取数失败的原因，供后台「刷新」按钮回显——服务器缺 CA 证书 / 出不了网时不该只显示「未取到」 */
     private ?string $lastError = null;
+
+    /** C2C 深度足够、报价可信的法币；其余法币在 P2P 上挂单稀薄，打了也是白打 */
+    private const P2P_FIATS = ['CNY', 'RUB', 'VND', 'TRY', 'UAH', 'INR', 'ARS', 'NGN', 'BRL'];
 
     public const SOURCE_LABELS = [
         'binance_p2p' => '币安 C2C 场外价',
@@ -129,7 +133,37 @@ final class UsdtRateService
         if (is_array($cached) && isset($cached['rate'], $cached['fetched_at'])) {
             return $this->present($cached, time() - (int) $cached['fetched_at'] >= self::FRESH_TTL);
         }
-        return $this->snapshot($currency);
+
+        // 冷缓存（全新部署 / 缓存被清）：只放一个进程去抓，其余直接回落。
+        // 否则一次冷启动会被放大成站点级卡顿——每个打开提现弹窗的用户都在等同一批行情接口。
+        $lock = Cache::lock(self::LOCK_PREFIX . $currency, 15);
+        if (!$lock->get()) {
+            return $this->emptySnapshot();
+        }
+        try {
+            return $this->snapshot($currency);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * 各 provider 共用的请求构造。
+     *
+     * 大陆机房访问币安 / OKX / CoinGecko / Coinbase 基本不通，配 USDT_RATE_PROXY 后
+     * 自动汇率才有意义；不配就直连。走 config/env 而不是 admin_setting——这是部署级配置，
+     * 且 admin_setting 每写一次都会 flush 整个设置缓存。
+     * 机房 IPv6 出口常年不通，强制 v4 免得白等一轮 Happy Eyeballs 超时。
+     */
+    private function http(): \Illuminate\Http\Client\PendingRequest
+    {
+        $request = Http::connectTimeout(self::CONNECT_TIMEOUT)
+            ->timeout(self::TIMEOUT)
+            ->acceptJson()
+            ->withOptions(['force_ip_resolve' => 'v4']);
+
+        $proxy = (string) config('services.usdt_rate.proxy', '');
+        return $proxy !== '' ? $request->withOptions(['proxy' => $proxy]) : $request;
     }
 
     /**
@@ -184,7 +218,9 @@ final class UsdtRateService
         if ($currency === 'CNY') {
             return ['binance_p2p', 'okx', 'coingecko', 'coinbase'];
         }
-        return ['coingecko', 'coinbase', 'binance_p2p'];
+        return in_array($currency, self::P2P_FIATS, true)
+            ? ['binance_p2p', 'coingecko', 'coinbase']
+            : ['coingecko', 'coinbase'];
     }
 
     /**
@@ -192,9 +228,9 @@ final class UsdtRateService
      */
     private function fromBinanceP2p(string $currency): ?float
     {
-        $response = Http::connectTimeout(self::CONNECT_TIMEOUT)
-            ->timeout(self::TIMEOUT)
-            ->acceptJson()
+        $response = $this->http()
+            // 机房 IP 裸请求容易被判成爬虫返回 HTML 验证页
+            ->withHeaders(['User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'])
             ->post('https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search', [
                 'asset' => 'USDT',
                 'fiat' => $currency,
@@ -225,10 +261,7 @@ final class UsdtRateService
         if ($currency !== 'CNY') {
             return null;
         }
-        $response = Http::connectTimeout(self::CONNECT_TIMEOUT)
-            ->timeout(self::TIMEOUT)
-            ->acceptJson()
-            ->get('https://www.okx.com/api/v5/market/exchange-rate');
+        $response = $this->http()->get('https://www.okx.com/api/v5/market/exchange-rate');
         if (!$response->successful()) {
             return null;
         }
@@ -238,10 +271,7 @@ final class UsdtRateService
 
     private function fromCoinGecko(string $currency): ?float
     {
-        $response = Http::connectTimeout(self::CONNECT_TIMEOUT)
-            ->timeout(self::TIMEOUT)
-            ->acceptJson()
-            ->get('https://api.coingecko.com/api/v3/simple/price', [
+        $response = $this->http()->get('https://api.coingecko.com/api/v3/simple/price', [
                 'ids' => 'tether',
                 'vs_currencies' => strtolower($currency),
             ]);
@@ -254,10 +284,7 @@ final class UsdtRateService
 
     private function fromCoinbase(string $currency): ?float
     {
-        $response = Http::connectTimeout(self::CONNECT_TIMEOUT)
-            ->timeout(self::TIMEOUT)
-            ->acceptJson()
-            ->get('https://api.coinbase.com/v2/exchange-rates', ['currency' => 'USDT']);
+        $response = $this->http()->get('https://api.coinbase.com/v2/exchange-rates', ['currency' => 'USDT']);
         if (!$response->successful()) {
             return null;
         }
@@ -321,6 +348,14 @@ final class UsdtRateService
         ) {
             return $this->present($cached, true);
         }
+        return $this->emptySnapshot();
+    }
+
+    /**
+     * @return array{rate: float|null, source: string, source_label: string, fetched_at: int|null, is_live: bool, is_stale: bool}
+     */
+    private function emptySnapshot(): array
+    {
         return [
             'rate' => null,
             'source' => 'none',

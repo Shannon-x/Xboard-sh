@@ -90,27 +90,72 @@ class TelegramController extends Controller
         return $response->result->username;
     }
 
+    /**
+     * 把 Telegram update 归一成插件用的 msg 对象。
+     *
+     * 之前只认 message.text：管理员直接回一张截图（photo + caption，没有 text）会被整个丢掉；
+     * 回复的是一条图片通知时 reply_to_message 只有 caption 没有 text，同样被丢掉。
+     * 现在 text 取 text ?? caption，图片 / 文件收进 attachments，reply_text 取 text ?? caption。
+     */
     private function formatMessage(array $data): void
     {
-        if (!isset($data['message']['text']))
+        $message = $data['message'] ?? null;
+        if (!is_array($message) || !isset($message['chat']['id'], $message['message_id'])) {
             return;
+        }
 
-        $message = $data['message'];
-        $text = explode(' ', $message['text']);
+        $text = (string) ($message['text'] ?? $message['caption'] ?? '');
+        $attachments = [];
+
+        // photo 是同一张图的多个尺寸，按面积升序，取最后一个（最大）
+        if (!empty($message['photo']) && is_array($message['photo'])) {
+            $largest = end($message['photo']);
+            if (is_array($largest) && !empty($largest['file_id'])) {
+                $attachments[] = [
+                    'kind' => 'photo',
+                    'file_id' => (string) $largest['file_id'],
+                    'file_name' => null,
+                    'mime' => 'image/jpeg',
+                    'size' => isset($largest['file_size']) ? (int) $largest['file_size'] : null,
+                ];
+            }
+        }
+
+        if (!empty($message['document']['file_id'])) {
+            $document = $message['document'];
+            $attachments[] = [
+                'kind' => 'document',
+                'file_id' => (string) $document['file_id'],
+                'file_name' => isset($document['file_name']) ? (string) $document['file_name'] : null,
+                'mime' => isset($document['mime_type']) ? (string) $document['mime_type'] : null,
+                'size' => isset($document['file_size']) ? (int) $document['file_size'] : null,
+            ];
+        }
+
+        if ($text === '' && !$attachments) {
+            return;
+        }
+
+        $parts = $text === '' ? [''] : explode(' ', $text);
 
         $this->msg = (object) [
-            'command' => $text[0],
-            'args' => array_slice($text, 1),
+            'command' => $parts[0],
+            'args' => array_slice($parts, 1),
             'chat_id' => $message['chat']['id'],
             'message_id' => $message['message_id'],
             'message_type' => 'message',
-            'text' => $message['text'],
-            'is_private' => $message['chat']['type'] === 'private',
+            'text' => $text,
+            'is_private' => ($message['chat']['type'] ?? '') === 'private',
+            'attachments' => $attachments,
         ];
 
-        if (isset($message['reply_to_message']['text'])) {
-            $this->msg->message_type = 'reply_message';
-            $this->msg->reply_text = $message['reply_to_message']['text'];
+        $reply = $message['reply_to_message'] ?? null;
+        if (is_array($reply)) {
+            $replyText = $reply['text'] ?? $reply['caption'] ?? null;
+            if (is_string($replyText) && $replyText !== '') {
+                $this->msg->message_type = 'reply_message';
+                $this->msg->reply_text = $replyText;
+            }
         }
     }
 

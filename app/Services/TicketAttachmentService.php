@@ -164,6 +164,27 @@ class TicketAttachmentService
         if ($binary === false || $binary === '') {
             throw new ApiException(__('Attachment file is invalid'));
         }
+        unset($base64);
+
+        return $this->storeFromContents($name, $binary, $uploader, $bypassQuota);
+    }
+
+    /**
+     * 保存一段已在内存里的文件内容（Telegram 回图等非 HTTP 上传来源）。
+     *
+     * @throws ApiException
+     */
+    public function storeFromContents(string $name, string $binary, User $uploader, bool $bypassQuota = false): TicketAttachment
+    {
+        if (!$this->config->enable) {
+            throw new ApiException(__('Ticket attachments are disabled'));
+        }
+        if ($binary === '') {
+            throw new ApiException(__('Attachment file is invalid'));
+        }
+        if (strlen($binary) > $this->config->maxSizeBytes()) {
+            throw new ApiException(__('Attachment exceeds the size limit of :size MB', ['size' => $this->config->maxSizeMb]));
+        }
 
         $tmpDir = storage_path('tmp');
         if (!is_dir($tmpDir)) {

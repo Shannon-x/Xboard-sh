@@ -54,6 +54,15 @@ final class LocalAttachmentStorage implements AttachmentStorage
         }
     }
 
+    public function get(string $key): string
+    {
+        $contents = $this->disk->get($key);
+        if ($contents === null) {
+            throw new RuntimeException("Attachment not found on local disk: {$key}");
+        }
+        return $contents;
+    }
+
     public function temporaryUrl(string $key, int $ttl, string $downloadName, bool $inline, string $mime): ?string
     {
         return null;

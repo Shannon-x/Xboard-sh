@@ -95,6 +95,13 @@ final class S3AttachmentStorage implements AttachmentStorage
         $this->assertStatus($response, [200, 202, 204, 404], 'DELETE');
     }
 
+    public function get(string $key): string
+    {
+        $response = $this->send('GET', $key);
+        $this->assertStatus($response, [200], 'GET');
+        return (string) $response->getBody();
+    }
+
     public function temporaryUrl(string $key, int $ttl, string $downloadName, bool $inline, string $mime): ?string
     {
         if ($this->publicUrl !== '') {

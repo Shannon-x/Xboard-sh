@@ -61,6 +61,10 @@ base64 JSON 形态会膨胀 1/3，所以 20MB 文件约 27MB 请求体，留在 
 
 文件删除失败（如 S3 凭证已失效）会保留记录并写 warning 日志，下一轮重试。
 
+## Telegram 通知与回复
+
+Telegram 插件（`plugins/Telegram`，1.1.0+）会在工单创建 / 用户回复的通知后，把附件逐个推送给已绑定的管理员与客服（`SendTelegramAttachmentJob`：jpeg/png ≤10MB 走 `sendPhoto`，其余走 `sendDocument`；内容从本地 / S3 读取后由 Bot 上传，不依赖 Telegram 访问站点 URL）。管理员在 Telegram 里回复通知或附件图片时携带的图片 / 文件，会经 `getFile` 下载并以 `TicketAttachmentService::storeFromContents()` 存为附件（绕过用户额度，仍受体积 / 类型限制），随回复一起绑定。插件设置 `notify_ticket_attachments` 可关闭附件推送。
+
 ## S3 实现说明
 
 未引入 `aws/aws-sdk-php`（Docker 构建严格按 `composer.lock` 安装，SDK 需重解析 lock），而是用 Guzzle + 自实现的 SigV4（`App\Services\TicketAttachment\Storage\S3SignatureV4`），并以 AWS 官方文档示例向量做了单元测试。已知与 R2 / MinIO / B2 / OSS S3 网关兼容。

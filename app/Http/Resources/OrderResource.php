@@ -28,6 +28,10 @@ class OrderResource extends JsonResource
                 if ($this->plan_snapshot) {
                     $plan->forceFill($this->plan_snapshot['options']);
                     $plan->name = $this->plan_snapshot['name'];
+                    $prices = $plan->prices ?? [];
+                    $prices[$this->period] = $this->plan_snapshot['amount'] / 100;
+                    $plan->prices = $prices;
+                    $plan->customization = null;
                 }
                 return PlanResource::make($plan);
             }),

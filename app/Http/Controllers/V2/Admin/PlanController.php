@@ -45,10 +45,13 @@ class PlanController extends Controller
             
             DB::beginTransaction();
             try {
+                $plan = Plan::lockForUpdate()->findOrFail($plan->id);
                 $candidate = clone $plan;
                 $candidate->fill($params);
-                app(\App\Services\PlanCustomizationService::class)->validateExistingSubscribers($candidate);
-                if ($request->input('force_update') && ($plan->customization || ($params['customization'] ?? null) || User::where('plan_id', $plan->id)->whereNotNull('plan_options')->exists())) {
+                $customizer = app(\App\Services\PlanCustomizationService::class);
+                $customizer->validateConfiguration($candidate);
+                $customizer->validateExistingSubscribers($candidate);
+                if ($request->input('force_update') && ($customizer->isEnabled($plan) || $customizer->isEnabled($candidate) || User::where('plan_id', $plan->id)->whereNotNull('plan_options')->exists())) {
                     throw new \App\Exceptions\ApiException('自选套餐不能强制覆盖用户已购买的规格');
                 }
                 if ($request->input('force_update')) {

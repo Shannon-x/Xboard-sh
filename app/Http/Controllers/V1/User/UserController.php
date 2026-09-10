@@ -193,6 +193,7 @@ class UserController extends Controller
             if (!$user['plan']) {
                 return $this->fail([400, __('Subscription plan does not exist')]);
             }
+            $user['plan'] = app(\App\Services\PlanCustomizationService::class)->forLegacyUser($user['plan'], $user);
         }
         $user['subscribe_url'] = Helper::getSubscribeUrl($user['token']);
         $userService = new UserService();

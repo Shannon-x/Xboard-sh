@@ -44,10 +44,16 @@ class PlanController extends Controller
             if (!$this->planService->isPlanAvailableForUser($plan, $user)) {
                 return $this->fail([400, __('Subscription plan does not exist')]);
             }
+            if (!$request->boolean('include_customization')) {
+                $plan = app(\App\Services\PlanCustomizationService::class)->forLegacyUser($plan, $user);
+            }
             return $this->success(PlanResource::make($plan));
         }
 
         $plans = $this->planService->getAvailablePlans();
+        if (!$request->boolean('include_customization')) {
+            $plans = $plans->map(fn ($plan) => app(\App\Services\PlanCustomizationService::class)->forLegacyUser($plan, $user));
+        }
         return $this->success(PlanResource::collection($plans));
     }
 }

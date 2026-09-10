@@ -298,4 +298,170 @@ class ConfigurablePlanTest extends TestCase
         $this->assertNull($order->fresh()->payment_id);
     }
 
+    public static function resourceModes(): array
+    {
+        return array_map(fn ($mask) => [$mask], range(0, 7));
+    }
+
+    #[DataProvider('resourceModes')]
+    public function test_each_resource_can_be_fixed_independently(int $mask): void
+    {
+        $plan = $this->plan();
+        $rules = $plan->customization;
+        $options = (new PlanCustomizationService())->baseOptions($plan);
+        $expected = 300;
+        foreach (['transfer_enable' => 240, 'device_limit' => 50, 'speed_limit' => 60] as $field => $extra) {
+            $bit = array_search($field, array_keys($rules));
+            if ($mask & (1 << $bit)) {
+                $options[$field] = $this->selected()[$field];
+                $expected += $extra;
+            } else {
+                $rules[$field] = ['mode' => 'fixed'];
+            }
+        }
+        $plan->customization = $rules;
+        $quote = (new PlanCustomizationService())->quote($plan, 'monthly', $options);
+        $this->assertSame($expected, $quote['amount']);
+        $this->assertSame($mask !== 0, $quote['snapshot'] !== null);
+    }
+
+    public function test_all_fixed_preserves_every_legacy_period_price_and_unlimited_values(): void
+    {
+        $plan = $this->plan();
+        $plan->device_limit = null;
+        $plan->speed_limit = 0;
+        $plan->prices = ['monthly' => 1.15, 'quarterly' => 8.55, 'half_yearly' => 17.00,
+            'yearly' => 29.99, 'two_yearly' => 55, 'three_yearly' => 80, 'onetime' => 100, 'reset_traffic' => 2];
+        $plan->customization = array_fill_keys(array_keys(PlanCustomizationService::LIMITS), ['mode' => 'fixed']);
+        $calculator = new PlanCustomizationService();
+        foreach (Plan::LEGACY_PERIOD_MAPPING as $legacy => $modern) {
+            $quote = $calculator->quote($plan, $legacy);
+            $this->assertSame((int) ($plan->prices[$modern] * 100), $quote['amount']);
+            $this->assertNull($quote['snapshot']);
+            $this->assertSame($quote, $calculator->quote($plan, $modern));
+        }
+        $resource = (new \App\Http\Resources\PlanResource($plan))->toArray(request());
+        $this->assertNull($resource['customization']);
+        $this->assertNull($resource['device_limit']);
+        $this->assertSame(0, $resource['speed_limit']);
+    }
+
+    public function test_implicit_fixed_rules_keep_the_legacy_order_flow(): void
+    {
+        $plan = $this->plan();
+        $rules = $plan->customization;
+        foreach ($rules as $field => &$rule) $rule['max'] = (int) $plan->{$field};
+        unset($rule);
+        $plan->update(['customization' => $rules]);
+        $user = $this->user();
+        \Laravel\Sanctum\Sanctum::actingAs($user);
+        $this->postJson('/api/v1/user/order/save', ['plan_id' => $plan->id, 'period' => 'month_price'])->assertOk();
+        $order = Order::first();
+        $this->assertNull($order->plan_snapshot);
+        $this->assertSame(300, $order->total_amount);
+        (new OrderService($order))->open();
+        $this->assertNull($user->fresh()->plan_options);
+        $this->assertSame(100 * 1073741824, (int) $user->fresh()->transfer_enable);
+    }
+
+    private function trafficChoices(Plan $plan): Plan
+    {
+        $plan->customization = [
+            'transfer_enable' => ['mode' => 'choices', 'choices' => [100, 250, 500], 'max' => 500, 'step' => 100, 'price_per_step' => 60],
+            'device_limit' => ['mode' => 'fixed'], 'speed_limit' => ['mode' => 'fixed'],
+        ];
+        return $plan;
+    }
+
+    public function test_discrete_capacity_pricing_and_one_time_delivery(): void
+    {
+        $plan = $this->trafficChoices($this->plan());
+        $plan->prices = ['onetime' => 25];
+        $plan->reset_traffic_method = Plan::RESET_TRAFFIC_NEVER;
+        $plan->save();
+        $user = $this->user();
+        $options = ['transfer_enable' => 250, 'device_limit' => 2, 'speed_limit' => 100];
+        $order = OrderService::createFromRequest($user, $plan, 'onetime_price', null, $options, 2590);
+        (new OrderService($order))->open();
+        $this->assertSame(2590, $order->total_amount);
+        $this->assertSame(250 * 1073741824, (int) $user->fresh()->transfer_enable);
+        $this->assertNull($user->fresh()->expired_at);
+    }
+
+    public function test_value_within_the_range_but_not_listed_cannot_be_bought(): void
+    {
+        $plan = $this->trafficChoices($this->plan());
+        $this->expectException(ApiException::class);
+        (new PlanCustomizationService())->quote($plan, 'monthly', ['transfer_enable' => 200, 'device_limit' => 2, 'speed_limit' => 100]);
+    }
+
+    public function test_fixed_resource_tampering_is_rejected(): void
+    {
+        $plan = $this->trafficChoices($this->plan());
+        $this->expectException(ApiException::class);
+        (new PlanCustomizationService())->quote($plan, 'monthly', ['transfer_enable' => 250, 'device_limit' => 3, 'speed_limit' => 100]);
+    }
+
+    public function test_fixed_unlimited_devices_and_speed_survive_custom_traffic_purchase(): void
+    {
+        $plan = $this->trafficChoices($this->plan());
+        $plan->device_limit = null;
+        $plan->speed_limit = 0;
+        $plan->save();
+        $user = $this->user();
+        \Laravel\Sanctum\Sanctum::actingAs($user);
+        $this->postJson('/api/v1/user/order/save', [
+            'plan_id' => $plan->id, 'period' => 'month_price',
+            'options' => ['transfer_enable' => 250, 'device_limit' => null, 'speed_limit' => 0],
+        ])->assertOk();
+        $order = Order::first();
+        $this->assertSame(390, $order->total_amount);
+        (new OrderService($order))->open();
+        $this->assertNull($user->fresh()->device_limit);
+        $this->assertSame(0, (int) $user->fresh()->speed_limit);
+    }
+
+    public function test_old_client_sees_its_purchased_specs_and_matching_renewal_price(): void
+    {
+        $plan = $this->plan();
+        $user = $this->user(['plan_id' => $plan->id, 'plan_options' => $this->selected(), 'expired_at' => time() + 10 * 86400]);
+        \Laravel\Sanctum\Sanctum::actingAs($user);
+        $this->getJson('/api/v1/user/plan/fetch?id='.$plan->id)->assertOk()
+            ->assertJsonPath('data.transfer_enable', 500)->assertJsonPath('data.month_price', 650)
+            ->assertJsonPath('data.reset_price', 540)->assertJsonPath('data.customization', null);
+        $this->getJson('/api/v1/user/plan/fetch?id='.$plan->id.'&include_customization=1')->assertOk()
+            ->assertJsonPath('data.transfer_enable', 100)->assertJsonPath('data.month_price', 300);
+        $this->getJson('/api/v1/user/getSubscribe')->assertOk()
+            ->assertJsonPath('data.plan.transfer_enable', 500)->assertJsonPath('data.plan.prices.monthly', 6.5);
+        $this->postJson('/api/v1/user/order/save', ['plan_id' => $plan->id, 'period' => 'month_price'])->assertOk();
+        $this->assertSame(650, Order::first()->total_amount);
+        $this->assertEquals($this->selected(), Order::first()->plan_snapshot['options']);
+    }
+
+    public function test_disabling_selection_is_allowed_when_purchased_specs_match_fixed_base(): void
+    {
+        $plan = $this->plan();
+        $calculator = new PlanCustomizationService();
+        $user = $this->user(['plan_id' => $plan->id, 'plan_options' => $calculator->baseOptions($plan)]);
+        $plan->customization = null;
+        $calculator->validateExistingSubscribers($plan);
+        $this->assertNull($calculator->quote($plan, 'monthly', null, $user)['snapshot']);
+    }
+
+    public static function invalidCapacityLists(): array
+    {
+        return [[[250, 500]], [[100, 100, 500]], [[500, 100]], [[100, 1000001]], [[100, '500']], [[100, 250.5]], [[]]];
+    }
+
+    #[DataProvider('invalidCapacityLists')]
+    public function test_invalid_capacity_lists_cannot_be_saved(array $choices): void
+    {
+        $plan = $this->trafficChoices($this->plan());
+        $rules = $plan->customization;
+        $rules['transfer_enable']['choices'] = $choices;
+        $plan->customization = $rules;
+        $this->expectException(ApiException::class);
+        (new PlanCustomizationService())->validateConfiguration($plan);
+    }
+
 }

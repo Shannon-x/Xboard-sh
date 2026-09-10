@@ -182,10 +182,12 @@ class OrderService
                 default => $this->buyByPeriod($order, $plan),
             };
 
-            // Reset purchases only replenish traffic; never overwrite purchased speed/devices.
-            if ($order->period !== Plan::PERIOD_RESET_TRAFFIC) {
+            // Keep legacy resets unchanged; custom resets preserve the purchased speed/devices.
+            if ($order->period !== Plan::PERIOD_RESET_TRAFFIC || (!$order->plan_snapshot && !$this->user->plan_options)) {
                 $this->setSpeedLimit($plan->speed_limit);
                 $this->setDeviceLimit($plan->device_limit);
+            }
+            if ($order->period !== Plan::PERIOD_RESET_TRAFFIC) {
                 if ($order->plan_snapshot || $this->user->plan_options) {
                     $this->user->plan_options = $order->plan_snapshot['options'] ?? null;
                 }
@@ -247,8 +249,8 @@ class OrderService
             return false;
         }
         return $selected['transfer_enable'] * self::BYTES_PER_GB !== (int) $user->transfer_enable
-            || $selected['device_limit'] !== (int) $user->device_limit
-            || $selected['speed_limit'] !== (int) $user->speed_limit;
+            || (int) $selected['device_limit'] !== (int) $user->device_limit
+            || (int) $selected['speed_limit'] !== (int) $user->speed_limit;
     }
 
     public function setVipDiscount(User $user)

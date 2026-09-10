@@ -19,15 +19,17 @@ class PlanResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
+        $customization = app(\App\Services\PlanCustomizationService::class)->isEnabled($this->resource)
+            ? $this->resource['customization'] : null;
         return [
             'id' => $this->resource['id'],
             'group_id' => $this->resource['group_id'],
             'name' => $this->resource['name'],
             'tags' => $this->resource['tags'],
             'content' => $this->formatContent(),
-            'content_template' => $this->resource['customization']
+            'content_template' => $customization
                 ? str_replace('{{reset_method}}', $this->getResetMethodText(), $this->resource['content'] ?? '') : null,
-            'customization' => $this->resource['customization'] ?? null,
+            'customization' => $customization,
             ...$this->getPeriodPrices(),
             'capacity_limit' => $this->getFormattedCapacityLimit(),
             'transfer_enable' => $this->resource['transfer_enable'],

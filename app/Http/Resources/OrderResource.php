@@ -22,7 +22,19 @@ class OrderResource extends JsonResource
         return [
             ...parent::toArray($request),
             'period' => PlanService::getLegacyPeriod((string)$this->period),
-            'plan' => $this->whenLoaded('plan', fn() => PlanResource::make($this->plan)),
+            'plan' => $this->whenLoaded('plan', function () {
+                if (!$this->plan) return null;
+                $plan = clone $this->plan;
+                if ($this->plan_snapshot) {
+                    $plan->forceFill($this->plan_snapshot['options']);
+                    $plan->name = $this->plan_snapshot['name'];
+                    $prices = $plan->prices ?? [];
+                    $prices[$this->period] = $this->plan_snapshot['amount'] / 100;
+                    $plan->prices = $prices;
+                    $plan->customization = null;
+                }
+                return PlanResource::make($plan);
+            }),
             'payment' => $this->whenLoaded('payment', fn() => $this->payment ? [
                 'id' => $this->payment->id,
                 'name' => $this->payment->name,

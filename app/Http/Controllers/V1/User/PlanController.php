@@ -18,6 +18,21 @@ class PlanController extends Controller
     {
         $this->planService = $planService;
     }
+    public function quote(Request $request)
+    {
+        $data = $request->validate([
+            'plan_id' => 'required|integer',
+            'period' => 'required|string',
+            'options' => 'sometimes|array:transfer_enable,device_limit,speed_limit',
+        ]);
+        $plan = Plan::findOrFail($data['plan_id']);
+        $user = $request->user();
+        (new PlanService($plan))->validatePurchase($user, $data['period']);
+        $quote = app(\App\Services\PlanCustomizationService::class)->quote($plan, $data['period'], $data['options'] ?? null, $user);
+        unset($quote['snapshot']);
+        return $this->success($quote);
+    }
+
     public function fetch(Request $request)
     {
         $user = User::find($request->user()->id);
@@ -29,10 +44,16 @@ class PlanController extends Controller
             if (!$this->planService->isPlanAvailableForUser($plan, $user)) {
                 return $this->fail([400, __('Subscription plan does not exist')]);
             }
+            if (!$request->boolean('include_customization')) {
+                $plan = app(\App\Services\PlanCustomizationService::class)->forLegacyUser($plan, $user);
+            }
             return $this->success(PlanResource::make($plan));
         }
 
         $plans = $this->planService->getAvailablePlans();
+        if (!$request->boolean('include_customization')) {
+            $plans = $plans->map(fn ($plan) => app(\App\Services\PlanCustomizationService::class)->forLegacyUser($plan, $user));
+        }
         return $this->success(PlanResource::collection($plans));
     }
 }

@@ -35,6 +35,10 @@ class PlanSave extends FormRequest
             'device_limit' => 'integer|nullable|min:0',
             'capacity_limit' => 'integer|nullable|min:0',
             'tags' => 'array|nullable',
+            'customization' => 'nullable|array:transfer_enable,device_limit,speed_limit',
+            'show' => 'sometimes|boolean',
+            'sell' => 'sometimes|boolean',
+            'renew' => 'sometimes|boolean',
         ];
     }
 
@@ -45,6 +49,15 @@ class PlanSave extends FormRequest
     {
         $validator->after(function (Validator $validator) {
             $this->validatePrices($validator);
+            if (!$validator->errors()->isEmpty()) return;
+            $plan = $this->input('id') ? Plan::find($this->input('id')) : new Plan();
+            if (!$plan) return;
+            $plan->fill($this->only($plan->getFillable()));
+            try {
+                app(\App\Services\PlanCustomizationService::class)->validateConfiguration($plan);
+            } catch (\App\Exceptions\ApiException $e) {
+                $validator->errors()->add('customization', $e->getMessage());
+            }
         });
     }
 

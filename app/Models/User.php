@@ -66,6 +66,7 @@ class User extends Authenticatable
     protected $dateFormat = 'U';
     protected $guarded = ['id'];
     protected $casts = [
+        'plan_options' => 'array',
         'created_at' => 'timestamp',
         'updated_at' => 'timestamp',
         'banned' => 'boolean',

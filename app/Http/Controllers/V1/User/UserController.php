@@ -138,6 +138,7 @@ class UserController extends Controller
                 'balance',
                 'commission_balance',
                 'plan_id',
+                'plan_options',
                 'discount',
                 'commission_rate',
                 'telegram_id',
@@ -180,7 +181,8 @@ class UserController extends Controller
                 'uuid',
                 'device_limit',
                 'speed_limit',
-                'next_reset_at'
+                'next_reset_at',
+                'plan_options'
             ])
             ->first();
         if (!$user) {
@@ -191,6 +193,7 @@ class UserController extends Controller
             if (!$user['plan']) {
                 return $this->fail([400, __('Subscription plan does not exist')]);
             }
+            $user['plan'] = app(\App\Services\PlanCustomizationService::class)->forLegacyUser($user['plan'], $user);
         }
         $user['subscribe_url'] = Helper::getSubscribeUrl($user['token']);
         $userService = new UserService();

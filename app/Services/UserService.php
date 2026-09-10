@@ -228,6 +228,7 @@ class UserService
             return;
 
         $user->plan_id = $plan->id;
+        if ($user->plan_options) $user->plan_options = null;
         $user->group_id = $plan->group_id;
         $user->transfer_enable = $plan->transfer_enable * 1073741824;
         $user->speed_limit = $plan->speed_limit;
@@ -248,6 +249,7 @@ class UserService
     public function assignPlan(User $user, Plan $plan, int $validityDays): User
     {
         $user->plan_id = $plan->id;
+        if ($user->plan_options) $user->plan_options = null;
         $user->group_id = $plan->group_id;
         $user->transfer_enable = $plan->transfer_enable * 1073741824;
         $user->speed_limit = $plan->speed_limit;
@@ -290,6 +292,7 @@ class UserService
 
         $user->transfer_enable = $plan->transfer_enable * 1073741824;
         $user->plan_id = $plan->id;
+        if ($user->plan_options) $user->plan_options = null;
         $user->group_id = $plan->group_id;
         $user->expired_at = time() + (admin_setting('try_out_hour', 1) * 3600);
         $user->speed_limit = $plan->speed_limit;

@@ -81,7 +81,9 @@ class OrderController extends Controller
             $user,
             $plan,
             $request->input('period'),
-            $request->input('coupon_code')
+            $request->input('coupon_code'),
+            $request->input('options'),
+            $request->input('expected_amount'),
         );
 
         return $this->success($order->trade_no);
@@ -142,6 +144,9 @@ class OrderController extends Controller
             }
             if (!$payment || !$payment->enable) {
                 throw new ApiException(__('Payment method is not available'));
+            }
+            if ($locked->plan_snapshot && in_array(strtolower((string) $payment->payment), ['stripesubscription', 'paypalsubscription'], true)) {
+                throw new ApiException('自选套餐请使用单次支付方式');
             }
 
             // 首次 checkout 后支付配置不可变。否则旧通道收款链接和新的 payment_id/
@@ -217,6 +222,9 @@ class OrderController extends Controller
             ->orderBy('sort', 'ASC')
             ->get();
 
+        $methods->each(function ($method) {
+            $method->setAttribute('supports_customization', !in_array(strtolower((string) $method->payment), ['stripesubscription', 'paypalsubscription'], true));
+        });
         return $this->success($methods);
     }
 

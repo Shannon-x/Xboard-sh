@@ -155,6 +155,9 @@ class PlanService
 
     protected function validatePlanAvailability(User $user): void
     {
+        if ((int) $user->plan_id !== (int) $this->plan->id && !$this->plan->sell) {
+            throw new ApiException(__('This subscription has been sold out, please choose another subscription'));
+        }
         if ((!$this->plan->show && !$this->plan->renew) || (!$this->plan->show && $user->plan_id !== $this->plan->id)) {
             throw new ApiException(__('This subscription has been sold out, please choose another subscription'));
         }

@@ -25,6 +25,9 @@ class PlanResource extends JsonResource
             'name' => $this->resource['name'],
             'tags' => $this->resource['tags'],
             'content' => $this->formatContent(),
+            'content_template' => $this->resource['customization']
+                ? str_replace('{{reset_method}}', $this->getResetMethodText(), $this->resource['content'] ?? '') : null,
+            'customization' => $this->resource['customization'] ?? null,
             ...$this->getPeriodPrices(),
             'capacity_limit' => $this->getFormattedCapacityLimit(),
             'transfer_enable' => $this->resource['transfer_enable'],

@@ -45,6 +45,12 @@ class PlanController extends Controller
             
             DB::beginTransaction();
             try {
+                $candidate = clone $plan;
+                $candidate->fill($params);
+                app(\App\Services\PlanCustomizationService::class)->validateExistingSubscribers($candidate);
+                if ($request->input('force_update') && ($plan->customization || ($params['customization'] ?? null) || User::where('plan_id', $plan->id)->whereNotNull('plan_options')->exists())) {
+                    throw new \App\Exceptions\ApiException('自选套餐不能强制覆盖用户已购买的规格');
+                }
                 if ($request->input('force_update')) {
                     User::where('plan_id', $plan->id)->update([
                         'group_id' => $params['group_id'],
@@ -56,6 +62,9 @@ class PlanController extends Controller
                 $plan->update($params);
                 DB::commit();
                 return $this->success(true);
+            } catch (\App\Exceptions\ApiException $e) {
+                DB::rollBack();
+                return $this->fail([422, $e->getMessage()]);
             } catch (\Exception $e) {
                 DB::rollBack();
                 Log::error($e);

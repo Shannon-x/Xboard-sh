@@ -15,7 +15,12 @@ class OrderSave extends FormRequest
     {
         return [
             'plan_id' => 'required',
-            'period' => 'required|in:month_price,quarter_price,half_year_price,year_price,two_year_price,three_year_price,onetime_price,reset_price'
+            'options' => 'sometimes|array:transfer_enable,device_limit,speed_limit',
+            'options.transfer_enable' => 'required_with:options|integer|min:1|max:1000000',
+            'options.device_limit' => 'required_with:options|integer|min:1|max:100',
+            'options.speed_limit' => 'required_with:options|integer|min:1|max:10000',
+            'expected_amount' => 'sometimes|integer|min:1|max:100000000',
+            'period' => 'required|in:month_price,quarter_price,half_year_price,year_price,two_year_price,three_year_price,onetime_price,reset_price,monthly,quarterly,half_yearly,yearly,two_yearly,three_yearly,onetime,reset_traffic'
         ];
     }
 

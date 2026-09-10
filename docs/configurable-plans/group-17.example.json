@@ -1,0 +1,15 @@
+{
+  "name": "上网套餐 · 自由定制",
+  "transfer_enable": 100,
+  "device_limit": 2,
+  "speed_limit": 100,
+  "prices": {"monthly": 3, "quarterly": 8.55, "half_yearly": 16.2, "yearly": 30.6, "reset_traffic": 3},
+  "customization": {
+    "transfer_enable": {"max": 2000, "step": 100, "price_per_step": 60},
+    "device_limit": {"max": 8, "step": 1, "price_per_step": 50},
+    "speed_limit": {"max": 800, "step": 100, "price_per_step": 20}
+  },
+  "capacity_limit": null,
+  "tags": ["上网", "自选"],
+  "content": "[{\"feature\":\"上网线路，与原体验版、轻享版、悦享版、畅享版权限组一致\",\"support\":true},{\"feature\":\"每月流量 {{transfer}} GB\",\"support\":true},{\"feature\":\"同时在线设备 {{devices}} 台\",\"support\":true},{\"feature\":\"速度上限 {{speed}} Mbps\",\"support\":true}]"
+}

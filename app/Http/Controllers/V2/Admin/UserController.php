@@ -385,6 +385,9 @@ class UserController extends Controller
                 return $this->fail([400202, '订阅计划不存在']);
             }
             $params['group_id'] = $plan->group_id;
+            if ((int) $user->plan_id !== (int) $plan->id && $user->plan_options) {
+                $params['plan_options'] = null;
+            }
         }
         // 处理邀请用户
         //

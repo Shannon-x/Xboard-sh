@@ -61,6 +61,8 @@ class OrderService
         Plan $plan,
         string $period,
         ?string $couponCode = null,
+        ?array $options = null,
+        ?int $expectedAmount = null,
     ): Order {
         $userService = app(UserService::class);
         $planService = new PlanService($plan);
@@ -68,7 +70,7 @@ class OrderService
         $planService->validatePurchase($user, $period);
         HookManager::call('order.create.before', [$user, $plan, $period, $couponCode]);
 
-        return DB::transaction(function () use ($user, $plan, $period, $couponCode, $userService, $planService) {
+        return DB::transaction(function () use ($user, $plan, $period, $couponCode, $userService, $options, $expectedAmount) {
             $user = User::lockForUpdate()->find($user->id);
             if (!$user) {
                 throw new ApiException(__('The user does not exist'));
@@ -76,7 +78,12 @@ class OrderService
             if ($userService->isNotCompleteOrderByUserId($user->id)) {
                 throw new ApiException(__('You have an unpaid or pending order, please try again later or cancel it'));
             }
-            $planService->validatePurchase($user, $period);
+            $plan = Plan::lockForUpdate()->findOrFail($plan->id);
+            (new PlanService($plan))->validatePurchase($user, $period);
+            $quote = app(PlanCustomizationService::class)->quote($plan, $period, $options, $user);
+            if ($expectedAmount !== null && $expectedAmount !== $quote['amount']) {
+                throw new ApiException('套餐价格已更新，请重新确认报价');
+            }
 
             $newPeriod = PlanService::getPeriodKey($period);
 
@@ -85,7 +92,8 @@ class OrderService
                 'plan_id' => $plan->id,
                 'period' => $newPeriod,
                 'trade_no' => Helper::generateOrderNo(),
-                'total_amount' => (int) (optional($plan->prices)[$newPeriod] * 100),
+                'total_amount' => $quote['amount'],
+                ...($quote['snapshot'] ? ['plan_snapshot' => $quote['snapshot']] : []),
             ]);
 
             $orderService = new self($order);
@@ -126,6 +134,14 @@ class OrderService
     {
         $order = $this->order;
         $plan = Plan::find($order->plan_id);
+        if ($plan && $order->plan_snapshot) {
+            $plan = clone $plan;
+            $snapshot = $order->plan_snapshot;
+            $plan->forceFill($snapshot['options'] + [
+                'name' => $snapshot['name'], 'group_id' => $snapshot['group_id'],
+                'reset_traffic_method' => $snapshot['reset_traffic_method'],
+            ]);
+        }
 
         HookManager::call('order.open.before', $order);
 
@@ -166,8 +182,14 @@ class OrderService
                 default => $this->buyByPeriod($order, $plan),
             };
 
-            $this->setSpeedLimit($plan->speed_limit);
-            $this->setDeviceLimit($plan->device_limit);
+            // Reset purchases only replenish traffic; never overwrite purchased speed/devices.
+            if ($order->period !== Plan::PERIOD_RESET_TRAFFIC) {
+                $this->setSpeedLimit($plan->speed_limit);
+                $this->setDeviceLimit($plan->device_limit);
+                if ($order->plan_snapshot || $this->user->plan_options) {
+                    $this->user->plan_options = $order->plan_snapshot['options'] ?? null;
+                }
+            }
 
             if ((int) ($order->refund_amount ?? 0) > 0) {
                 $this->user->balance = (int) ($this->user->balance ?? 0) + (int) $order->refund_amount;
@@ -198,7 +220,7 @@ class OrderService
         $order = $this->order;
         if ($order->period === Plan::PERIOD_RESET_TRAFFIC) {
             $order->type = Order::TYPE_RESET_TRAFFIC;
-        } else if ($user->plan_id !== NULL && $order->plan_id !== $user->plan_id && ($user->expired_at > time() || $user->expired_at === NULL)) {
+        } else if ($user->plan_id !== NULL && ($order->plan_id !== $user->plan_id || $this->hasChangedOptions($user)) && ($user->expired_at > time() || $user->expired_at === NULL)) {
             // 套餐变更：旧套餐立即终止，新套餐从支付完成时间重新开始。
             // 这条规则一次性消除三类问题：
             //   - 旧周期剩余时间吃新套餐额度、再叠加下一完整周期
@@ -216,6 +238,17 @@ class OrderService
         } else { // 新购
             $order->type = Order::TYPE_NEW_PURCHASE;
         }
+    }
+
+    private function hasChangedOptions(User $user): bool
+    {
+        $selected = $this->order->plan_snapshot['options'] ?? null;
+        if (!$selected) {
+            return false;
+        }
+        return $selected['transfer_enable'] * self::BYTES_PER_GB !== (int) $user->transfer_enable
+            || $selected['device_limit'] !== (int) $user->device_limit
+            || $selected['speed_limit'] !== (int) $user->speed_limit;
     }
 
     public function setVipDiscount(User $user)
@@ -404,6 +437,9 @@ class OrderService
     private function getSurplusTrafficLimit(User $user): int
     {
         $userTraffic = max(0, (int) ($user->transfer_enable ?? 0));
+        if ($user->plan_options && $userTraffic > 0) {
+            return min($userTraffic, (int) $user->plan_options['transfer_enable'] * self::BYTES_PER_GB);
+        }
         $planTraffic = $user->plan
             ? max(0, (int) $user->plan->transfer_enable * self::BYTES_PER_GB)
             : 0;

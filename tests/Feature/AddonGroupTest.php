@@ -15,6 +15,8 @@ use App\Services\PlanCustomizationService;
 use App\Services\ServerService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use ReflectionProperty;
 use Tests\TestCase;
@@ -464,6 +466,62 @@ class AddonGroupTest extends TestCase
         $this->assertSame([], $quote['options']['addon_groups']);
         $order = OrderService::createFromRequest($user, $plan, 'monthly', null, $this->resources() + ['addon_groups' => []]);
         $this->assertSame(Order::TYPE_UPGRADE, (int) $order->type);
+    }
+
+    // ───────────────────────── 性能：查询形状 ─────────────────────────
+
+    /** 套餐列表对增值组的查询数是常数，不随套餐数 × 组数增长（曾是每套餐 1 + 每组 1 条 COUNT）。 */
+    public function test_plan_list_query_count_does_not_grow_with_addon_groups(): void
+    {
+        $this->server('a', [$this->premium->id]);
+        $this->server('b', [$this->vip->id]);
+        $one = collect([$this->sellablePlan()]);
+        $three = collect([$this->sellablePlan(), $this->sellablePlan(), $this->sellablePlan()]);
+
+        Cache::flush();
+        DB::enableQueryLog();
+        PlanResource::collection($one)->resolve();
+        $queriesForOne = count(DB::getQueryLog());
+        DB::flushQueryLog();
+
+        Cache::flush();
+        $payload = PlanResource::collection($three)->resolve();
+        $queriesForThree = count(DB::getQueryLog());
+        DB::disableQueryLog();
+
+        $this->assertSame($queriesForOne, $queriesForThree, '三个套餐不能比一个套餐多发查询');
+        $this->assertSame(1, $payload[0]['customization']['addon_groups'][(string) $this->premium->id]['server_count'], '批量计数结果要与逐组 COUNT 一致');
+    }
+
+    /** 纯基础组的节点拉名单只发 1 条用户查询（走 group_id 索引）；只有增值组节点才多一条 JSON 查询。 */
+    public function test_node_user_list_only_queries_json_branch_for_addon_groups(): void
+    {
+        $baseNode = $this->server('base', [$this->base->id]);
+        $premiumNode = $this->server('premium', [$this->premium->id]);
+        $plan = $this->sellablePlan();   // premium 因此成为「在售增值组」
+        $this->user(['plan_id' => $plan->id, 'group_id' => $this->base->id]);
+        Cache::flush();
+        PlanCustomizationService::addonGroupIdsInUse(); // 预热，下面只数用户查询
+
+        DB::enableQueryLog();
+        ServerService::getAvailableUsers($baseNode);
+        $baseQueries = count(array_filter(DB::getQueryLog(), fn ($q) => str_contains($q['query'], 'v2_user')));
+        DB::flushQueryLog();
+        ServerService::getAvailableUsers($premiumNode);
+        $premiumQueries = count(array_filter(DB::getQueryLog(), fn ($q) => str_contains($q['query'], 'v2_user')));
+        DB::disableQueryLog();
+
+        $this->assertSame(1, $baseQueries, '基础组节点：与增值组功能上线前完全相同的一条查询');
+        $this->assertSame(2, $premiumQueries, '增值组节点：索引分支 + JSON 分支各一条');
+    }
+
+    /** 管理员把某组配成增值组后，缓存立即失效，节点下一次拉名单就能看到买家。 */
+    public function test_saving_a_plan_invalidates_the_addon_group_cache(): void
+    {
+        Cache::flush();
+        $this->assertSame([], PlanCustomizationService::addonGroupIdsInUse());
+        $this->sellablePlan();
+        $this->assertEqualsCanonicalizing([$this->premium->id, $this->vip->id], PlanCustomizationService::addonGroupIdsInUse());
     }
 
     // ───────────────────────── 展示名 ─────────────────────────

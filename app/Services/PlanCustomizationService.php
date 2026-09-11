@@ -5,8 +5,10 @@ namespace App\Services;
 use App\Exceptions\ApiException;
 use App\Models\Order;
 use App\Models\Plan;
+use App\Models\Server;
 use App\Models\ServerGroup;
 use App\Models\User;
+use Illuminate\Support\Facades\Cache;
 
 /** Quotes and order creation share this calculator. All public amounts are cents. */
 class PlanCustomizationService
@@ -102,21 +104,77 @@ class PlanCustomizationService
     {
         $rules = $this->addonRules($plan);
         if ($rules === []) return [];
-        $groups = ServerGroup::whereIn('id', array_keys($rules))->get()->keyBy('id');
+        // 套餐列表是每个访客都打的接口，且对整个列表逐套餐调用本方法。组名与节点数
+        // 都从 60 秒缓存里取：整页零额外查询。曾经的写法是每套餐一次 whereIn + 每组一次
+        // ServerGroup::server_count 访问器（各发一条 COUNT），10 个套餐 × 2 组 = 30 条。
+        $names = self::groupNames();
+        $counts = self::serverCountsByGroup();
         $display = [];
         foreach ($rules as $groupId => $rule) {
-            $group = $groups->get($groupId);
-            if (!$group) continue; // 组已被删除：不展示也不可选，validateConfiguration 会在下次保存时拦下
+            if (!isset($names[$groupId])) continue; // 组已被删除：不展示也不可选，validateConfiguration 会在下次保存时拦下
             $label = trim((string) ($rule['label'] ?? ''));
             $display[(string) $groupId] = [
                 'mode' => $rule['mode'],
                 'price' => (int) ($rule['price'] ?? 0),
                 // 展示名优先；未设置时才用权限组名。设了展示名就不再把内部组名下发给用户。
-                'name' => $label !== '' ? $label : $group->name,
-                'server_count' => $group->server_count,
+                'name' => $label !== '' ? $label : $names[$groupId],
+                'server_count' => $counts[$groupId] ?? 0,
             ];
         }
         return $display;
+    }
+
+    public const CACHE_GROUP_NAMES = 'plan_addon:group_names';
+    public const CACHE_GROUP_SERVER_COUNTS = 'plan_addon:group_server_counts';
+    public const CACHE_ADDON_GROUP_IDS = 'plan_addon:group_ids_in_use';
+    private const CACHE_TTL = 60;
+
+    /** 权限组 id → 名称。展示用，60 秒内容忍组改名/删除的延迟。 */
+    public static function groupNames(): array
+    {
+        return Cache::remember(self::CACHE_GROUP_NAMES, self::CACHE_TTL, function () {
+            return ServerGroup::query()->pluck('name', 'id')->mapWithKeys(fn ($n, $id) => [(int) $id => (string) $n])->all();
+        });
+    }
+
+    /** 权限组 id → 该组节点数。节点表很小，一次读完在 PHP 里数，而不是每组一条 COUNT。 */
+    public static function serverCountsByGroup(): array
+    {
+        return Cache::remember(self::CACHE_GROUP_SERVER_COUNTS, self::CACHE_TTL, function () {
+            $counts = [];
+            foreach (Server::query()->select('group_ids')->get() as $server) {
+                foreach ((array) ($server->group_ids ?? []) as $gid) {
+                    $gid = (int) $gid;
+                    $counts[$gid] = ($counts[$gid] ?? 0) + 1;
+                }
+            }
+            return $counts;
+        });
+    }
+
+    /**
+     * 所有套餐里作为增值组出现过的权限组 id（含 included / optional）。
+     * 节点端拉名单只对这些组才需要多查 granted_groups；其余节点走纯索引查询。
+     * 套餐保存 / 删除时由 PlanObserver 主动失效，避免刚买完增值组的用户在下一次 pull 里被漏掉。
+     */
+    public static function addonGroupIdsInUse(): array
+    {
+        return Cache::remember(self::CACHE_ADDON_GROUP_IDS, self::CACHE_TTL, function () {
+            $ids = [];
+            foreach (Plan::query()->whereNotNull('customization')->select('customization')->get() as $plan) {
+                foreach (array_keys($plan->customization[self::ADDON_KEY] ?? []) as $gid) {
+                    if (is_numeric($gid)) $ids[(int) $gid] = true;
+                }
+            }
+            return array_keys($ids);
+        });
+    }
+
+    public static function forgetAddonCaches(): void
+    {
+        Cache::forget(self::CACHE_ADDON_GROUP_IDS);
+        Cache::forget(self::CACHE_GROUP_NAMES);
+        Cache::forget(self::CACHE_GROUP_SERVER_COUNTS);
     }
 
     public function validateConfiguration(Plan $plan): void

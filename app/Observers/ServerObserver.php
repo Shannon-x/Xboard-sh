@@ -4,9 +4,15 @@ namespace App\Observers;
 
 use App\Models\Server;
 use App\Services\NodeSyncService;
+use App\Services\PlanCustomizationService;
 
 class ServerObserver
 {
+    public function created(Server $server): void
+    {
+        PlanCustomizationService::forgetAddonCaches();
+    }
+
     public function updated(Server $server): void
     {
         if (
@@ -14,6 +20,7 @@ class ServerObserver
                 'group_ids',
             ])
         ) {
+            PlanCustomizationService::forgetAddonCaches(); // 套餐页展示的「N 个节点」按组计数
             NodeSyncService::notifyUsersUpdatedByGroup($server->id);
         } else if (
             $server->isDirty([
@@ -32,6 +39,7 @@ class ServerObserver
 
     public function deleted(Server $server): void
     {
+        PlanCustomizationService::forgetAddonCaches();
         NodeSyncService::notifyConfigUpdated($server->id);
     }
 }

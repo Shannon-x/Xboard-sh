@@ -56,10 +56,18 @@ class NodeSyncService
      */
     public static function notifyUserChanged(User $user): void
     {
-        if (!$user->group_id)
+        // 覆盖基础组 ∪ 已生效增值组的全部节点。add/remove 只看用户是否可用：
+        // 一个节点会出现在这个列表里，本身就意味着用户对它有资格（组已命中）；
+        // 失去资格的组由 NodeUserSyncJob 先推 remove，再进到这里重推仍有资格的。
+        $groupIds = $user->effectiveGroupIds();
+        if ($groupIds === [])
             return;
 
-        $servers = Server::whereJsonContains('group_ids', (string) $user->group_id)->get();
+        $servers = Server::where(function ($query) use ($groupIds) {
+            foreach ($groupIds as $groupId) {
+                $query->orWhereJsonContains('group_ids', (string) $groupId);
+            }
+        })->get();
         foreach ($servers as $server) {
             if (!self::isNodeOnline($server->id))
                 continue;

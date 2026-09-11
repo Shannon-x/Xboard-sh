@@ -17,10 +17,18 @@ class NodeUserSyncJob implements ShouldQueue
     public $tries = 2;
     public $timeout = 10;
 
+    /**
+     * @param int|null $oldGroupId    基础组变更前的旧组（沿用原有语义）
+     * @param int[]    $oldAddonGroups 本次变更后**失去**的增值组（granted_groups 的差集）。
+     *                                 先对这些组的节点推 remove，再由 notifyUserChanged 重推
+     *                                 仍有资格的节点 —— 同时挂在基础组和失去的增值组上的节点会
+     *                                 先 remove 后 add，与基础组变更时的既有顺序一致，净结果正确。
+     */
     public function __construct(
         private readonly int $userId,
         private readonly string $action,
-        private readonly ?int $oldGroupId = null
+        private readonly ?int $oldGroupId = null,
+        private readonly array $oldAddonGroups = []
     ) {
         $this->onQueue('node_sync');
     }
@@ -33,12 +41,18 @@ class NodeUserSyncJob implements ShouldQueue
             if ($this->oldGroupId) {
                 NodeSyncService::notifyUserRemovedFromGroup($this->userId, $this->oldGroupId);
             }
+            foreach ($this->oldAddonGroups as $groupId) {
+                NodeSyncService::notifyUserRemovedFromGroup($this->userId, (int) $groupId);
+            }
             if ($user) {
                 NodeSyncService::notifyUserChanged($user);
             }
         } elseif ($this->action === 'deleted') {
             if ($this->oldGroupId) {
                 NodeSyncService::notifyUserRemovedFromGroup($this->userId, $this->oldGroupId);
+            }
+            foreach ($this->oldAddonGroups as $groupId) {
+                NodeSyncService::notifyUserRemovedFromGroup($this->userId, (int) $groupId);
             }
         }
     }

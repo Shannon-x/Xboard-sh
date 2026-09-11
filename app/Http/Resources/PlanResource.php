@@ -13,14 +13,27 @@ class PlanResource extends JsonResource
     private const PRICE_MULTIPLIER = 100;
 
     /**
+     * customization.addon_groups 以权限组 id 为键。JsonResource::removeMissingValues()
+     * 看到某一层数组全是数字键就会 array_values() 重排，把 {"2":…,"3":…} 变成 [{…},{…}]，
+     * 前端就再也对不回组 id。preserveKeys 对本资源所有层级生效；其余字段的键本来
+     * 就是字符串或 0..n 的列表，行为不变。
+     */
+    public $preserveKeys = true;
+
+    /**
      * Transform the resource into an array.
      *
      * @return array<string, mixed>
      */
     public function toArray(Request $request): array
     {
-        $customization = app(\App\Services\PlanCustomizationService::class)->isEnabled($this->resource)
-            ? $this->resource['customization'] : null;
+        $customizer = app(\App\Services\PlanCustomizationService::class);
+        $customization = $customizer->isEnabled($this->resource) ? $this->resource['customization'] : null;
+        if ($customization !== null && $customizer->hasAddonConfig($this->resource)) {
+            // 用户端没有分组接口：把组名与节点数内嵌进来，未购买者也只看得到「这一组有几个节点」，
+            // 不暴露任何具体节点名称 / 地址。
+            $customization[\App\Services\PlanCustomizationService::ADDON_KEY] = $customizer->addonGroupsForDisplay($this->resource);
+        }
         return [
             'id' => $this->resource['id'],
             'group_id' => $this->resource['group_id'],

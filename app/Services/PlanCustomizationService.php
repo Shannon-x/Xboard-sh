@@ -9,6 +9,7 @@ use App\Models\Server;
 use App\Models\ServerGroup;
 use App\Models\User;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 /** Quotes and order creation share this calculator. All public amounts are cents. */
 class PlanCustomizationService
@@ -153,7 +154,7 @@ class PlanCustomizationService
     }
 
     /**
-     * 所有套餐里作为增值组出现过的权限组 id（含 included / optional）。
+     * 在售或仍被用户持有的增值组 id（含 included / optional）。
      * 节点端拉名单只对这些组才需要多查 granted_groups；其余节点走纯索引查询。
      * 套餐保存 / 删除时由 PlanObserver 主动失效，避免刚买完增值组的用户在下一次 pull 里被漏掉。
      */
@@ -166,13 +167,31 @@ class PlanCustomizationService
                     if (is_numeric($gid)) $ids[(int) $gid] = true;
                 }
             }
+            // Catalog changes must not revoke grants already written by paid orders.
+            // Scan once per cache fill, in bounded chunks, not once per node pull.
+            User::query()->whereNotNull('plan_options')->select(['id', 'plan_options'])
+                ->chunkById(1000, function ($users) use (&$ids) {
+                    foreach ($users as $user) {
+                        foreach ($user->addonGroupIds() as $gid) {
+                            if ($gid > 0) $ids[$gid] = true;
+                        }
+                    }
+                });
             return array_keys($ids);
         });
     }
 
-    public static function forgetAddonCaches(): void
+    public static function forgetAddonMembershipCache(): void
     {
         Cache::forget(self::CACHE_ADDON_GROUP_IDS);
+        // A concurrent reader can refill using pre-commit data. Invalidate again
+        // after commit; the immediate invalidation also covers reads in this transaction.
+        DB::afterCommit(fn () => Cache::forget(self::CACHE_ADDON_GROUP_IDS));
+    }
+
+    public static function forgetAddonCaches(): void
+    {
+        self::forgetAddonMembershipCache();
         Cache::forget(self::CACHE_GROUP_NAMES);
         Cache::forget(self::CACHE_GROUP_SERVER_COUNTS);
     }
@@ -361,6 +380,21 @@ class PlanCustomizationService
         return array_combine(array_keys(self::LIMITS), array_map(
             fn ($field) => $plan->{$field} === null ? null : (int) $plan->{$field}, array_keys(self::LIMITS)
         ));
+    }
+
+    /** Resource-only configurators must explicitly opt in before receiving addon fields. */
+    public function forClient(Plan $plan, ?User $user, bool $includeCustomization, bool $includeAddonGroups): Plan
+    {
+        if ($user && (!$includeCustomization || (!$includeAddonGroups && $this->hasAddonConfig($plan)))) {
+            $plan = $this->forLegacyUser($plan, $user);
+        }
+        if (!$includeAddonGroups && $this->hasAddonConfig($plan)) {
+            $plan = clone $plan;
+            $config = $plan->customization;
+            unset($config[self::ADDON_KEY]);
+            $plan->customization = $config;
+        }
+        return $plan;
     }
 
     /** Older clients show and renew the purchased configuration using the existing plan fields. */

@@ -10,41 +10,13 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  # ── Job 1: Build admin frontend natively on x86 ───────────────────────────
-  build-admin:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Xboard-sh (for patch script)
-        uses: actions/checkout@v6
-
-      - name: Clone XBoard-admin
-        run: git clone --depth 1 --branch main https://github.com/Shannon-x/XBoard-admin.git xboard-admin
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: xboard-admin/package-lock.json
-
-      - name: Patch and build admin frontend
-        run: |
-          cd xboard-admin
-          sh ${{ github.workspace }}/scripts/patch-admin.sh
-          npm install
-          npm run build
-
-      - name: Upload admin dist artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: admin-dist
-          path: xboard-admin/dist/
-          retention-days: 1
+  compatibility:
+    uses: ./.github/workflows/compatibility.yml
 
   # ── Job 2: Build per-arch image natively (no QEMU) ────────────────────────
   build-image:
     runs-on: ${{ matrix.runner }}
-    needs: build-admin
+    needs: compatibility
     permissions:
       contents: read
       packages: write
@@ -64,12 +36,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
-      - name: Download prebuilt admin dist
-        uses: actions/download-artifact@v7
-        with:
-          name: admin-dist
-          path: prebuilt-admin-dist/
 
       # Docker image names must be lowercase
       - name: Set lowercase image name
@@ -104,10 +70,16 @@ jobs:
           cache-from: type=gha,scope=build-${{ matrix.suffix }}
           cache-to: type=gha,scope=build-${{ matrix.suffix }},mode=max
           build-args: |
-            CACHEBUST=${{ github.sha }}
-            REPO_URL=https://github.com/${{ github.repository }}
-            BRANCH_NAME=${{ github.ref_name }}
+            SOURCE_REVISION=${{ github.sha }}
           provenance: false
+
+      # Validate the exact per-architecture artifact before giving it any release/latest tag.
+      - name: Smoke test the built digest
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
+        run: |
+          docker run --rm --entrypoint composer "$IMAGE_REF" check-platform-reqs --no-dev
+          docker run --rm --entrypoint php "$IMAGE_REF" scripts/assert-api-contract.php
 
       - name: Export digest
         run: |

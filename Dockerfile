@@ -1,6 +1,5 @@
 # Stage 1: PHP application
-# Admin frontend is built natively on x86 in CI and injected via COPY at build time.
-# This avoids QEMU arm64 SIGILL from Node.js 20 using unsupported ARMv8.x CPU instructions.
+# Ship the source and admin assets from the tested build context, never a moving branch.
 # Base image is PINNED BY DIGEST on purpose — do not switch back to a floating tag.
 # On 2026-08-02 the floating `phpswoole/swoole:php8.2-alpine` tag was re-pushed with a
 # Swoole rebuild whose embedded swoole_library defines CURLOPT_PREREQFUNCTION. On PHP 8.2
@@ -27,26 +26,15 @@ WORKDIR /www
 
 COPY .docker /
 
-# Add build arguments
-ARG CACHEBUST
-ARG REPO_URL
-ARG BRANCH_NAME
-
-RUN echo "Attempting to clone branch: ${BRANCH_NAME} from ${REPO_URL} with CACHEBUST: ${CACHEBUST}" && \
-    rm -rf ./* && \
-    rm -rf .git && \
-    git config --global --add safe.directory /www && \
-    git clone --depth 1 --branch ${BRANCH_NAME} ${REPO_URL} .
-
-# Copy prebuilt XBoard-admin assets (built natively on x86 in CI before this stage)
-# The CI workflow downloads the artifact to prebuilt-admin-dist/ and passes it as build context
-COPY prebuilt-admin-dist/ /www/public/assets/admin/
+ARG SOURCE_REVISION=local
+LABEL org.opencontainers.image.revision=$SOURCE_REVISION
+COPY . /www/
 
 COPY .docker/supervisor/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # composer.lock is committed and MUST be honoured. Without it every build re-resolved
-# every dependency to whatever was newest on Packagist at that instant (CACHEBUST busts
-# this layer on every push), so an unrelated commit could silently ship a different
+# every dependency to whatever was newest on Packagist at that instant,
+# so an unrelated commit could silently ship a different
 # Laravel/Guzzle. Fail loudly rather than drift.
 RUN test -f composer.lock || { echo "FATAL: composer.lock is missing — dependencies must be locked"; exit 1; } \
     && composer validate --no-check-publish --no-check-all \

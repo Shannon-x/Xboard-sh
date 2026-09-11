@@ -400,6 +400,117 @@ class AddonGroupTest extends TestCase
 
     // ───────────────────────── 前向兼容：旧客户端 + 新后端 ─────────────────────────
 
+    public function test_guest_http_quote_accepts_optional_addon_groups(): void
+    {
+        $plan = $this->sellablePlan();
+        $this->postJson('/api/v1/guest/plan/quote', [
+            'plan_id' => $plan->id, 'period' => 'month_price',
+            'options' => $this->resources() + ['addon_groups' => [$this->premium->id]],
+        ])->assertOk()->assertJsonPath('data.amount', 800)
+            ->assertJsonPath('data.options.addon_groups', [$this->premium->id]);
+        $this->assertSame(0, Order::count());
+    }
+
+    public function test_old_client_can_quote_with_echoed_derived_groups_and_then_order(): void
+    {
+        $plan = $this->sellablePlan();
+        $options = $this->resources() + [
+            'addon_groups' => [$this->premium->id],
+            'granted_groups' => [$this->premium->id, $this->vip->id, 999999],
+        ];
+        $user = $this->user(['plan_id' => $plan->id, 'group_id' => $this->base->id,
+            'device_limit' => 2, 'speed_limit' => 100, 'plan_options' => $options]);
+        \Laravel\Sanctum\Sanctum::actingAs($user);
+        $payload = ['plan_id' => $plan->id, 'period' => 'month_price', 'options' => $options];
+        $quote = $this->postJson('/api/v1/user/plan/quote', $payload)->assertOk()
+            ->assertJsonPath('data.amount', 800)->json('data');
+        $this->postJson('/api/v1/user/order/save', $payload + ['expected_amount' => $quote['amount']])->assertOk();
+        $order = Order::firstOrFail();
+        $this->assertSame(800, (int) $order->total_amount);
+        $this->assertSame([$this->premium->id, $this->vip->id], $order->plan_snapshot['granted_groups']);
+        $this->assertArrayNotHasKey('granted_groups', $quote['options']);
+    }
+
+    public function test_quote_and_order_accept_valid_integer_strings_from_form_clients(): void
+    {
+        $plan = $this->sellablePlan();
+        \Laravel\Sanctum\Sanctum::actingAs($this->user());
+        $payload = ['plan_id' => (string) $plan->id, 'period' => 'month_price', 'options' => [
+            'transfer_enable' => '100', 'device_limit' => '2', 'speed_limit' => '100',
+            'addon_groups' => [(string) $this->premium->id],
+        ]];
+        $this->postJson('/api/v1/user/plan/quote', $payload)->assertOk()->assertJsonPath('data.amount', 800);
+        $this->postJson('/api/v1/user/order/save', $payload + ['expected_amount' => '800'])->assertOk();
+        $this->assertSame([$this->premium->id], Order::firstOrFail()->plan_snapshot['options']['addon_groups']);
+    }
+
+    public function test_null_optional_selection_is_equivalent_to_omitting_it(): void
+    {
+        $plan = $this->plan();
+        \Laravel\Sanctum\Sanctum::actingAs($this->user());
+        $payload = ['plan_id' => $plan->id, 'period' => 'month_price', 'options' => null];
+        $this->postJson('/api/v1/user/plan/quote', $payload)->assertOk()->assertJsonPath('data.amount', 300);
+        $this->postJson('/api/v1/user/order/save', $payload + ['expected_amount' => null])->assertOk();
+        $this->assertNull(Order::firstOrFail()->plan_snapshot);
+    }
+
+    public function test_first_generation_customization_client_gets_safe_options_and_actual_renewal_price(): void
+    {
+        $plan = $this->sellablePlan();
+        $options = $this->resources() + [
+            'addon_groups' => [$this->premium->id],
+            'granted_groups' => [$this->premium->id, $this->vip->id],
+        ];
+        $user = $this->user(['plan_id' => $plan->id, 'group_id' => $this->base->id,
+            'device_limit' => 2, 'speed_limit' => 100, 'plan_options' => $options]);
+        \Laravel\Sanctum\Sanctum::actingAs($user);
+        // The released theme iterates Object.keys(plan_options), assuming three resource keys.
+        // JSON object member order is not a contract; MySQL normalizes JSON key order.
+        $this->getJson('/api/v1/user/info')->assertOk()->assertJsonPath('data.plan_options', fn ($actual) => $actual == $this->resources());
+        $this->getJson('/api/v1/user/getSubscribe')->assertOk()->assertJsonPath('data.plan_options', fn ($actual) => $actual == $this->resources());
+        $this->getJson('/api/v1/user/plan/fetch?include_customization=1&id=' . $plan->id)->assertOk()
+            ->assertJsonPath('data.month_price', 800)->assertJsonPath('data.customization', null);
+        $this->assertEquals($options, $user->fresh()->plan_options, 'Compatibility views must never overwrite purchased entitlements');
+
+        $this->getJson('/api/v1/user/info?include_addon_groups=1')->assertOk()->assertJsonPath('data.plan_options', fn ($actual) => $actual == $options);
+        $this->getJson('/api/v1/user/plan/fetch?include_customization=1&include_addon_groups=1&id=' . $plan->id)->assertOk()
+            ->assertJsonPath('data.month_price', 300)
+            ->assertJsonPath('data.customization.addon_groups.' . $this->premium->id . '.price', 500);
+        $payload = ['plan_id' => $plan->id, 'period' => 'month_price', 'options' => $this->resources()];
+        $this->postJson('/api/v1/user/plan/quote', $payload)->assertOk()->assertJsonPath('data.amount', 800);
+        $this->postJson('/api/v1/user/order/save', $payload + ['expected_amount' => 800])->assertOk();
+        $order = Order::firstOrFail();
+        $this->assertSame(Order::TYPE_RENEWAL, $order->type);
+        $this->assertSame([$this->premium->id], $order->plan_snapshot['options']['addon_groups']);
+    }
+
+    public function test_node_pull_preserves_sold_included_groups_after_catalog_change(): void
+    {
+        $plan = $this->sellablePlan();
+        $node = $this->server('Included group', [$this->vip->id]);
+        $user = $this->user(['plan_id' => $plan->id, 'plan_options' => $this->resources() + [
+            'addon_groups' => [], 'granted_groups' => [$this->vip->id],
+        ]]);
+        PlanCustomizationService::addonGroupIdsInUse();
+        $config = $plan->customization;
+        unset($config['addon_groups'][$this->vip->id]);
+        $candidate = clone $plan;
+        $candidate->customization = $config;
+        (new PlanCustomizationService())->validateExistingSubscribers($candidate);
+        $plan->update(['customization' => $config]);
+        $this->assertContains($node->id, array_column(ServerService::getAvailableServers($user), 'id'));
+        $this->assertContains($user->id, ServerService::getAvailableUsers($node)->pluck('id')->all());
+    }
+
+    public function test_imported_or_queued_entitlement_invalidates_membership_cache(): void
+    {
+        $node = $this->server('Historic grant', [$this->vip->id]);
+        $this->assertSame([], PlanCustomizationService::addonGroupIdsInUse());
+        $user = $this->user();
+        $user->update(['plan_options' => $this->resources() + ['addon_groups' => [], 'granted_groups' => [$this->vip->id]]]);
+        $this->assertContains($user->id, ServerService::getAvailableUsers($node)->pluck('id')->all());
+    }
+
     /** 只认识三项资源键的旧前端给买过增值组的用户续费：不能静默退掉他的 10x 节点。 */
     public function test_old_client_omitting_addon_groups_keeps_purchased_addons_on_renewal(): void
     {

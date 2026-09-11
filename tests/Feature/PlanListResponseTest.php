@@ -18,9 +18,9 @@ class PlanListResponseTest extends TestCase
     public static function listEndpoints(): array
     {
         return [
-            'guest' => ['/api/v1/guest/plan/fetch', false],
-            'legacy user' => ['/api/v1/user/plan/fetch', true],
-            'customization user' => ['/api/v1/user/plan/fetch?include_customization=1', true],
+            'guest' => ['/api/v1/guest/plan/fetch?include_addon_groups=1', false],
+            'user' => ['/api/v1/user/plan/fetch?include_addon_groups=1', true],
+            'customization user' => ['/api/v1/user/plan/fetch?include_customization=1&include_addon_groups=1', true],
         ];
     }
 

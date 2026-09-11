@@ -149,6 +149,9 @@ class UserController extends Controller
             return $this->fail([400, __('The user does not exist')]);
         }
         $user['avatar_url'] = 'https://cdn.v2ex.com/gravatar/' . md5($user->email) . '?s=64&d=identicon';
+        if (!$request->boolean('include_addon_groups') && $user->plan_options) {
+            $user->plan_options = array_intersect_key($user->plan_options, \App\Services\PlanCustomizationService::LIMITS);
+        }
         return $this->success($user);
     }
 
@@ -198,6 +201,9 @@ class UserController extends Controller
         $user['subscribe_url'] = Helper::getSubscribeUrl($user['token']);
         $userService = new UserService();
         $user['reset_day'] = $userService->getResetDay($user);
+        if (!$request->boolean('include_addon_groups') && $user->plan_options) {
+            $user->plan_options = array_intersect_key($user->plan_options, \App\Services\PlanCustomizationService::LIMITS);
+        }
         $user = HookManager::filter('user.subscribe.response', $user);
         return $this->success($user);
     }

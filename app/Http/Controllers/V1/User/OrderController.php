@@ -82,7 +82,7 @@ class OrderController extends Controller
             $plan,
             $request->input('period'),
             $request->input('coupon_code'),
-            $request->input('options'),
+            $request->planOptions(),
             $request->input('expected_amount'),
         );
 

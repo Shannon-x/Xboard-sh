@@ -5,6 +5,7 @@ namespace App\Http\Controllers\V1\User;
 use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\PlanResource;
+use App\Http\Requests\User\PlanQuote;
 use App\Models\Plan;
 use App\Models\User;
 use App\Services\PlanService;
@@ -18,17 +19,13 @@ class PlanController extends Controller
     {
         $this->planService = $planService;
     }
-    public function quote(Request $request)
+    public function quote(PlanQuote $request)
     {
-        $data = $request->validate([
-            'plan_id' => 'required|integer',
-            'period' => 'required|string',
-            'options' => 'sometimes|array:transfer_enable,device_limit,speed_limit',
-        ]);
+        $data = $request->validated();
         $plan = Plan::findOrFail($data['plan_id']);
         $user = $request->user();
         (new PlanService($plan))->validatePurchase($user, $data['period']);
-        $quote = app(\App\Services\PlanCustomizationService::class)->quote($plan, $data['period'], $data['options'] ?? null, $user);
+        $quote = app(\App\Services\PlanCustomizationService::class)->quote($plan, $data['period'], $request->planOptions(), $user);
         unset($quote['snapshot']);
         return $this->success($quote);
     }
@@ -36,6 +33,10 @@ class PlanController extends Controller
     public function fetch(Request $request)
     {
         $user = User::find($request->user()->id);
+        $customizer = app(\App\Services\PlanCustomizationService::class);
+        $forClient = fn ($plan) => $customizer->forClient(
+            $plan, $user, $request->boolean('include_customization'), $request->boolean('include_addon_groups')
+        );
         if ($request->input('id')) {
             $plan = Plan::where('id', $request->input('id'))->first();
             if (!$plan) {
@@ -44,16 +45,12 @@ class PlanController extends Controller
             if (!$this->planService->isPlanAvailableForUser($plan, $user)) {
                 return $this->fail([400, __('Subscription plan does not exist')]);
             }
-            if (!$request->boolean('include_customization')) {
-                $plan = app(\App\Services\PlanCustomizationService::class)->forLegacyUser($plan, $user);
-            }
+            $plan = $forClient($plan);
             return $this->success(PlanResource::make($plan));
         }
 
         $plans = $this->planService->getAvailablePlans();
-        if (!$request->boolean('include_customization')) {
-            $plans = $plans->map(fn ($plan) => app(\App\Services\PlanCustomizationService::class)->forLegacyUser($plan, $user));
-        }
+        $plans = $plans->map($forClient);
         return $this->success(PlanResource::collection($plans));
     }
 }

@@ -4,8 +4,8 @@ namespace App\Observers;
 
 use App\Jobs\NodeUserSyncJob;
 use App\Models\User;
-use App\Services\TrafficResetService;
 use App\Services\PlanCustomizationService;
+use App\Services\TrafficResetService;
 
 class UserObserver
 {
@@ -16,7 +16,7 @@ class UserObserver
 
   public function updated(User $user): void
   {
-    if ($user->isDirty('plan_options')) {
+    if ($user->isDirty(['plan_options', 'admin_group_ids'])) {
       PlanCustomizationService::forgetAddonMembershipCache();
     }
     // 当 plan_id 或 expired_at 发生变化时按月度规则重算 next_reset_at —— 但前提是
@@ -41,30 +41,22 @@ class UserObserver
 
     // NodeUserSyncJob 派发独立分支，不受上面守卫影响 —— 节点端依赖
     // expired_at / transfer_enable / banned 等字段变化做下发，必须照常 dispatch。
-    // plan_options 也要触发：客户加购 / 退掉增值节点组后，granted_groups 变了，
-    // 增值节点的名单必须跟着变，否则要等下一次全量同步才生效（或永远不失效）。
-    if ($user->isDirty(['group_id', 'uuid', 'speed_limit', 'device_limit', 'banned', 'expired_at', 'transfer_enable', 'u', 'd', 'plan_id', 'plan_options'])) {
+    // plan_options / admin_group_ids / plan_id 也要触发：客户加购或退掉增值节点组、管理员手动
+    // 授予或撤销、换到包含组不同的套餐后，生效的增值组变了，增值节点的名单必须跟着变，
+    // 否则要等下一次全量同步才生效（或永远不失效）。
+    if ($user->isDirty(['group_id', 'uuid', 'speed_limit', 'device_limit', 'banned', 'expired_at', 'transfer_enable', 'u', 'd', 'plan_id', 'plan_options', 'admin_group_ids'])) {
       $oldGroupId = $user->isDirty('group_id') ? $user->getOriginal('group_id') : null;
       $lostAddonGroups = [];
-      if ($user->isDirty('plan_options')) {
-        $before = $this->grantedGroupsOf($user->getOriginal('plan_options'));
+      if ($user->isDirty(['plan_options', 'admin_group_ids', 'plan_id'])) {
+        $before = PlanCustomizationService::effectiveAddonGroupIds(
+          $user->getOriginal('plan_id') ? (int) $user->getOriginal('plan_id') : null,
+          $user->getOriginal('plan_options'),
+          $user->getOriginal('admin_group_ids')
+        );
         $lostAddonGroups = array_values(array_diff($before, $user->addonGroupIds()));
       }
       NodeUserSyncJob::dispatch($user->id, 'updated', $oldGroupId, $lostAddonGroups);
     }
-  }
-
-  /** 从一份 plan_options 里取出 granted_groups（int 列表）。 */
-  private function grantedGroupsOf(mixed $planOptions): array
-  {
-    if (is_string($planOptions)) {
-      $planOptions = json_decode($planOptions, true);
-    }
-    $granted = is_array($planOptions) ? ($planOptions['granted_groups'] ?? []) : [];
-    if (!is_array($granted)) {
-      return [];
-    }
-    return array_values(array_unique(array_map('intval', array_filter($granted, 'is_numeric'))));
   }
 
   public function created(User $user): void

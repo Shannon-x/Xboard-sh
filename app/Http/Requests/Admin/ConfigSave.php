@@ -75,6 +75,16 @@ class ConfigSave extends FormRequest
         'surplus_enable' => '',
         // 增值节点组在用户端的区块标题；留空则前端回落 i18n 默认文案
         'addon_group_label' => 'nullable|string|max:32',
+        // 流量加购包站点默认：单价（分/GB，0 = 不开放）、单次 GB 上下限、快捷档位（逗号分隔 GB）
+        'traffic_topup_price_per_gb' => 'nullable|integer|min:0|max:100000000',
+        'traffic_topup_min_gb' => 'nullable|integer|min:1|max:100000',
+        'traffic_topup_max_gb' => 'nullable|integer|min:1|max:100000',
+        'traffic_topup_presets' => ['nullable', 'string', 'max:64', 'regex:/^\d+(\s*,\s*\d+)*$/'],
+        // 续费助手：自动续费全站开关、提前 / 宽限小时数；仪表盘快捷续费提醒提前天数（0 = 不显示）
+        'auto_renew_enable' => '',
+        'auto_renew_lead_hours' => 'nullable|integer|min:1|max:168',
+        'auto_renew_grace_hours' => 'nullable|integer|min:0|max:720',
+        'renew_prompt_days' => 'nullable|integer|min:0|max:60',
         'new_order_event_id' => '',
         'renew_order_event_id' => '',
         'change_order_event_id' => '',

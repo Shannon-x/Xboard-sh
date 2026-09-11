@@ -134,6 +134,7 @@ class UserController extends Controller
                 'banned',
                 'remind_expire',
                 'remind_traffic',
+                'auto_renew',
                 'expired_at',
                 'balance',
                 'commission_balance',
@@ -185,24 +186,39 @@ class UserController extends Controller
                 'device_limit',
                 'speed_limit',
                 'next_reset_at',
-                'plan_options'
+                'plan_options',
+                'transfer_topup',
+                'admin_group_ids'
             ])
             ->first();
         if (!$user) {
             return $this->fail([400, __('The user does not exist')]);
         }
+        $customizer = app(\App\Services\PlanCustomizationService::class);
+        $planModel = null;
         if ($user->plan_id) {
-            $user['plan'] = Plan::find($user->plan_id);
-            if (!$user['plan']) {
+            $planModel = Plan::find($user->plan_id);
+            if (!$planModel) {
                 return $this->fail([400, __('Subscription plan does not exist')]);
             }
-            $user['plan'] = app(\App\Services\PlanCustomizationService::class)->forLegacyUser($user['plan'], $user);
+            $user['plan'] = $customizer->forLegacyUser($planModel, $user);
         }
         $user['subscribe_url'] = Helper::getSubscribeUrl($user['token']);
         $userService = new UserService();
         $user['reset_day'] = $userService->getResetDay($user);
+        // 纯新增键，旧前端不读：本周期流量加购规则 / 已加购量，以及此刻生效的增值线路（带展示名）。
+        $user['traffic_topup'] = $customizer->topupSummary($planModel, $user);
+        $user['addon_groups'] = $customizer->addonGroupsForUser($planModel, $user);
+        // 续费助手：提醒天数 + 上次配置的续费规格与金额 + 自动续费状态（需要余额 / 折扣等未 select 的列）
+        $user['renew'] = app(\App\Services\RenewService::class)->payload(User::find($request->user()->id));
         if (!$request->boolean('include_addon_groups') && $user->plan_options) {
             $user->plan_options = array_intersect_key($user->plan_options, \App\Services\PlanCustomizationService::LIMITS);
+        } elseif ($user->plan_options) {
+            // granted_groups 在响应里始终是「此刻生效」的集合（套餐实时包含 ∪ 已购 ∪ 管理员授予），
+            // 前端据此判断哪些增值线路已解锁；它是派生键，回传时服务端忽略。
+            $options = $user->plan_options;
+            $options[\App\Services\PlanCustomizationService::GRANTED_KEY] = $user->addonGroupIds();
+            $user->plan_options = $options;
         }
         $user = HookManager::filter('user.subscribe.response', $user);
         return $this->success($user);
@@ -223,7 +239,8 @@ class UserController extends Controller
     {
         $updateData = $request->only([
             'remind_expire',
-            'remind_traffic'
+            'remind_traffic',
+            'auto_renew',
         ]);
 
         $user = $request->user();

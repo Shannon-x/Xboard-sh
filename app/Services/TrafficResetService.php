@@ -53,13 +53,23 @@ class TrafficResetService
           $nextResetAt = $this->keepScheduledResetIfEarlier($user, $nextResetAt);
         }
 
-        $user->update([
+        $update = [
           'u' => 0,
           'd' => 0,
           'last_reset_at' => time(),
           'reset_count' => (int) $user->reset_count + 1,
           'next_reset_at' => $nextResetAt,
-        ]);
+        ];
+        // 本周期加购的流量只活在买它的那个周期：任何清零（月度重置、重置包、提前周期、
+        // 管理员手动）都意味着周期结束，把它从 transfer_enable 扣回并归零。
+        // 走「先覆盖 transfer_enable 为套餐配额再重置」的路径（新购 / 重开 / 换套餐）
+        // 会在调用前先把 transfer_topup 归零，这里就不会重复扣。
+        $expiredTopup = (int) ($user->transfer_topup ?? 0);
+        if ($expiredTopup > 0) {
+          $update['transfer_enable'] = max(0, (int) ($user->transfer_enable ?? 0) - $expiredTopup);
+          $update['transfer_topup'] = 0;
+        }
+        $user->update($update);
 
         $this->recordResetLog($user, [
           'reset_type' => $this->getResetTypeFromPlan($user->plan),
@@ -70,6 +80,7 @@ class TrafficResetService
           'new_upload' => 0,
           'new_download' => 0,
           'new_total' => 0,
+          'metadata' => $expiredTopup > 0 ? ['expired_topup' => $expiredTopup] : null,
         ]);
 
         $this->clearUserCache($user);

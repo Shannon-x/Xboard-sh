@@ -44,6 +44,8 @@ class UserController extends Controller
         'plan_id',
         'group_id',
         'group_ids',
+        'addon_group',
+        'auto_renew',
         'banned',
         'remarks',
         'is_admin',
@@ -198,6 +200,12 @@ class UserController extends Controller
             return;
         }
 
+        // 虚拟字段：拥有某增值节点组的用户 = 套餐实时包含 ∪ 已购 ∪ 管理员授予
+        if ($field === 'addon_group') {
+            $this->applyAddonGroupFilter($query, $value);
+            return;
+        }
+
         $field = $this->normalizeUserFilterField($field);
         if ($field === null) {
             return;
@@ -231,6 +239,27 @@ class UserController extends Controller
         };
 
         $this->applyQueryCondition($query, $queryField, $operator, $filterValue);
+    }
+
+    private function applyAddonGroupFilter(Builder|QueryBuilder $query, mixed $value): void
+    {
+        if (is_string($value) && str_contains($value, ':')) {
+            $value = explode(':', $value, 2)[1];
+        }
+        $ids = array_values(array_filter(array_map('intval', is_array($value) ? $value : explode(',', (string) $value)), fn ($id) => $id > 0));
+        if ($ids === []) {
+            return;
+        }
+        $planIds = \App\Services\PlanCustomizationService::plansIncludingGroups($ids);
+        $query->where(function ($q) use ($ids, $planIds) {
+            if ($planIds !== []) {
+                $q->orWhereIn('plan_id', $planIds);
+            }
+            foreach ($ids as $id) {
+                $q->orWhereJsonContains('plan_options->addon_groups', $id)
+                    ->orWhereJsonContains('admin_group_ids', $id);
+            }
+        });
     }
 
     // Apply sorting rules to the query builder.
@@ -388,6 +417,15 @@ class UserController extends Controller
             if ((int) $user->plan_id !== (int) $plan->id && $user->plan_options) {
                 $params['plan_options'] = null;
             }
+        }
+        // 管理员手动授予的增值节点组：校验存在、去重排序；空列表写 null，与从未授予过的用户一致。
+        if (array_key_exists('admin_group_ids', $params)) {
+            $ids = array_values(array_unique(array_map('intval', array_filter((array) ($params['admin_group_ids'] ?? []), 'is_numeric'))));
+            sort($ids);
+            if ($ids !== [] && \App\Models\ServerGroup::whereIn('id', $ids)->count() !== count($ids)) {
+                return $this->fail([400202, '增值节点组不存在，请刷新后重试']);
+            }
+            $params['admin_group_ids'] = $ids === [] ? null : $ids;
         }
         // 处理邀请用户
         //

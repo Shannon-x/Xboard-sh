@@ -134,7 +134,8 @@ class OrderService
     {
         $order = $this->order;
         $plan = Plan::find($order->plan_id);
-        if ($plan && $order->plan_snapshot) {
+        // 加购包快照没有 options / group_id：它不碰套餐规格，这里不回填。
+        if ($plan && $order->plan_snapshot && isset($order->plan_snapshot['options'])) {
             $plan = clone $plan;
             $snapshot = $order->plan_snapshot;
             // 只把三项资源回填到 Plan：addon_groups / granted_groups 不是 Plan 属性，
@@ -181,15 +182,18 @@ class OrderService
             match ((string) $order->period) {
                 Plan::PERIOD_ONETIME => $this->buyByOneTime($plan),
                 Plan::PERIOD_RESET_TRAFFIC => $this->resetTrafficForOrder(),
+                Plan::PERIOD_TRAFFIC_TOPUP => $this->applyTrafficTopup($order),
                 default => $this->buyByPeriod($order, $plan),
             };
 
+            // 加购包只加流量：限速 / 设备数 / 增值组 / 套餐规格一律不碰。
+            $isTopup = (string) $order->period === Plan::PERIOD_TRAFFIC_TOPUP;
             // Keep legacy resets unchanged; custom resets preserve the purchased speed/devices.
-            if ($order->period !== Plan::PERIOD_RESET_TRAFFIC || (!$order->plan_snapshot && !$this->user->plan_options)) {
+            if (!$isTopup && ($order->period !== Plan::PERIOD_RESET_TRAFFIC || (!$order->plan_snapshot && !$this->user->plan_options))) {
                 $this->setSpeedLimit($plan->speed_limit);
                 $this->setDeviceLimit($plan->device_limit);
             }
-            if ($order->period !== Plan::PERIOD_RESET_TRAFFIC) {
+            if (!$isTopup && $order->period !== Plan::PERIOD_RESET_TRAFFIC) {
                 if ($order->plan_snapshot || $this->user->plan_options) {
                     $options = $order->plan_snapshot['options'] ?? null;
                     // granted_groups（套餐赠送 ∪ 客户已购的增值组）随快照落到用户身上：
@@ -228,7 +232,9 @@ class OrderService
     public function setOrderType(User $user)
     {
         $order = $this->order;
-        if ($order->period === Plan::PERIOD_RESET_TRAFFIC) {
+        if ($order->period === Plan::PERIOD_TRAFFIC_TOPUP) {
+            $order->type = Order::TYPE_TRAFFIC_TOPUP;
+        } else if ($order->period === Plan::PERIOD_RESET_TRAFFIC) {
             $order->type = Order::TYPE_RESET_TRAFFIC;
         } else if ($user->plan_id !== NULL && ($order->plan_id !== $user->plan_id || $this->hasChangedOptions($user)) && ($user->expired_at > time() || $user->expired_at === NULL)) {
             // 套餐变更：旧套餐立即终止，新套餐从支付完成时间重新开始。
@@ -256,7 +262,9 @@ class OrderService
         if (!$selected) {
             return false;
         }
-        if ($selected['transfer_enable'] * self::BYTES_PER_GB !== (int) $user->transfer_enable
+        // 本周期加购的流量已加进 transfer_enable，比较规格时要剔掉，否则加购过的人续同一套餐会被误判成改规格。
+        $baseTransfer = (int) $user->transfer_enable - (int) ($user->transfer_topup ?? 0);
+        if ($selected['transfer_enable'] * self::BYTES_PER_GB !== $baseTransfer
             || (int) $selected['device_limit'] !== (int) $user->device_limit
             || (int) $selected['speed_limit'] !== (int) $user->speed_limit) {
             return true;
@@ -455,7 +463,8 @@ class OrderService
 
     private function getSurplusTrafficLimit(User $user): int
     {
-        $userTraffic = max(0, (int) ($user->transfer_enable ?? 0));
+        // 折抵只按套餐基础配额算，本周期加购的流量不参与（它随换套餐一起失效，不作价）。
+        $userTraffic = max(0, (int) ($user->transfer_enable ?? 0) - (int) ($user->transfer_topup ?? 0));
         if ($user->plan_options && $userTraffic > 0) {
             return min($userTraffic, (int) $user->plan_options['transfer_enable'] * self::BYTES_PER_GB);
         }
@@ -879,6 +888,25 @@ class OrderService
         }
     }
 
+    /**
+     * 流量加购包开通：把 N GB 同时加进 transfer_enable（节点端 / 旧前端立即看到新总量）
+     * 和 transfer_topup（记账）。到下一次任何清零动作时由 TrafficResetService::performReset
+     * 统一扣回归零 —— 加购只活在买它的那个周期。
+     *
+     * 若开通前恰好到了重置日，open() 顶部的 checkAndReset 已先做过本轮重置（旧加购随之收回），
+     * 这份新加购落在新周期里，对用户是有利的一侧。
+     */
+    private function applyTrafficTopup(Order $order): void
+    {
+        $gb = (int) ($order->plan_snapshot['topup_gb'] ?? 0);
+        if ($gb < 1) {
+            throw new \RuntimeException('流量加购包开通失败：订单快照缺少加购数量');
+        }
+        $bytes = $gb * self::BYTES_PER_GB;
+        $this->user->transfer_enable = (int) ($this->user->transfer_enable ?? 0) + $bytes;
+        $this->user->transfer_topup = (int) ($this->user->transfer_topup ?? 0) + $bytes;
+    }
+
     private function buyByPeriod(Order $order, Plan $plan)
     {
         $isPlanChange = (int) $order->type === Order::TYPE_UPGRADE;
@@ -896,10 +924,16 @@ class OrderService
         // 必须在覆盖 transfer_enable 之前取，否则量到的是新配额而不是用户实际被发放并消耗掉的那份。
         $usedTraffic = (int) ($this->user->u ?? 0) + (int) ($this->user->d ?? 0);
         $oldTransferEnable = (int) ($this->user->transfer_enable ?? 0);
+        // 本周期的加购流量。下面会用套餐配额覆盖 transfer_enable，走「清零」分支时它随周期
+        // 结束一并收回（先归零再 performReset，避免 performReset 从新配额里再扣一次）；
+        // 普通续费只是叠时长、周期继续，加购要原样加回来。
+        $topup = (int) ($this->user->transfer_topup ?? 0);
 
         $this->user->transfer_enable = $plan->transfer_enable * self::BYTES_PER_GB;
         // 从一次性转换到循环或者新购的时候，重置流量
         if ($oldExpiredAt === NULL || $order->type === Order::TYPE_NEW_PURCHASE) {
+            $this->user->transfer_topup = 0;
+            $topup = 0;
             app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER);
         }
         $this->user->plan_id = $plan->id;
@@ -912,12 +946,14 @@ class OrderService
             // performReset 内部按 user->plan + user->expired_at 推算 next_reset_at，
             // 必须先把新到期日和 plan 关系装好再重置，否则锚点会落在旧周期上。
             $this->user->setRelation('plan', $plan);
+            $this->user->transfer_topup = 0;
             if (!app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER)) {
                 throw new \RuntimeException('续费重开周期失败：流量重置未成功');
             }
             return;
         }
 
+        $this->user->transfer_enable = (int) $this->user->transfer_enable + $topup;
         $this->user->expired_at = $this->getTime($order->period, $this->user->expired_at);
     }
 
@@ -968,6 +1004,8 @@ class OrderService
     {
         $this->user->plan_id = $plan->id;
         $this->user->group_id = $plan->group_id;
+        // 换套餐 = 旧周期终止，本周期加购随之失效；先归零再由随后的 performReset 清零流量。
+        $this->user->transfer_topup = 0;
         $this->user->transfer_enable = $plan->transfer_enable * self::BYTES_PER_GB;
         $this->user->expired_at = $this->getTime((string) $order->period, time());
         $this->user->setRelation('plan', $plan);

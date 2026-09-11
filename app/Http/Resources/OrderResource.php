@@ -26,7 +26,10 @@ class OrderResource extends JsonResource
                 if (!$this->plan) return null;
                 $plan = clone $this->plan;
                 if ($this->plan_snapshot) {
-                    $plan->forceFill($this->plan_snapshot['options']);
+                    // 流量加购包的快照没有 options（它不改套餐规格），只回填名称与本单金额。
+                    if (isset($this->plan_snapshot['options'])) {
+                        $plan->forceFill($this->plan_snapshot['options']);
+                    }
                     $plan->name = $this->plan_snapshot['name'];
                     $prices = $plan->prices ?? [];
                     $prices[$this->period] = $this->plan_snapshot['amount'] / 100;

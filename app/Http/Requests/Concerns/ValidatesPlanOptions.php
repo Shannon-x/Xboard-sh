@@ -2,11 +2,18 @@
 
 namespace App\Http\Requests\Concerns;
 
+use App\Models\Plan;
+use App\Services\PlanService;
+
 trait ValidatesPlanOptions
 {
     protected function planOptionsRules(): array
     {
-        $rules = ['options' => 'sometimes|nullable|array:transfer_enable,device_limit,speed_limit,addon_groups,granted_groups'];
+        $rules = [
+            'options' => 'sometimes|nullable|array:transfer_enable,device_limit,speed_limit,addon_groups,granted_groups',
+            // 流量加购包：顶层 topup_gb（GB 数），只在 period=traffic_topup 时必填；上下限由套餐规则复核。
+            'topup_gb' => 'required_if:period,traffic_topup|nullable|integer|min:1|max:100000',
+        ];
         // null is the same as an omitted selection; nullable limits still need to be
         // present when an actual selection object is supplied.
         if ($this->input('options') === null) {
@@ -28,6 +35,9 @@ trait ValidatesPlanOptions
 
     public function planOptions(): ?array
     {
+        if (PlanService::getPeriodKey((string) $this->input('period', '')) === Plan::PERIOD_TRAFFIC_TOPUP) {
+            return ['topup_gb' => (int) $this->validated('topup_gb')];
+        }
         $options = $this->validated('options');
         if ($options === null) {
             return null;

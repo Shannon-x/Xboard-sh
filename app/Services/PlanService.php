@@ -77,6 +77,10 @@ class PlanService
 
         // 转换周期格式为新版格式
         $periodKey = self::getPeriodKey($period);
+        if ($periodKey === Plan::PERIOD_TRAFFIC_TOPUP) {
+            $this->validateTrafficTopupPurchase($user);
+            return;
+        }
         $price = $this->plan->prices[$periodKey] ?? null;
 
         $priceText = is_int($price) || is_float($price) || is_string($price) ? (string) $price : '';
@@ -108,6 +112,20 @@ class PlanService
      * @param string $period
      * @return string
      */
+    /** 流量加购：只卖给当前有效订阅，且套餐（或站点默认）开放了加购。金额与数量由 quote 复核。 */
+    private function validateTrafficTopupPurchase(User $user): void
+    {
+        if ((int) $user->plan_id !== (int) $this->plan->id) {
+            throw new ApiException('流量加购仅可用于当前订阅');
+        }
+        if ($user->expired_at !== null && (int) $user->expired_at <= time()) {
+            throw new ApiException('订阅已到期，请先续费再加购流量');
+        }
+        if (app(PlanCustomizationService::class)->topupRule($this->plan, $user) === null) {
+            throw new ApiException('当前套餐不支持加购流量');
+        }
+    }
+
     public static function getPeriodKey(string $period): string
     {
         // 如果是新版格式直接返回

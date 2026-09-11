@@ -57,6 +57,8 @@ class AdvanceCycleService
                 $oldNextResetAt = $lockedUser->next_reset_at;
                 $newExpiredAt = $oldExpiredAt - self::CONSUME_SECONDS;
                 $newNextResetAt = $this->calculateAdvanceNextResetAt($lockedUser, $newExpiredAt);
+                // 提前进入下一周期 = 本周期结束，本周期加购的流量一并收回。
+                $expiredTopup = (int) ($lockedUser->transfer_topup ?? 0);
 
                 $lockedUser->forceFill([
                     'u' => 0,
@@ -65,9 +67,13 @@ class AdvanceCycleService
                     'last_reset_at' => $now,
                     'reset_count' => ((int) $lockedUser->reset_count) + 1,
                     'next_reset_at' => $newNextResetAt,
-                ])->save();
+                ] + ($expiredTopup > 0 ? [
+                    'transfer_enable' => max(0, (int) ($lockedUser->transfer_enable ?? 0) - $expiredTopup),
+                    'transfer_topup' => 0,
+                ] : []))->save();
 
                 $metadata = array_filter([
+                    'expired_topup' => $expiredTopup > 0 ? $expiredTopup : null,
                     'old_expired_at' => $oldExpiredAt,
                     'new_expired_at' => $newExpiredAt,
                     'old_next_reset_at' => $oldNextResetAt,

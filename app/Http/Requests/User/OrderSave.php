@@ -19,7 +19,7 @@ class OrderSave extends FormRequest
         return [
             'plan_id' => 'required',
             'expected_amount' => 'sometimes|nullable|integer|min:1|max:100000000',
-            'period' => 'required|in:month_price,quarter_price,half_year_price,year_price,two_year_price,three_year_price,onetime_price,reset_price,monthly,quarterly,half_yearly,yearly,two_yearly,three_yearly,onetime,reset_traffic'
+            'period' => 'required|in:month_price,quarter_price,half_year_price,year_price,two_year_price,three_year_price,onetime_price,reset_price,monthly,quarterly,half_yearly,yearly,two_yearly,three_yearly,onetime,reset_traffic,traffic_topup'
         ] + $this->planOptionsRules();
     }
 

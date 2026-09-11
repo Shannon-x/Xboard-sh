@@ -36,6 +36,8 @@ class Kernel extends ConsoleKernel
         $schedule->command('check:commission')->everyMinute()->onOneServer()->withoutOverlapping(5);
         $schedule->command('check:ticket')->everyMinute()->onOneServer()->withoutOverlapping(5);
         $schedule->command('check:traffic-exceeded')->everyMinute()->onOneServer()->withoutOverlapping(10)->runInBackground();
+        // 自动续费：到期前 lead 小时 ~ 到期后 grace 小时窗口内，余额足够的用户按上次配置续费
+        $schedule->command('renew:auto')->hourly()->onOneServer()->withoutOverlapping(50);
         // reset
         $schedule->command('reset:traffic')->everyMinute()->onOneServer()->withoutOverlapping(10);
         $schedule->command('reset:log')->daily()->onOneServer();

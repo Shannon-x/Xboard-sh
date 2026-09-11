@@ -45,7 +45,10 @@ class UserUpdate extends FormRequest
             'commission_balance' => 'numeric|min:0|max:1000000',
             'remarks' => 'nullable|string|max:1024',
             'speed_limit' => 'nullable|integer|min:0|max:10000000',
-            'device_limit' => 'nullable|integer|min:0|max:10000'
+            'device_limit' => 'nullable|integer|min:0|max:10000',
+            // 管理员手动授予的增值节点组（权限组 id 列表）。不传 = 不改；传空数组 = 全部撤销。
+            'admin_group_ids' => 'sometimes|nullable|array|max:20',
+            'admin_group_ids.*' => 'integer|min:1',
         ];
 
         return HookManager::filter('admin.user.update.rules', $rules, $this);

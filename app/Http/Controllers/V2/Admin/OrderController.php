@@ -32,6 +32,7 @@ class OrderController extends Controller
         'refund_amount',
         'surplus_amount',
         'type',
+        'auto_renew',
         'status',
         'commission_status',
         'invite_user_id',

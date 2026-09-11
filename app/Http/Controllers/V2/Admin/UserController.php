@@ -45,6 +45,7 @@ class UserController extends Controller
         'group_id',
         'group_ids',
         'addon_group',
+        'auto_renew',
         'banned',
         'remarks',
         'is_admin',

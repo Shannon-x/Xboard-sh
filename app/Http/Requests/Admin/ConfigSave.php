@@ -80,6 +80,11 @@ class ConfigSave extends FormRequest
         'traffic_topup_min_gb' => 'nullable|integer|min:1|max:100000',
         'traffic_topup_max_gb' => 'nullable|integer|min:1|max:100000',
         'traffic_topup_presets' => ['nullable', 'string', 'max:64', 'regex:/^\d+(\s*,\s*\d+)*$/'],
+        // 续费助手：自动续费全站开关、提前 / 宽限小时数；仪表盘快捷续费提醒提前天数（0 = 不显示）
+        'auto_renew_enable' => '',
+        'auto_renew_lead_hours' => 'nullable|integer|min:1|max:168',
+        'auto_renew_grace_hours' => 'nullable|integer|min:0|max:720',
+        'renew_prompt_days' => 'nullable|integer|min:0|max:60',
         'new_order_event_id' => '',
         'renew_order_event_id' => '',
         'change_order_event_id' => '',

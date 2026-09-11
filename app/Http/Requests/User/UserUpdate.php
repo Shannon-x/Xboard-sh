@@ -15,7 +15,9 @@ class UserUpdate extends FormRequest
     {
         return [
             'remind_expire' => 'in:0,1',
-            'remind_traffic' => 'in:0,1'
+            'remind_traffic' => 'in:0,1',
+            // 自动续费开关：到期前余额足够时按上次配置自动续费
+            'auto_renew' => 'in:0,1',
         ];
     }
 

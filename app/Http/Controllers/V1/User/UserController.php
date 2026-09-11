@@ -134,6 +134,7 @@ class UserController extends Controller
                 'banned',
                 'remind_expire',
                 'remind_traffic',
+                'auto_renew',
                 'expired_at',
                 'balance',
                 'commission_balance',
@@ -208,6 +209,8 @@ class UserController extends Controller
         // 纯新增键，旧前端不读：本周期流量加购规则 / 已加购量，以及此刻生效的增值线路（带展示名）。
         $user['traffic_topup'] = $customizer->topupSummary($planModel, $user);
         $user['addon_groups'] = $customizer->addonGroupsForUser($planModel, $user);
+        // 续费助手：提醒天数 + 上次配置的续费规格与金额 + 自动续费状态（需要余额 / 折扣等未 select 的列）
+        $user['renew'] = app(\App\Services\RenewService::class)->payload(User::find($request->user()->id));
         if (!$request->boolean('include_addon_groups') && $user->plan_options) {
             $user->plan_options = array_intersect_key($user->plan_options, \App\Services\PlanCustomizationService::LIMITS);
         } elseif ($user->plan_options) {
@@ -236,7 +239,8 @@ class UserController extends Controller
     {
         $updateData = $request->only([
             'remind_expire',
-            'remind_traffic'
+            'remind_traffic',
+            'auto_renew',
         ]);
 
         $user = $request->user();

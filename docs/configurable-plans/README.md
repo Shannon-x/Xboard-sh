@@ -105,3 +105,23 @@ PHPUnit 使用隔离 PHP 8.4 容器和 SQLite 内存数据库，未连接生产�
 验证包含 221 项后端测试（自选套餐专项 53 项）、Rust 路径映射 10 项；前端 ESLint、TypeScript、生产构建，管理端 i18n 检查、独立及嵌入式构建。浏览器使用模拟套餐/API 验证桌面与手机交互、固定项不可选择、指定容量按钮、周期价格联动、旧字段兼容及管理端保存配置，不会真实下单。
 
 开发基线：后端 21fa68f，与检查时线上容器 /www 的提交一致；用户主题 12b5164；中间件 d8ddaeb；管理员源码 d3e580a。原本地后端目录中的未提交修改未被覆盖。
+
+## 流量加购包（traffic_topup）
+
+- 周期 `traffic_topup`、订单类型 `5`。顶层字段 `topup_gb`（GB）。走现有 `plan/quote → order/save → 回调 → open` 链路。
+- 单价：站点设置 `traffic_topup_price_per_gb`（分/GB，0 = 不开放）、`traffic_topup_min_gb/max_gb/presets`；
+  套餐 `customization.traffic_topup = {mode: inherit|off|custom, price_per_gb?, min_gb?, max_gb?}` 覆盖；
+  增值组规则 `topup_price_per_gb` 给持有该组的用户每 GB 加价（同一套餐买了 10x 组的人加购更贵）。
+- 开通：`transfer_enable += N GB` 且 `transfer_topup += N GB`（记账列）。
+- **不变量**：任何把 u/d 清零的动作（月度重置、重置包、提前周期、换套餐、新购、管理员手动重置）
+  由 `TrafficResetService::performReset` / `AdvanceCycleService` 统一 `transfer_enable -= transfer_topup; transfer_topup = 0`。
+  普通续费只叠时长、周期继续，加购保留。`hasChangedOptions` 与折抵按 `transfer_enable − transfer_topup` 比较。
+- `getSubscribe` 新增 `traffic_topup`（规则 + `active_bytes` + `valid_until`）与 `addon_groups`；`PlanResource` 新增 `traffic_topup` 顶层键。旧前端不读这些键。
+
+## 增值组「包含」的实时语义与管理员授予
+
+- 用户此刻生效的增值组 = 套餐当前 `included` 组（按 `plan_id` 查 60s 缓存表，PlanObserver 保存即失效并通知相关组节点重拉）
+  ∪ `plan_options.addon_groups`（已购 optional，快照）∪ `v2_user.admin_group_ids`（管理员手动授予，与套餐无关、不参与报价、换套餐保留）。
+- `plan_options.granted_groups` 只作兼容字段：开通时仍写入，热路径不读；`getSubscribe?include_addon_groups=1` 用生效集合覆盖它。
+- 节点端名单三条索引分支：`group_id`、`plan_id`（包含组）、JSON（optional / 授予组，仅在相关组时才发）。
+- 管理端：`user/update` 接受 `admin_group_ids`；用户筛选虚拟字段 `addon_group`。

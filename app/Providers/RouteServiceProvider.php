@@ -81,6 +81,24 @@ class RouteServiceProvider extends ServiceProvider
             return $uid ? "{$tag}:user:{$uid}" : "{$tag}:ip:{$request->ip()}";
         };
 
+        // 自选套餐报价：下单前的纯只读计算，且 guest 端无鉴权。每次调用都要取套餐、
+        // 跑完整的规格校验再逐项计价，是有 DB 读 + 计算成本的 POST，不限流时任何人
+        // 都能无限调用。但它返回的只是本就公开的定价，没有 coupon / gift-card 那种
+        // 枚举价值，所以这里防的是资源耗尽而非枚举，阈值取得比那两个宽。
+        // 前端对规格变更做了 250ms 防抖，拖动滑块的中间态不会发请求，认真配置一轮
+        // 也远到不了每分钟 40 次。
+        //
+        // 兜底键刻意用 `plan_quote_ip:` 而不是 `plan_quote:ip:`：未登录时
+        // $byUserOrIp 本身就会退化成 `plan_quote:ip:<ip>`，若兜底沿用同一前缀，
+        // 两条 Limit 会落在**同一个 key** 上被重复计数（coupon-check 那组是 bearer
+        // 接口、不存在未登录调用才没暴露这个问题，此处不能照抄）。
+        RateLimiter::for('plan-quote', function (Request $request) use ($byUserOrIp) {
+            return [
+                Limit::perMinute(40)->by($byUserOrIp($request, 'plan_quote')),
+                Limit::perMinute(120)->by('plan_quote_ip:' . $request->ip()),
+            ];
+        });
+
         RateLimiter::for('coupon-check', function (Request $request) use ($byUserOrIp) {
             return [
                 Limit::perMinute(20)->by($byUserOrIp($request, 'coupon_check')),

@@ -52,7 +52,8 @@ class UserRoute
             $router->post('/order/cancel', [OrderController::class, 'cancel']);
             // Plan
             $router->get('/plan/fetch', [PlanController::class, 'fetch']);
-            $router->post('/plan/quote', [PlanController::class, 'quote']);
+            $router->post('/plan/quote', [PlanController::class, 'quote'])
+                ->middleware('throttle:plan-quote');
             // Invite
             // GET save 保留给老前端（无参随机码）；POST save 支持自定义 code；同方法双路由
             $router->get('/invite/save', [InviteController::class, 'save'])

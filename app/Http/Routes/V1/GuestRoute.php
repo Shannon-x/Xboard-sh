@@ -17,7 +17,8 @@ class GuestRoute
         ], function ($router) {
             // Plan
             $router->get('/plan/fetch', [PlanController::class, 'fetch']);
-            $router->post('/plan/quote', [PlanController::class, 'quote']);
+            $router->post('/plan/quote', [PlanController::class, 'quote'])
+                ->middleware('throttle:plan-quote');
             // Telegram
             $router->post('/telegram/webhook', [TelegramController::class, 'webhook']);
             // Payment

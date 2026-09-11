@@ -72,7 +72,17 @@ class ServerService
      */
     public static function getAvailableServers(User $user): array
     {
-        $servers = Server::whereJsonContains('group_ids', (string) $user->group_id)
+        // 基础组 ∪ 已生效的增值组（plan_options.granted_groups）。旧用户没有增值键，
+        // 这里退化成单一 group_id，与本功能上线前逐字相同。
+        $groupIds = $user->effectiveGroupIds();
+        if ($groupIds === []) {
+            return [];
+        }
+        $servers = Server::where(function ($query) use ($groupIds) {
+                foreach ($groupIds as $groupId) {
+                    $query->orWhereJsonContains('group_ids', (string) $groupId);
+                }
+            })
             ->where('show', true)
             ->orderBy('sort', 'ASC')
             ->get()
@@ -106,8 +116,18 @@ class ServerService
         if (empty($groupIds)) {
             return collect();
         }
+        // 安全关键：增值节点只能把「基础组命中」或「granted_groups 命中」的用户放进名单。
+        // 没买 10x 组的用户即使手工拼出节点配置，节点端名单里也没有他，连不上。
+        // granted_groups 存的是 int，whereJsonContains 在 MySQL(json_contains)与 SQLite(json_each)下都按值匹配。
         $users = User::toBase()
-            ->whereIn('group_id', $groupIds)
+            ->where(function ($query) use ($groupIds) {
+                $query->whereIn('group_id', $groupIds)
+                    ->orWhere(function ($addon) use ($groupIds) {
+                        foreach ($groupIds as $groupId) {
+                            $addon->orWhereJsonContains('plan_options->granted_groups', (int) $groupId);
+                        }
+                    });
+            })
             ->whereRaw('u + d < transfer_enable')
             ->where(function ($query) {
                 $query->where('expired_at', '>=', time())

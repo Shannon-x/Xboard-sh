@@ -137,7 +137,9 @@ class OrderService
         if ($plan && $order->plan_snapshot) {
             $plan = clone $plan;
             $snapshot = $order->plan_snapshot;
-            $plan->forceFill($snapshot['options'] + [
+            // 只把三项资源回填到 Plan：addon_groups / granted_groups 不是 Plan 属性，
+            // 它们由下面的 plan_options 写入承接，不能混进套餐字段。
+            $plan->forceFill(array_intersect_key($snapshot['options'], PlanCustomizationService::LIMITS) + [
                 'name' => $snapshot['name'], 'group_id' => $snapshot['group_id'],
                 'reset_traffic_method' => $snapshot['reset_traffic_method'],
             ]);
@@ -189,7 +191,13 @@ class OrderService
             }
             if ($order->period !== Plan::PERIOD_RESET_TRAFFIC) {
                 if ($order->plan_snapshot || $this->user->plan_options) {
-                    $this->user->plan_options = $order->plan_snapshot['options'] ?? null;
+                    $options = $order->plan_snapshot['options'] ?? null;
+                    // granted_groups（套餐赠送 ∪ 客户已购的增值组）随快照落到用户身上：
+                    // 节点可见性与节点端名单只读这个键，管理员之后改套餐配置不影响已购用户。
+                    if ($options !== null && array_key_exists(PlanCustomizationService::GRANTED_KEY, $order->plan_snapshot)) {
+                        $options[PlanCustomizationService::GRANTED_KEY] = $order->plan_snapshot[PlanCustomizationService::GRANTED_KEY];
+                    }
+                    $this->user->plan_options = $options;
                 }
             }
 
@@ -248,9 +256,18 @@ class OrderService
         if (!$selected) {
             return false;
         }
-        return $selected['transfer_enable'] * self::BYTES_PER_GB !== (int) $user->transfer_enable
+        if ($selected['transfer_enable'] * self::BYTES_PER_GB !== (int) $user->transfer_enable
             || (int) $selected['device_limit'] !== (int) $user->device_limit
-            || (int) $selected['speed_limit'] !== (int) $user->speed_limit;
+            || (int) $selected['speed_limit'] !== (int) $user->speed_limit) {
+            return true;
+        }
+        // 同套餐只多勾/少勾一个增值节点组也是「套餐变更」：旧周期折抵、新周期从付款时重开，
+        // 否则用户在周期中途加购 10x 节点会被当成续费叠时长而拿不到节点。
+        $wanted = array_map('intval', $selected[PlanCustomizationService::ADDON_KEY] ?? []);
+        $owned = array_map('intval', $user->plan_options[PlanCustomizationService::ADDON_KEY] ?? []);
+        sort($wanted);
+        sort($owned);
+        return $wanted !== $owned;
     }
 
     public function setVipDiscount(User $user)

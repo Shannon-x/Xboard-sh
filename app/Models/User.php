@@ -119,6 +119,32 @@ class User extends Authenticatable
         return $this->belongsTo(ServerGroup::class, 'group_id', 'id');
     }
 
+    /**
+     * 已生效的增值节点组（不含基础组）。
+     *
+     * 来源是 plan_options.granted_groups —— 开通时由订单快照写入的「套餐赠送 ∪ 客户已购」
+     * 集合。旧用户 / 未配置增值组的套餐没有这个键，返回空数组，可见节点与本功能上线前一致。
+     * 这里只读 plan_options，不回查套餐配置：节点可见性与节点端拉名单都是热路径。
+     */
+    public function addonGroupIds(): array
+    {
+        $granted = $this->plan_options['granted_groups'] ?? [];
+        if (!is_array($granted)) {
+            return [];
+        }
+        return array_values(array_unique(array_map('intval', array_filter($granted, 'is_numeric'))));
+    }
+
+    /** 基础组 + 已生效增值组。空数组表示用户当前不属于任何组。 */
+    public function effectiveGroupIds(): array
+    {
+        $ids = $this->addonGroupIds();
+        if ($this->group_id) {
+            array_unshift($ids, (int) $this->group_id);
+        }
+        return array_values(array_unique($ids));
+    }
+
     // 获取用户邀请码列表
     public function codes(): HasMany
     {

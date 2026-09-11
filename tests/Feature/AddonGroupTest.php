@@ -466,6 +466,38 @@ class AddonGroupTest extends TestCase
         $this->assertSame(Order::TYPE_UPGRADE, (int) $order->type);
     }
 
+    // ───────────────────────── 展示名 ─────────────────────────
+
+    /** 管理员给组设了展示名后，用户端拿到的 name 就是展示名，内部组名不再下发。 */
+    public function test_addon_label_replaces_internal_group_name_for_users(): void
+    {
+        $plan = $this->plan([
+            (string) $this->premium->id => ['mode' => 'optional', 'price' => 500, 'label' => ' 高速通道 '],
+            (string) $this->vip->id => ['mode' => 'included'],
+        ]);
+        $addons = PlanResource::make($plan)->resolve()['customization']['addon_groups'];
+        $this->assertSame('高速通道', $addons[(string) $this->premium->id]['name'], '展示名要去首尾空白');
+        $this->assertSame('VIP 专线', $addons[(string) $this->vip->id]['name'], '未设展示名回落到权限组名');
+        $this->assertSame(['mode', 'price', 'name', 'server_count'], array_keys($addons[(string) $this->premium->id]), '不新增输出键，前端契约不变');
+        $this->assertStringNotContainsString('10x', json_encode($addons, JSON_UNESCAPED_UNICODE), '设了展示名就不能泄露内部组名');
+    }
+
+    public function test_addon_label_must_be_short_text(): void
+    {
+        $service = new PlanCustomizationService();
+        // 空串 / null 都合法（= 未设置）
+        $service->validateConfiguration($this->plan([(string) $this->premium->id => ['mode' => 'optional', 'price' => 500, 'label' => '']]));
+        $service->validateConfiguration($this->plan([(string) $this->premium->id => ['mode' => 'optional', 'price' => 500, 'label' => null]]));
+        foreach ([str_repeat('长', 33), 123, ['x']] as $bad) {
+            try {
+                $service->validateConfiguration($this->plan([(string) $this->premium->id => ['mode' => 'optional', 'price' => 500, 'label' => $bad]]));
+                $this->fail('应拒绝 ' . json_encode($bad, JSON_UNESCAPED_UNICODE));
+            } catch (ApiException $e) {
+                $this->assertStringContainsString('展示名', $e->getMessage());
+            }
+        }
+    }
+
     public function test_user_observer_reports_lost_addon_groups_to_the_sync_job(): void
     {
         Bus::fake([NodeUserSyncJob::class]);

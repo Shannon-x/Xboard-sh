@@ -30,6 +30,8 @@ class CommController extends Controller
             'logo' => admin_setting('logo'),
             'google_login_enable' => (int) admin_setting('google_login_enable', 0) ? 1 : 0,
             'google_login_url' => url('/api/v1/passport/auth/google/redirect'),
+            // 增值节点组在用户端的区块标题（站点级）；空字符串 = 前端用 i18n 默认
+            'addon_group_label' => (string) admin_setting('addon_group_label', ''),
             // 保持向后兼容
             'is_recaptcha' => (int) admin_setting('captcha_enable', 0) ? 1 : 0,
         ];

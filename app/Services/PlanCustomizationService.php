@@ -16,7 +16,11 @@ class PlanCustomizationService
     public const MAX_CHOICES = 100;
 
     /**
-     * 增值节点组：customization.addon_groups = { "<group_id>": { mode: included|optional, price: 分/月 } }
+     * 增值节点组：customization.addon_groups = { "<group_id>": { mode: included|optional, price: 分/月, label?: 展示名 } }
+     *
+     * label 是用户看到的名称（可选，≤32 字）。权限组内部名常带「10x」这类倍率字眼，
+     * 管理员可以用它包装成「高速通道」；留空则回落到权限组名。下发给用户端时 name
+     * 已是解析后的展示名，设了 label 就不再泄露内部组名。
      *
      * 一个增值等级就是一个 ServerGroup —— 复用节点编辑器已有的分组多选，零新表、零新列，
      * 管理员把 10x 节点拉进「10x 高速」分组就完成了打标签。
@@ -103,10 +107,12 @@ class PlanCustomizationService
         foreach ($rules as $groupId => $rule) {
             $group = $groups->get($groupId);
             if (!$group) continue; // 组已被删除：不展示也不可选，validateConfiguration 会在下次保存时拦下
+            $label = trim((string) ($rule['label'] ?? ''));
             $display[(string) $groupId] = [
                 'mode' => $rule['mode'],
                 'price' => (int) ($rule['price'] ?? 0),
-                'name' => $group->name,
+                // 展示名优先；未设置时才用权限组名。设了展示名就不再把内部组名下发给用户。
+                'name' => $label !== '' ? $label : $group->name,
                 'server_count' => $group->server_count,
             ];
         }
@@ -220,7 +226,7 @@ class PlanCustomizationService
             if ((int) $groupId === (int) $plan->group_id) {
                 throw new ApiException('套餐的基础权限组不能再作为增值组出售');
             }
-            if (!is_array($rule) || array_diff(array_keys($rule), ['mode', 'price'])) {
+            if (!is_array($rule) || array_diff(array_keys($rule), ['mode', 'price', 'label'])) {
                 throw new ApiException('增值节点组配置包含未知字段');
             }
             $mode = $rule['mode'] ?? null;
@@ -233,6 +239,10 @@ class PlanCustomizationService
             }
             if ($mode === 'included' && $price !== 0) {
                 throw new ApiException('随套餐包含的增值节点组不能设置加价');
+            }
+            if (array_key_exists('label', $rule) && $rule['label'] !== null
+                && (!is_string($rule['label']) || mb_strlen(trim($rule['label'])) > 32)) {
+                throw new ApiException('增值节点组的展示名必须是不超过 32 字的文本');
             }
             $ids[] = (int) $groupId;
         }

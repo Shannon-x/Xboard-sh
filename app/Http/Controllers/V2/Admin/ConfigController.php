@@ -164,6 +164,7 @@ class ConfigController extends Controller
                 'reset_traffic_method' => (int) admin_setting('reset_traffic_method', 0),
                 'advance_cycle_used_ratio' => (float) admin_setting('advance_cycle_used_ratio', 0.95),
                 'surplus_enable' => (bool) admin_setting('surplus_enable', 1),
+                'addon_group_label' => (string) admin_setting('addon_group_label', ''),
                 'new_order_event_id' => (int) admin_setting('new_order_event_id', 0),
                 'renew_order_event_id' => (int) admin_setting('renew_order_event_id', 0),
                 'change_order_event_id' => (int) admin_setting('change_order_event_id', 0),

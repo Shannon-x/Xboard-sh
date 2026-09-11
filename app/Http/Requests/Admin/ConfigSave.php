@@ -73,6 +73,8 @@ class ConfigSave extends FormRequest
         'reset_traffic_method' => 'in:0,1,2,3,4',
         'advance_cycle_used_ratio' => 'numeric|between:0.5,1',
         'surplus_enable' => '',
+        // 增值节点组在用户端的区块标题；留空则前端回落 i18n 默认文案
+        'addon_group_label' => 'nullable|string|max:32',
         'new_order_event_id' => '',
         'renew_order_event_id' => '',
         'change_order_event_id' => '',

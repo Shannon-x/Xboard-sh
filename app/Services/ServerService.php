@@ -121,7 +121,7 @@ class ServerService
         // 288 个节点每分钟各拉一次名单，这条查询的形状直接决定 MySQL 负载。
         // 拆成两条而不是一条 OR：
         //   ① 基础分支 whereIn(group_id) —— 走 idx_v2_user_group_id，几十行定位；
-        //   ② JSON 分支 granted_groups —— 只在「本节点所属组确实被某套餐当增值组卖」时才跑；
+        //   ② JSON 分支 granted_groups —— 只在「本节点所属组在售或仍被用户持有」时才跑；
         //      绝大多数节点属于纯基础组，根本不进②，查询与增值组功能上线前逐字相同。
         // 若写成 group_id IN (...) OR JSON_CONTAINS(...)，OR 会让①的索引失效，退化成全表扫。
         //

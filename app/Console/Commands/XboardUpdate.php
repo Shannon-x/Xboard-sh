@@ -45,8 +45,18 @@ class XboardUpdate extends Command
     public function handle()
     {
         $this->info('正在导入数据库请稍等...');
-        Artisan::call("migrate", ['--force' => true]);
+        $migrationStatus = Artisan::call("migrate", ['--force' => true]);
         $this->info(Artisan::output());
+        if ($migrationStatus !== 0) {
+            $this->error('数据库迁移失败，停止更新；不要切换到新镜像。修复后可重试迁移。');
+            return self::FAILURE;
+        }
+        $checkStatus = Artisan::call('xboard:check-upgrade');
+        $this->info(Artisan::output());
+        if ($checkStatus !== 0) {
+            $this->error('升级结构检查失败，停止更新。');
+            return self::FAILURE;
+        }
         $this->info('正在检查内置插件文件...');
         XboardInstall::restoreProtectedPlugins($this);
         $this->info('正在检查并安装默认插件...');

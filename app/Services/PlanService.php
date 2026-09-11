@@ -30,7 +30,10 @@ class PlanService
             ->get()
             ->filter(function ($plan) {
                 return $this->hasCapacity($plan);
-            });
+            })
+            // PlanResource preserves numeric addon group IDs. Reindex this outer list
+            // after filtering so sold-out plans cannot turn its JSON array into an object.
+            ->values();
     }
 
     /**

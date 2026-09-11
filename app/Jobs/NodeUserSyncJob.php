@@ -17,6 +17,10 @@ class NodeUserSyncJob implements ShouldQueue
     public $tries = 2;
     public $timeout = 10;
 
+    // Queue deserialization does not run the constructor. A declared default is
+    // required for payloads produced before addon groups existed.
+    private array $oldAddonGroups = [];
+
     /**
      * @param int|null $oldGroupId    基础组变更前的旧组（沿用原有语义）
      * @param int[]    $oldAddonGroups 本次变更后**失去**的增值组（granted_groups 的差集）。
@@ -28,8 +32,9 @@ class NodeUserSyncJob implements ShouldQueue
         private readonly int $userId,
         private readonly string $action,
         private readonly ?int $oldGroupId = null,
-        private readonly array $oldAddonGroups = []
+        array $oldAddonGroups = []
     ) {
+        $this->oldAddonGroups = $oldAddonGroups;
         $this->onQueue('node_sync');
     }
 

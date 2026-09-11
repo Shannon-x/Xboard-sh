@@ -162,6 +162,8 @@ class DeviceStateConsistencyTest extends TestCase
     #[Test]
     public function it_reconciles_stale_and_recent_database_snapshots_with_redis(): void
     {
+        $previousConnection = DB::getDefaultConnection();
+        DB::setDefaultConnection('sqlite');
         config(['database.connections.sqlite.database' => ':memory:']);
         DB::purge('sqlite');
 
@@ -199,6 +201,7 @@ class DeviceStateConsistencyTest extends TestCase
                 ->all());
         } finally {
             Schema::dropIfExists('v2_user');
+            DB::setDefaultConnection($previousConnection);
         }
     }
 }

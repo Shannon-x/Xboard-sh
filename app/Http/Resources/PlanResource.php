@@ -15,8 +15,8 @@ class PlanResource extends JsonResource
     /**
      * customization.addon_groups 以权限组 id 为键。JsonResource::removeMissingValues()
      * 看到某一层数组全是数字键就会 array_values() 重排，把 {"2":…,"3":…} 变成 [{…},{…}]，
-     * 前端就再也对不回组 id。preserveKeys 对本资源所有层级生效；其余字段的键本来
-     * 就是字符串或 0..n 的列表，行为不变。
+     * 前端就再也对不回组 id。preserveKeys 也会传递给外层资源集合，因此套餐列表
+     * 在 PlanService::getAvailablePlans() 过滤后必须 values()，保证仍返回 JSON 数组。
      */
     public $preserveKeys = true;
 

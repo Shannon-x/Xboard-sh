@@ -16,6 +16,9 @@ class UserObserver
 
   public function updated(User $user): void
   {
+    if ($user->isDirty(['plan_options', 'admin_group_ids'])) {
+      PlanCustomizationService::forgetAddonMembershipCache();
+    }
     // 当 plan_id 或 expired_at 发生变化时按月度规则重算 next_reset_at —— 但前提是
     // 调用方**没有自己显式设置** next_reset_at。
     //
@@ -58,6 +61,9 @@ class UserObserver
 
   public function created(User $user): void
   {
+    if ($user->addonGroupIds() !== []) {
+      PlanCustomizationService::forgetAddonMembershipCache();
+    }
     $this->recalculateNextResetAt($user);
     NodeUserSyncJob::dispatch($user->id, 'created');
   }
@@ -66,6 +72,9 @@ class UserObserver
   {
     // 增值节点的名单也要把他清掉，不能只清基础组。
     $addonGroups = $user->addonGroupIds();
+    if ($addonGroups !== []) {
+      PlanCustomizationService::forgetAddonMembershipCache();
+    }
     if ($user->group_id || $addonGroups !== []) {
       NodeUserSyncJob::dispatch($user->id, 'deleted', $user->group_id ?: null, $addonGroups);
     }

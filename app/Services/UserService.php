@@ -231,6 +231,7 @@ class UserService
         if ($user->plan_options) $user->plan_options = null;
         $user->group_id = $plan->group_id;
         $user->transfer_enable = $plan->transfer_enable * 1073741824;
+        $user->transfer_topup = 0; // 配额被整体覆盖，本周期加购随之失效
         $user->speed_limit = $plan->speed_limit;
 
         if ($expiredAt) {
@@ -252,6 +253,7 @@ class UserService
         if ($user->plan_options) $user->plan_options = null;
         $user->group_id = $plan->group_id;
         $user->transfer_enable = $plan->transfer_enable * 1073741824;
+        $user->transfer_topup = 0;
         $user->speed_limit = $plan->speed_limit;
         $user->device_limit = $plan->device_limit;
 
@@ -291,6 +293,7 @@ class UserService
             return;
 
         $user->transfer_enable = $plan->transfer_enable * 1073741824;
+        $user->transfer_topup = 0;
         $user->plan_id = $plan->id;
         if ($user->plan_options) $user->plan_options = null;
         $user->group_id = $plan->group_id;

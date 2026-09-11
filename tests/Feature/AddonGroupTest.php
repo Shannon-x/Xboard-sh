@@ -287,7 +287,11 @@ class AddonGroupTest extends TestCase
 
         $names = fn (User $u) => collect(ServerService::getAvailableServers($u))->pluck('name')->sort()->values()->all();
         $this->assertSame(['base', 'both', 'premium', 'vip'], $names($buyer));
-        $this->assertSame(['base', 'both'], $names($legacy), '没买的看不到增值组独占的节点；同时挂在基础组的节点照常可见');
+        // 套餐「包含」的 VIP 组实时生效：即使是没有 plan_options 的老订阅者也立刻拿到；
+        // 可选购的 10x 组没买就看不到；同时挂在基础组的节点照常可见。
+        $this->assertSame(['base', 'both', 'vip'], $names($legacy), '没买的看不到可选购组独占的节点；包含组不用重新开通');
+        $legacyPlanUser = $this->user(['plan_id' => $this->plan()->id, 'group_id' => $this->base->id]);
+        $this->assertSame(['base', 'both'], $names($legacyPlanUser), '未配置增值组的旧套餐：与本功能上线前逐字相同');
     }
 
     public function test_node_user_list_only_contains_users_entitled_to_that_node(): void
@@ -395,10 +399,143 @@ class AddonGroupTest extends TestCase
         $this->assertSame('optional', $addons[(string) $this->premium->id]['mode']);
         $this->assertSame(500, $addons[(string) $this->premium->id]['price']);
         $this->assertSame('included', $addons[(string) $this->vip->id]['mode']);
-        $this->assertSame(['mode', 'price', 'name', 'server_count'], array_keys($addons[(string) $this->premium->id]), '不得暴露节点名称 / 地址');
+        $this->assertSame(['mode', 'price', 'name', 'server_count', 'topup_price_per_gb'], array_keys($addons[(string) $this->premium->id]), '不得暴露节点名称 / 地址');
     }
 
     // ───────────────────────── 前向兼容：旧客户端 + 新后端 ─────────────────────────
+
+    public function test_guest_http_quote_accepts_optional_addon_groups(): void
+    {
+        $plan = $this->sellablePlan();
+        $this->postJson('/api/v1/guest/plan/quote', [
+            'plan_id' => $plan->id, 'period' => 'month_price',
+            'options' => $this->resources() + ['addon_groups' => [$this->premium->id]],
+        ])->assertOk()->assertJsonPath('data.amount', 800)
+            ->assertJsonPath('data.options.addon_groups', [$this->premium->id]);
+        $this->assertSame(0, Order::count());
+    }
+
+    public function test_old_client_can_quote_with_echoed_derived_groups_and_then_order(): void
+    {
+        $plan = $this->sellablePlan();
+        $options = $this->resources() + [
+            'addon_groups' => [$this->premium->id],
+            'granted_groups' => [$this->premium->id, $this->vip->id, 999999],
+        ];
+        $user = $this->user(['plan_id' => $plan->id, 'group_id' => $this->base->id,
+            'device_limit' => 2, 'speed_limit' => 100, 'plan_options' => $options]);
+        \Laravel\Sanctum\Sanctum::actingAs($user);
+        $payload = ['plan_id' => $plan->id, 'period' => 'month_price', 'options' => $options];
+        $quote = $this->postJson('/api/v1/user/plan/quote', $payload)->assertOk()
+            ->assertJsonPath('data.amount', 800)->json('data');
+        $this->postJson('/api/v1/user/order/save', $payload + ['expected_amount' => $quote['amount']])->assertOk();
+        $order = Order::firstOrFail();
+        $this->assertSame(800, (int) $order->total_amount);
+        $this->assertSame([$this->premium->id, $this->vip->id], $order->plan_snapshot['granted_groups']);
+        $this->assertArrayNotHasKey('granted_groups', $quote['options']);
+    }
+
+    public function test_quote_and_order_accept_valid_integer_strings_from_form_clients(): void
+    {
+        $plan = $this->sellablePlan();
+        \Laravel\Sanctum\Sanctum::actingAs($this->user());
+        $payload = ['plan_id' => (string) $plan->id, 'period' => 'month_price', 'options' => [
+            'transfer_enable' => '100', 'device_limit' => '2', 'speed_limit' => '100',
+            'addon_groups' => [(string) $this->premium->id],
+        ]];
+        $this->postJson('/api/v1/user/plan/quote', $payload)->assertOk()->assertJsonPath('data.amount', 800);
+        $this->postJson('/api/v1/user/order/save', $payload + ['expected_amount' => '800'])->assertOk();
+        $this->assertSame([$this->premium->id], Order::firstOrFail()->plan_snapshot['options']['addon_groups']);
+    }
+
+    public function test_null_optional_selection_is_equivalent_to_omitting_it(): void
+    {
+        $plan = $this->plan();
+        \Laravel\Sanctum\Sanctum::actingAs($this->user());
+        $payload = ['plan_id' => $plan->id, 'period' => 'month_price', 'options' => null];
+        $this->postJson('/api/v1/user/plan/quote', $payload)->assertOk()->assertJsonPath('data.amount', 300);
+        $this->postJson('/api/v1/user/order/save', $payload + ['expected_amount' => null])->assertOk();
+        $this->assertNull(Order::firstOrFail()->plan_snapshot);
+    }
+
+    public function test_first_generation_customization_client_gets_safe_options_and_actual_renewal_price(): void
+    {
+        $plan = $this->sellablePlan();
+        $options = $this->resources() + [
+            'addon_groups' => [$this->premium->id],
+            'granted_groups' => [$this->premium->id, $this->vip->id],
+        ];
+        $user = $this->user(['plan_id' => $plan->id, 'group_id' => $this->base->id,
+            'device_limit' => 2, 'speed_limit' => 100, 'plan_options' => $options]);
+        \Laravel\Sanctum\Sanctum::actingAs($user);
+        // The released theme iterates Object.keys(plan_options), assuming three resource keys.
+        // JSON object member order is not a contract; MySQL normalizes JSON key order.
+        $this->getJson('/api/v1/user/info')->assertOk()->assertJsonPath('data.plan_options', fn ($actual) => $actual == $this->resources());
+        $this->getJson('/api/v1/user/getSubscribe')->assertOk()->assertJsonPath('data.plan_options', fn ($actual) => $actual == $this->resources());
+        $this->getJson('/api/v1/user/plan/fetch?include_customization=1&id=' . $plan->id)->assertOk()
+            ->assertJsonPath('data.month_price', 800)->assertJsonPath('data.customization', null);
+        $this->assertEquals($options, $user->fresh()->plan_options, 'Compatibility views must never overwrite purchased entitlements');
+
+        $this->getJson('/api/v1/user/info?include_addon_groups=1')->assertOk()->assertJsonPath('data.plan_options', fn ($actual) => $actual == $options);
+        $this->getJson('/api/v1/user/plan/fetch?include_customization=1&include_addon_groups=1&id=' . $plan->id)->assertOk()
+            ->assertJsonPath('data.month_price', 300)
+            ->assertJsonPath('data.customization.addon_groups.' . $this->premium->id . '.price', 500);
+        $payload = ['plan_id' => $plan->id, 'period' => 'month_price', 'options' => $this->resources()];
+        $this->postJson('/api/v1/user/plan/quote', $payload)->assertOk()->assertJsonPath('data.amount', 800);
+        $this->postJson('/api/v1/user/order/save', $payload + ['expected_amount' => 800])->assertOk();
+        $order = Order::firstOrFail();
+        $this->assertSame(Order::TYPE_RENEWAL, $order->type);
+        $this->assertSame([$this->premium->id], $order->plan_snapshot['options']['addon_groups']);
+    }
+
+    /**
+     * 「包含」组是实时语义：管理员从套餐里撤掉 VIP 组，全部订阅者立刻失去它（订阅出口与
+     * 节点端名单同时变化，不等续费）；加回去又立刻拿到。已购的 optional 组不受影响。
+     */
+    public function test_included_group_changes_on_the_plan_apply_to_subscribers_live(): void
+    {
+        $plan = $this->sellablePlan();
+        $vipNode = $this->server('Included group', [$this->vip->id]);
+        $premiumNode = $this->server('Optional group', [$this->premium->id]);
+        $user = $this->user(['plan_id' => $plan->id, 'group_id' => $this->base->id, 'plan_options' => $this->resources() + [
+            'addon_groups' => [$this->premium->id], 'granted_groups' => [$this->premium->id, $this->vip->id],
+        ]]);
+        $sees = fn (Server $node) => in_array($node->id, array_column(ServerService::getAvailableServers($user->fresh()), 'id'), true);
+        $listed = fn (Server $node) => in_array($user->id, ServerService::getAvailableUsers($node)->pluck('id')->all(), true);
+        PlanCustomizationService::addonGroupIdsInUse();
+        $this->assertTrue($sees($vipNode) && $listed($vipNode));
+
+        $withoutVip = $plan->customization;
+        unset($withoutVip['addon_groups'][$this->vip->id]);
+        $candidate = clone $plan;
+        $candidate->customization = $withoutVip;
+        (new PlanCustomizationService())->validateExistingSubscribers($candidate);
+        $plan->update(['customization' => $withoutVip]);
+        $this->assertFalse($sees($vipNode), '撤掉包含组：订阅里立刻没有该组节点');
+        $this->assertFalse($listed($vipNode), '撤掉包含组：节点端名单立刻没有他');
+        $this->assertTrue($sees($premiumNode) && $listed($premiumNode), '已购的可选组不受影响');
+
+        $plan->update(['customization' => $this->sellablePlan()->customization]);
+        $this->assertTrue($sees($vipNode) && $listed($vipNode), '加回包含组：立刻恢复');
+    }
+
+    /** 管理员手动授予（赔偿 / 工单）：与套餐无关，立刻可见、立刻进名单；撤销同样立刻生效。 */
+    public function test_admin_granted_group_is_effective_immediately_and_revocable(): void
+    {
+        $node = $this->server('Manual grant', [$this->vip->id]);
+        $this->assertSame([], PlanCustomizationService::addonGroupIdsInUse());
+        $user = $this->user(['plan_id' => $this->plan()->id, 'group_id' => $this->base->id]);   // 旧套餐、无 plan_options
+        $this->assertNotContains($user->id, ServerService::getAvailableUsers($node)->pluck('id')->all());
+
+        $user->update(['admin_group_ids' => [$this->vip->id]]);
+        $this->assertContains($user->id, ServerService::getAvailableUsers($node)->pluck('id')->all(), '授予后缓存立即失效，名单立刻有他');
+        $this->assertContains($node->id, array_column(ServerService::getAvailableServers($user->fresh()), 'id'));
+        $this->assertSame([$this->vip->id], $user->fresh()->addonGroupIds());
+
+        $user->update(['admin_group_ids' => null]);
+        $this->assertNotContains($user->id, ServerService::getAvailableUsers($node)->pluck('id')->all(), '撤销后立刻从名单消失');
+        $this->assertSame([], $user->fresh()->addonGroupIds());
+    }
 
     /** 只认识三项资源键的旧前端给买过增值组的用户续费：不能静默退掉他的 10x 节点。 */
     public function test_old_client_omitting_addon_groups_keeps_purchased_addons_on_renewal(): void
@@ -520,8 +657,11 @@ class AddonGroupTest extends TestCase
     {
         Cache::flush();
         $this->assertSame([], PlanCustomizationService::addonGroupIdsInUse());
-        $this->sellablePlan();
-        $this->assertEqualsCanonicalizing([$this->premium->id, $this->vip->id], PlanCustomizationService::addonGroupIdsInUse());
+        $this->assertSame([], PlanCustomizationService::includedGroupsByPlan());
+        $plan = $this->sellablePlan();
+        // optional 组走 JSON 分支集合；included 组走 plan_id 分支的映射表，两边都要即时刷新。
+        $this->assertSame([$this->premium->id], PlanCustomizationService::addonGroupIdsInUse());
+        $this->assertSame([$plan->id => [$this->vip->id]], PlanCustomizationService::includedGroupsByPlan());
     }
 
     // ───────────────────────── 展示名 ─────────────────────────
@@ -536,7 +676,7 @@ class AddonGroupTest extends TestCase
         $addons = PlanResource::make($plan)->resolve()['customization']['addon_groups'];
         $this->assertSame('高速通道', $addons[(string) $this->premium->id]['name'], '展示名要去首尾空白');
         $this->assertSame('VIP 专线', $addons[(string) $this->vip->id]['name'], '未设展示名回落到权限组名');
-        $this->assertSame(['mode', 'price', 'name', 'server_count'], array_keys($addons[(string) $this->premium->id]), '不新增输出键，前端契约不变');
+        $this->assertSame(['mode', 'price', 'name', 'server_count', 'topup_price_per_gb'], array_keys($addons[(string) $this->premium->id]), '输出键固定，前端契约不变');
         $this->assertStringNotContainsString('10x', json_encode($addons, JSON_UNESCAPED_UNICODE), '设了展示名就不能泄露内部组名');
     }
 

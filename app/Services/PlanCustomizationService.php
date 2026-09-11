@@ -9,6 +9,7 @@ use App\Models\Server;
 use App\Models\ServerGroup;
 use App\Models\User;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 /** Quotes and order creation share this calculator. All public amounts are cents. */
 class PlanCustomizationService
@@ -136,6 +137,7 @@ class PlanCustomizationService
                 // 展示名优先；未设置时才用权限组名。设了展示名就不再把内部组名下发给用户。
                 'name' => $label !== '' ? $label : $names[$groupId],
                 'server_count' => $counts[$groupId] ?? 0,
+                'topup_price_per_gb' => (int) ($rule['topup_price_per_gb'] ?? 0),
             ];
         }
         return $display;
@@ -172,14 +174,25 @@ class PlanCustomizationService
      * 解析某套餐的加购规则：套餐覆盖 > 站点默认。返回 null = 该套餐不卖加购。
      * price_per_gb 单位分；presets 是过滤到 [min,max] 内的快捷档位。
      */
-    public function topupRule(Plan $plan): ?array
+    public function topupRule(Plan $plan, ?User $user = null): ?array
     {
         $rule = $plan->customization[self::TOPUP_KEY] ?? null;
         $mode = is_array($rule) ? (string) ($rule['mode'] ?? 'inherit') : 'inherit';
         if ($mode === 'off') return null;
         $custom = $mode === 'custom' && is_array($rule) ? $rule : [];
-        $price = isset($custom['price_per_gb']) ? (int) $custom['price_per_gb'] : (int) admin_setting('traffic_topup_price_per_gb', 0);
-        if ($price < 1) return null;
+        $base = isset($custom['price_per_gb']) ? (int) $custom['price_per_gb'] : (int) admin_setting('traffic_topup_price_per_gb', 0);
+        if ($base < 1) return null;
+        // 持有增值组的用户加购更贵：每个增值组规则可设 topup_price_per_gb（分/GB），
+        // 同一套餐里买了 10x 组的人与没买的人，加购单价就此拉开。按此刻生效的组算，
+        // 管理员手动授予的组若也在本套餐规则里，同样计入。
+        $surcharge = 0;
+        if ($user) {
+            $rules = $this->addonRules($plan);
+            foreach ($user->addonGroupIds() as $gid) {
+                $surcharge += (int) ($rules[$gid]['topup_price_per_gb'] ?? 0);
+            }
+        }
+        $price = $base + $surcharge;
         $min = isset($custom['min_gb']) ? (int) $custom['min_gb'] : (int) admin_setting('traffic_topup_min_gb', 1);
         $max = isset($custom['max_gb']) ? (int) $custom['max_gb'] : (int) admin_setting('traffic_topup_max_gb', 1000);
         $min = max(1, min($min, self::TOPUP_MAX_GB));
@@ -189,7 +202,10 @@ class PlanCustomizationService
             fn (int $gb) => $gb >= $min && $gb <= $max
         )));
         sort($presets);
-        return ['price_per_gb' => $price, 'min_gb' => $min, 'max_gb' => $max, 'presets' => $presets];
+        return [
+            'price_per_gb' => $price, 'base_price_per_gb' => $base, 'addon_surcharge_per_gb' => $surcharge,
+            'min_gb' => $min, 'max_gb' => $max, 'presets' => $presets,
+        ];
     }
 
     /** 加购流量的失效时刻：下次重置日；不重置的套餐到到期日；永久套餐为 null（随下一次清零动作失效）。 */
@@ -204,11 +220,13 @@ class PlanCustomizationService
     /** getSubscribe 下发的加购摘要：规则 + 本周期已加购量 + 失效时刻。 */
     public function topupSummary(?Plan $plan, User $user): array
     {
-        $rule = $plan ? $this->topupRule($plan) : null;
+        $rule = $plan ? $this->topupRule($plan, $user) : null;
         $active = ($user->expired_at === null || (int) $user->expired_at > time()) && !$user->banned;
         return [
             'enabled' => $rule !== null && $active,
             'price_per_gb' => $rule['price_per_gb'] ?? 0,
+            'base_price_per_gb' => $rule['base_price_per_gb'] ?? 0,
+            'addon_surcharge_per_gb' => $rule['addon_surcharge_per_gb'] ?? 0,
             'min_gb' => $rule['min_gb'] ?? 0,
             'max_gb' => $rule['max_gb'] ?? 0,
             'presets' => $rule['presets'] ?? [],
@@ -229,7 +247,7 @@ class PlanCustomizationService
         if ($user->banned || ($user->expired_at !== null && (int) $user->expired_at <= time())) {
             throw new ApiException('订阅已到期，请先续费再加购流量');
         }
-        $rule = $this->topupRule($plan);
+        $rule = $this->topupRule($plan, $user);
         if ($rule === null) {
             throw new ApiException('当前套餐不支持加购流量');
         }
@@ -377,9 +395,10 @@ class PlanCustomizationService
     }
 
     /**
-     * 需要按用户 JSON 字段筛名单的组：任一套餐里的 optional 组 ∪ 管理员手动授予过的组。
-     * included 组不在这里 —— 它们走 plan_id 索引分支。节点端拉名单只对这些组才多发一条
-     * JSON 查询；其余节点走纯索引查询。套餐 / 用户授予写入时主动失效。
+     * 需要按用户 JSON 字段筛名单的组：任一套餐里在售的 optional 组 ∪ 用户仍持有的已购组
+     * ∪ 管理员手动授予过的组。included 组不在这里 —— 它们走 plan_id 索引分支。
+     * 节点端拉名单只对这些组才多发一条 JSON 查询；其余节点走纯索引查询。
+     * 套餐保存 / 删除、用户授予写入时主动失效（含事务提交后再失效一次）。
      */
     public static function addonGroupIdsInUse(): array
     {
@@ -390,16 +409,34 @@ class PlanCustomizationService
                     if (is_numeric($gid) && is_array($rule) && ($rule['mode'] ?? null) === 'optional') $ids[(int) $gid] = true;
                 }
             }
+            // 目录变更不能撤掉付费订单已写下的权益（导入 / 历史数据也一样）。
+            // 每次填缓存扫一遍，分块、有界，而不是每次节点 pull 都扫。
+            User::query()->whereNotNull('plan_options')->select(['id', 'plan_options'])
+                ->chunkById(1000, function ($users) use (&$ids) {
+                    foreach ($users as $user) {
+                        foreach ($user->purchasedAddonGroupIds() as $gid) {
+                            if ($gid > 0) $ids[$gid] = true;
+                        }
+                    }
+                });
             return array_keys($ids);
         });
         return array_values(array_unique(array_merge($optional, self::adminGrantedGroupIds())));
     }
 
+    public static function forgetAddonMembershipCache(): void
+    {
+        $keys = [self::CACHE_ADDON_GROUP_IDS, self::CACHE_INCLUDED_BY_PLAN, self::CACHE_ADMIN_GROUP_IDS];
+        foreach ($keys as $key) Cache::forget($key);
+        // 并发读者可能用提交前的数据回填。提交后再失效一次；立即失效覆盖本事务内的读取。
+        DB::afterCommit(function () use ($keys) {
+            foreach ($keys as $key) Cache::forget($key);
+        });
+    }
+
     public static function forgetAddonCaches(): void
     {
-        Cache::forget(self::CACHE_ADDON_GROUP_IDS);
-        Cache::forget(self::CACHE_INCLUDED_BY_PLAN);
-        Cache::forget(self::CACHE_ADMIN_GROUP_IDS);
+        self::forgetAddonMembershipCache();
         Cache::forget(self::CACHE_GROUP_NAMES);
         Cache::forget(self::CACHE_GROUP_SERVER_COUNTS);
     }
@@ -512,8 +549,12 @@ class PlanCustomizationService
             if ((int) $groupId === (int) $plan->group_id) {
                 throw new ApiException('套餐的基础权限组不能再作为增值组出售');
             }
-            if (!is_array($rule) || array_diff(array_keys($rule), ['mode', 'price', 'label'])) {
+            if (!is_array($rule) || array_diff(array_keys($rule), ['mode', 'price', 'label', 'topup_price_per_gb'])) {
                 throw new ApiException('增值节点组配置包含未知字段');
+            }
+            $topupSurcharge = $rule['topup_price_per_gb'] ?? 0;
+            if (!is_int($topupSurcharge) || $topupSurcharge < 0 || $topupSurcharge > self::MAX_AMOUNT) {
+                throw new ApiException('增值节点组的加购流量加价（分/GB）必须是 0 至 ' . self::MAX_AMOUNT . ' 的整数');
             }
             $mode = $rule['mode'] ?? null;
             if (!in_array($mode, ['included', 'optional'], true)) {
@@ -592,6 +633,21 @@ class PlanCustomizationService
         return array_combine(array_keys(self::LIMITS), array_map(
             fn ($field) => $plan->{$field} === null ? null : (int) $plan->{$field}, array_keys(self::LIMITS)
         ));
+    }
+
+    /** Resource-only configurators must explicitly opt in before receiving addon fields. */
+    public function forClient(Plan $plan, ?User $user, bool $includeCustomization, bool $includeAddonGroups): Plan
+    {
+        if ($user && (!$includeCustomization || (!$includeAddonGroups && $this->hasAddonConfig($plan)))) {
+            $plan = $this->forLegacyUser($plan, $user);
+        }
+        if (!$includeAddonGroups && $this->hasAddonConfig($plan)) {
+            $plan = clone $plan;
+            $config = $plan->customization;
+            unset($config[self::ADDON_KEY]);
+            $plan->customization = $config;
+        }
+        return $plan;
     }
 
     /** Older clients show and renew the purchased configuration using the existing plan fields. */

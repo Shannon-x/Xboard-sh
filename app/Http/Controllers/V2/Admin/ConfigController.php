@@ -169,6 +169,8 @@ class ConfigController extends Controller
                 'traffic_topup_min_gb' => (int) admin_setting('traffic_topup_min_gb', 1),
                 'traffic_topup_max_gb' => (int) admin_setting('traffic_topup_max_gb', 1000),
                 'traffic_topup_presets' => (string) admin_setting('traffic_topup_presets', \App\Services\PlanCustomizationService::TOPUP_DEFAULT_PRESETS),
+                'traffic_topup_selection' => (string) admin_setting('traffic_topup_selection', 'range'),
+                'traffic_topup_step_gb' => (int) admin_setting('traffic_topup_step_gb', 1),
                 'auto_renew_enable' => (bool) admin_setting('auto_renew_enable', 1),
                 'auto_renew_lead_hours' => (int) admin_setting('auto_renew_lead_hours', 24),
                 'auto_renew_grace_hours' => (int) admin_setting('auto_renew_grace_hours', 72),

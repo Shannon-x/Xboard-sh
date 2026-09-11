@@ -133,6 +133,58 @@ class TrafficTopupTest extends TestCase
         $this->assertNull($service->topupRule($this->legacyPlan()), '站点未设单价 = 不开放，旧套餐行为不变');
     }
 
+    public function test_choices_mode_sells_listed_tiers_with_tier_prices_and_addon_surcharge(): void
+    {
+        self::$settings['traffic_topup_selection'] = 'choices';
+        self::$settings['traffic_topup_presets'] = '10, 50:20, 100:35';   // 10G 按单价、50G 专价 ¥20、100G 专价 ¥35
+        $service = new PlanCustomizationService();
+        $plan = $this->addonPlan();
+        $plain = $this->user($plan);
+        $rule = $service->topupRule($plan, $plain);
+        $this->assertSame('choices', $rule['selection']);
+        $this->assertSame([[10, 500, 50], [50, 2000, 40], [100, 3500, 35]],
+            array_map(fn ($c) => [$c['gb'], $c['amount'], $c['unit']], $rule['choices']), '未定价的档按单价，定价的档按专价');
+        $this->assertSame([10, 100], [$rule['min_gb'], $rule['max_gb']]);
+
+        $this->assertSame(2000, $service->quote($plan, 'traffic_topup', ['topup_gb' => 50], $plain)['amount']);
+        try {
+            $service->quote($plan, 'traffic_topup', ['topup_gb' => 30], $plain);
+            $this->fail('不在档位里的 GB 应被拒绝');
+        } catch (ApiException $e) {
+            $this->assertStringContainsString('档位', $e->getMessage());
+        }
+
+        // 持有增值组的用户：档位专价 + 每 GB 加价 0.30
+        $premium = $this->user($plan, ['admin_group_ids' => [$this->premium->id]]);
+        $this->assertSame(2000 + 30 * 50, $service->quote($plan, 'traffic_topup', ['topup_gb' => 50], $premium)['amount']);
+
+        // 套餐自定义档位覆盖站点档位
+        $custom = $this->addonPlan(['mode' => 'custom', 'selection' => 'choices', 'price_per_gb' => 80,
+            'choices' => [['gb' => 20], ['gb' => 200, 'price' => 12000]]]);
+        $customRule = $service->topupRule($custom, $this->user($custom));
+        $this->assertSame([[20, 1600], [200, 12000]], array_map(fn ($c) => [$c['gb'], $c['amount']], $customRule['choices']));
+    }
+
+    public function test_range_mode_enforces_step_and_lists_aligned_presets(): void
+    {
+        self::$settings['traffic_topup_step_gb'] = 10;
+        self::$settings['traffic_topup_min_gb'] = 10;
+        self::$settings['traffic_topup_presets'] = '10,25,50,100';
+        $service = new PlanCustomizationService();
+        $plan = $this->legacyPlan();
+        $user = $this->user($plan);
+        $rule = $service->topupRule($plan, $user);
+        $this->assertSame(['range', 10, 1000, 10], [$rule['selection'], $rule['min_gb'], $rule['max_gb'], $rule['step_gb']]);
+        $this->assertSame([10, 50, 100], $rule['presets'], '25 不在步长格点上，不作快捷按钮');
+        $this->assertSame(50 * 30, $service->quote($plan, 'traffic_topup', ['topup_gb' => 30], $user)['amount']);
+        try {
+            $service->quote($plan, 'traffic_topup', ['topup_gb' => 25], $user);
+            $this->fail('不按步长的 GB 应被拒绝');
+        } catch (ApiException $e) {
+            $this->assertStringContainsString('递增', $e->getMessage());
+        }
+    }
+
     public function test_plan_can_override_or_switch_off_the_site_rule(): void
     {
         $service = new PlanCustomizationService();

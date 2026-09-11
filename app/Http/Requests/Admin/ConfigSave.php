@@ -79,7 +79,10 @@ class ConfigSave extends FormRequest
         'traffic_topup_price_per_gb' => 'nullable|integer|min:0|max:100000000',
         'traffic_topup_min_gb' => 'nullable|integer|min:1|max:100000',
         'traffic_topup_max_gb' => 'nullable|integer|min:1|max:100000',
-        'traffic_topup_presets' => ['nullable', 'string', 'max:64', 'regex:/^\d+(\s*,\s*\d+)*$/'],
+        // 档位串：`10,50,100` 或 `10:5,50:22.5`（GB:元，档位专价）；range 模式下只当快捷按钮，choices 模式下就是可买的几档
+        'traffic_topup_presets' => ['nullable', 'string', 'max:255', 'regex:/^\d+(:\d+(\.\d{1,2})?)?(\s*,\s*\d+(:\d+(\.\d{1,2})?)?)*$/'],
+        'traffic_topup_selection' => 'nullable|in:range,choices',
+        'traffic_topup_step_gb' => 'nullable|integer|min:1|max:100000',
         // 续费助手：自动续费全站开关、提前 / 宽限小时数；仪表盘快捷续费提醒提前天数（0 = 不显示）
         'auto_renew_enable' => '',
         'auto_renew_lead_hours' => 'nullable|integer|min:1|max:168',

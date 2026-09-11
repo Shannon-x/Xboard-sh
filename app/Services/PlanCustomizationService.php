@@ -193,19 +193,64 @@ class PlanCustomizationService
             }
         }
         $price = $base + $surcharge;
+
+        // 两种选购方式，与套餐资源的「范围 / 指定选项」同一套语言：
+        //   range   → 滑杆：min ~ max 按 step 递增，金额 = GB × 单价；站点档位只是快捷按钮
+        //   choices → 指定档位：只能买列出的几档，每档可单独定价（大包更便宜），不填则按单价算
+        $selection = (string) ($custom['selection'] ?? admin_setting('traffic_topup_selection', 'range'));
+        if (!in_array($selection, ['range', 'choices'], true)) $selection = 'range';
+        $tiers = isset($custom['choices']) && is_array($custom['choices'])
+            ? array_map(fn ($c) => ['gb' => (int) ($c['gb'] ?? 0), 'price' => isset($c['price']) ? (int) $c['price'] : null], $custom['choices'])
+            : self::parseTopupPresets((string) admin_setting('traffic_topup_presets', self::TOPUP_DEFAULT_PRESETS));
+        $tiers = array_values(array_filter($tiers, fn ($t) => $t['gb'] >= 1 && $t['gb'] <= self::TOPUP_MAX_GB));
+        usort($tiers, fn ($a, $b) => $a['gb'] <=> $b['gb']);
+
+        if ($selection === 'choices') {
+            if ($tiers === []) return null;   // 没档位就没得买
+            $choices = [];
+            foreach ($tiers as $t) {
+                $amount = ($t['price'] ?? $t['gb'] * $base) + $surcharge * $t['gb'];
+                $choices[$t['gb']] = ['gb' => $t['gb'], 'amount' => $amount, 'unit' => (int) round($amount / $t['gb'])];
+            }
+            $choices = array_values($choices);
+            return [
+                'selection' => 'choices',
+                'price_per_gb' => $price, 'base_price_per_gb' => $base, 'addon_surcharge_per_gb' => $surcharge,
+                'min_gb' => $choices[0]['gb'], 'max_gb' => end($choices)['gb'], 'step_gb' => 1,
+                'choices' => $choices, 'presets' => array_column($choices, 'gb'),
+            ];
+        }
+
         $min = isset($custom['min_gb']) ? (int) $custom['min_gb'] : (int) admin_setting('traffic_topup_min_gb', 1);
         $max = isset($custom['max_gb']) ? (int) $custom['max_gb'] : (int) admin_setting('traffic_topup_max_gb', 1000);
+        $step = isset($custom['step_gb']) ? (int) $custom['step_gb'] : (int) admin_setting('traffic_topup_step_gb', 1);
         $min = max(1, min($min, self::TOPUP_MAX_GB));
         $max = max($min, min($max, self::TOPUP_MAX_GB));
-        $presets = array_values(array_unique(array_filter(
-            array_map('intval', explode(',', (string) admin_setting('traffic_topup_presets', self::TOPUP_DEFAULT_PRESETS))),
-            fn (int $gb) => $gb >= $min && $gb <= $max
-        )));
-        sort($presets);
+        $step = max(1, min($step, $max));
+        $presets = array_values(array_unique(array_filter(array_column($tiers, 'gb'),
+            fn (int $gb) => $gb >= $min && $gb <= $max && ($gb - $min) % $step === 0)));
         return [
+            'selection' => 'range',
             'price_per_gb' => $price, 'base_price_per_gb' => $base, 'addon_surcharge_per_gb' => $surcharge,
-            'min_gb' => $min, 'max_gb' => $max, 'presets' => $presets,
+            'min_gb' => $min, 'max_gb' => $max, 'step_gb' => $step,
+            'choices' => [], 'presets' => $presets,
         ];
+    }
+
+    /**
+     * 站点档位串：`10,50,100` 或 `10:5,50:22.5,100:40`（GB:元，给档位定专价 → 大包更便宜）。
+     * 返回 [['gb'=>int,'price'=>分|null], …]，顺序保留、去重。
+     */
+    public static function parseTopupPresets(string $raw): array
+    {
+        $out = [];
+        foreach (preg_split('/\s*,\s*/', trim($raw)) as $entry) {
+            if ($entry === '' || !preg_match('/^(\d+)(?::(\d+(?:\.\d{1,2})?))?$/', $entry, $m)) continue;
+            $gb = (int) $m[1];
+            if ($gb < 1 || isset($out[$gb])) continue;
+            $out[$gb] = ['gb' => $gb, 'price' => isset($m[2]) ? (int) round((float) $m[2] * 100) : null];
+        }
+        return array_values($out);
     }
 
     /** 加购流量的失效时刻：下次重置日；不重置的套餐到到期日；永久套餐为 null（随下一次清零动作失效）。 */
@@ -227,8 +272,11 @@ class PlanCustomizationService
             'price_per_gb' => $rule['price_per_gb'] ?? 0,
             'base_price_per_gb' => $rule['base_price_per_gb'] ?? 0,
             'addon_surcharge_per_gb' => $rule['addon_surcharge_per_gb'] ?? 0,
+            'selection' => $rule['selection'] ?? 'range',
             'min_gb' => $rule['min_gb'] ?? 0,
             'max_gb' => $rule['max_gb'] ?? 0,
+            'step_gb' => $rule['step_gb'] ?? 1,
+            'choices' => $rule['choices'] ?? [],
             'presets' => $rule['presets'] ?? [],
             'active_bytes' => (int) ($user->transfer_topup ?? 0),
             'valid_until' => $this->topupValidUntil($user),
@@ -252,16 +300,30 @@ class PlanCustomizationService
             throw new ApiException('当前套餐不支持加购流量');
         }
         $gb = $options['topup_gb'] ?? null;
-        if (!is_int($gb) || $gb < $rule['min_gb'] || $gb > $rule['max_gb']) {
-            throw new ApiException("加购流量需在 {$rule['min_gb']} 至 {$rule['max_gb']} GB 之间");
+        if ($rule['selection'] === 'choices') {
+            $chosen = null;
+            foreach ($rule['choices'] as $choice) {
+                if (is_int($gb) && $choice['gb'] === $gb) $chosen = $choice;
+            }
+            if ($chosen === null) {
+                throw new ApiException('请选择列出的加购档位：' . implode(' / ', array_map(fn ($c) => $c['gb'] . ' GB', $rule['choices'])));
+            }
+            $amount = (int) $chosen['amount'];
+        } else {
+            if (!is_int($gb) || $gb < $rule['min_gb'] || $gb > $rule['max_gb'] || ($gb - $rule['min_gb']) % $rule['step_gb'] !== 0) {
+                throw new ApiException($rule['step_gb'] > 1
+                    ? "加购流量需在 {$rule['min_gb']} 至 {$rule['max_gb']} GB 之间，按 {$rule['step_gb']} GB 递增"
+                    : "加购流量需在 {$rule['min_gb']} 至 {$rule['max_gb']} GB 之间");
+            }
+            $amount = $gb * $rule['price_per_gb'];
         }
-        $amount = $gb * $rule['price_per_gb'];
         if ($amount > self::MAX_AMOUNT) {
             throw new ApiException('加购金额超过允许上限');
         }
         $snapshot = [
             'version' => 1, 'kind' => self::TOPUP_KEY, 'name' => $plan->name,
-            'topup_gb' => $gb, 'price_per_gb' => $rule['price_per_gb'], 'amount' => $amount,
+            'topup_gb' => $gb, 'price_per_gb' => (int) round($amount / $gb), 'amount' => $amount,
+            'selection' => $rule['selection'],
             'valid_until' => $this->topupValidUntil($user),
         ];
         return [
@@ -273,7 +335,8 @@ class PlanCustomizationService
     private function validateTopupConfiguration(mixed $rule): void
     {
         if ($rule === null) return;
-        if (!is_array($rule) || array_is_list($rule) || array_diff(array_keys($rule), ['mode', 'price_per_gb', 'min_gb', 'max_gb'])) {
+        if (!is_array($rule) || array_is_list($rule)
+            || array_diff(array_keys($rule), ['mode', 'price_per_gb', 'min_gb', 'max_gb', 'selection', 'step_gb', 'choices'])) {
             throw new ApiException('流量加购配置包含未知字段');
         }
         $mode = $rule['mode'] ?? 'inherit';
@@ -281,19 +344,43 @@ class PlanCustomizationService
             throw new ApiException('流量加购模式必须是跟随站点设置、关闭或自定义');
         }
         if ($mode !== 'custom') return;
-        foreach (['price_per_gb', 'min_gb', 'max_gb'] as $key) {
+        foreach (['price_per_gb', 'min_gb', 'max_gb', 'step_gb'] as $key) {
             if (array_key_exists($key, $rule) && $rule[$key] !== null && !is_int($rule[$key])) {
-                throw new ApiException('流量加购的单价（分）与 GB 上下限必须为整数');
+                throw new ApiException('流量加购的单价（分）、GB 上下限与步长必须为整数');
             }
         }
         $price = $rule['price_per_gb'] ?? null;
         if ($price !== null && ($price < 1 || $price > self::MAX_AMOUNT)) {
             throw new ApiException('流量加购单价（分/GB）必须在 1 至 ' . self::MAX_AMOUNT . ' 之间');
         }
+        $selection = $rule['selection'] ?? 'range';
+        if (!in_array($selection, ['range', 'choices'], true)) {
+            throw new ApiException('流量加购的选购方式必须是「范围」或「指定档位」');
+        }
         $min = $rule['min_gb'] ?? 1;
         $max = $rule['max_gb'] ?? self::TOPUP_MAX_GB;
-        if ($min < 1 || $max > self::TOPUP_MAX_GB || $min > $max) {
-            throw new ApiException('流量加购的 GB 上下限必须在 1 至 ' . self::TOPUP_MAX_GB . ' 之间且下限不大于上限');
+        $step = $rule['step_gb'] ?? 1;
+        if ($min < 1 || $max > self::TOPUP_MAX_GB || $min > $max || $step < 1 || $step > self::TOPUP_MAX_GB) {
+            throw new ApiException('流量加购的 GB 上下限与步长必须在 1 至 ' . self::TOPUP_MAX_GB . ' 之间且下限不大于上限');
+        }
+        if (array_key_exists('choices', $rule) && $rule['choices'] !== null) {
+            $choices = $rule['choices'];
+            if (!is_array($choices) || !array_is_list($choices) || count($choices) > self::MAX_CHOICES) {
+                throw new ApiException('加购档位需要 1 至 ' . self::MAX_CHOICES . ' 个');
+            }
+            $previous = 0;
+            foreach ($choices as $choice) {
+                if (!is_array($choice) || array_diff(array_keys($choice), ['gb', 'price'])
+                    || !isset($choice['gb']) || !is_int($choice['gb']) || $choice['gb'] < 1 || $choice['gb'] > self::TOPUP_MAX_GB
+                    || $choice['gb'] <= $previous
+                    || (array_key_exists('price', $choice) && $choice['price'] !== null && (!is_int($choice['price']) || $choice['price'] < 0 || $choice['price'] > self::MAX_AMOUNT))) {
+                    throw new ApiException('加购档位必须是递增、不重复的 GB 数，档位价（分）可选且不能为负');
+                }
+                $previous = $choice['gb'];
+            }
+            if ($selection === 'choices' && $choices === []) {
+                throw new ApiException('指定档位模式至少要填一档');
+            }
         }
     }
 

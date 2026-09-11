@@ -119,13 +119,14 @@ class ServerService
         }
 
         // 288 个节点每分钟各拉一次名单，这条查询的形状直接决定 MySQL 负载。
-        // 拆成两条而不是一条 OR：
-        //   ① 基础分支 whereIn(group_id) —— 走 idx_v2_user_group_id，几十行定位；
-        //   ② JSON 分支 granted_groups —— 只在「本节点所属组确实被某套餐当增值组卖」时才跑；
-        //      绝大多数节点属于纯基础组，根本不进②，查询与增值组功能上线前逐字相同。
-        // 若写成 group_id IN (...) OR JSON_CONTAINS(...)，OR 会让①的索引失效，退化成全表扫。
+        // 最多三条独立查询在 PHP 里按 id 去重，而不是一条大 OR（OR 会让索引失效退化成全表扫）：
+        //   ① 基础分支 whereIn(group_id) —— 走 idx_v2_user_group_id；
+        //   ② 包含分支 whereIn(plan_id) —— 只在「本节点所属组被某套餐设为包含」时才跑，走 plan_id 索引；
+        //      管理员改套餐的包含组，订阅者下一次 pull 就能连上 / 断开，不用等续费；
+        //   ③ JSON 分支 —— 只在「本节点所属组被当 optional 卖过 / 被管理员手动授予过」时才跑。
+        // 绝大多数节点属于纯基础组，只跑①，查询与增值组功能上线前逐字相同。
         //
-        // 安全关键不变：增值节点只把「基础组命中」或「granted_groups 命中」的用户放进名单，
+        // 安全关键不变：增值节点只把三类有资格的用户放进名单，
         // 没买 10x 组的用户即使手工拼出节点配置，名单里也没有他，连不上。
         $activeFilter = function ($query) {
             $query->whereRaw('u + d < transfer_enable')
@@ -143,14 +144,26 @@ class ServerService
             ->select($columns)
             ->get();
 
+        $planIds = PlanCustomizationService::plansIncludingGroups($groupIds);
+        if ($planIds !== []) {
+            $includedUsers = User::toBase()
+                ->whereIn('plan_id', $planIds)
+                ->where($activeFilter)
+                ->select($columns)
+                ->get();
+            if ($includedUsers->isNotEmpty()) {
+                $users = $users->concat($includedUsers)->unique('id')->values();
+            }
+        }
+
         $addonGroupIds = array_values(array_intersect($groupIds, PlanCustomizationService::addonGroupIdsInUse()));
         if ($addonGroupIds !== []) {
-            // granted_groups 存的是 int，whereJsonContains 在 MySQL(json_contains)与 SQLite(json_each)下都按值匹配。
+            // 两个 JSON 列存的都是 int，whereJsonContains 在 MySQL(json_contains)与 SQLite(json_each)下都按值匹配。
             $addonUsers = User::toBase()
-                ->whereNotNull('plan_options')
                 ->where(function ($q) use ($addonGroupIds) {
                     foreach ($addonGroupIds as $groupId) {
-                        $q->orWhereJsonContains('plan_options->granted_groups', $groupId);
+                        $q->orWhereJsonContains('plan_options->addon_groups', $groupId)
+                            ->orWhereJsonContains('admin_group_ids', $groupId);
                     }
                 })
                 ->where($activeFilter)

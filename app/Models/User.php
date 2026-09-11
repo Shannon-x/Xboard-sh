@@ -67,6 +67,7 @@ class User extends Authenticatable
     protected $guarded = ['id'];
     protected $casts = [
         'plan_options' => 'array',
+        'admin_group_ids' => 'array',
         'created_at' => 'timestamp',
         'updated_at' => 'timestamp',
         'banned' => 'boolean',
@@ -120,19 +121,31 @@ class User extends Authenticatable
     }
 
     /**
-     * 已生效的增值节点组（不含基础组）。
+     * 此刻生效的增值节点组（不含基础组）：套餐实时包含 ∪ 客户已购 optional ∪ 管理员手动授予。
      *
-     * 来源是 plan_options.granted_groups —— 开通时由订单快照写入的「套餐赠送 ∪ 客户已购」
-     * 集合。旧用户 / 未配置增值组的套餐没有这个键，返回空数组，可见节点与本功能上线前一致。
-     * 这里只读 plan_options，不回查套餐配置：节点可见性与节点端拉名单都是热路径。
+     * 「套餐包含」按 plan_id 查 60 秒缓存表（PlanObserver 保存即失效），管理员改套餐
+     * 立刻影响全部订阅者；已购与手动授予是用户自己的字段。三者都空 = 旧用户或套餐
+     * 未配置增值组，返回空数组，可见节点与本功能上线前一致。
      */
     public function addonGroupIds(): array
     {
-        $granted = $this->plan_options['granted_groups'] ?? [];
-        if (!is_array($granted)) {
-            return [];
-        }
-        return array_values(array_unique(array_map('intval', array_filter($granted, 'is_numeric'))));
+        return \App\Services\PlanCustomizationService::effectiveAddonGroupIds(
+            $this->plan_id ? (int) $this->plan_id : null, $this->plan_options, $this->admin_group_ids
+        );
+    }
+
+    /** 客户勾选并付费的 optional 增值组（plan_options.addon_groups）。 */
+    public function purchasedAddonGroupIds(): array
+    {
+        $ids = $this->plan_options['addon_groups'] ?? [];
+        return is_array($ids) ? array_values(array_unique(array_map('intval', array_filter($ids, 'is_numeric')))) : [];
+    }
+
+    /** 管理员手动授予的增值组。 */
+    public function adminGroupIds(): array
+    {
+        $ids = $this->admin_group_ids ?? [];
+        return is_array($ids) ? array_values(array_unique(array_map('intval', array_filter($ids, 'is_numeric')))) : [];
     }
 
     /** 基础组 + 已生效增值组。空数组表示用户当前不属于任何组。 */

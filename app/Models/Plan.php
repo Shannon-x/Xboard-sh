@@ -60,6 +60,12 @@ class Plan extends Model
     public const PERIOD_THREE_YEARLY = 'three_yearly';
     public const PERIOD_ONETIME = 'onetime';
     public const PERIOD_RESET_TRAFFIC = 'reset_traffic';
+    /**
+     * 流量加购包：给当前订阅在本周期内追加 N GB，按 GB 计价。
+     * 不是付款周期、不在 prices 里、不进 LEGACY_PERIOD_MAPPING（否则 PlanResource 会给旧前端多吐一个价格键）。
+     * 单价来自站点设置 traffic_topup_price_per_gb，套餐可用 customization.traffic_topup 覆盖或关闭。
+     */
+    public const PERIOD_TRAFFIC_TOPUP = 'traffic_topup';
 
     // 定义旧版周期映射
     public const LEGACY_PERIOD_MAPPING = [

@@ -685,7 +685,8 @@ class PlanCustomizationService
         return $selected;
     }
 
-    private function validateSelection(Plan $plan, array $selected): void
+    /** public：批量迁移命令（xboard:grandfather-addon-group）要在写库前先验一遍将要写入的选择。 */
+    public function validateSelection(Plan $plan, array $selected): void
     {
         $selected = $this->normalizeSelection($selected, $this->hasAddonConfig($plan));
         $addons = array_key_exists(self::ADDON_KEY, $selected) ? $selected[self::ADDON_KEY] : null;

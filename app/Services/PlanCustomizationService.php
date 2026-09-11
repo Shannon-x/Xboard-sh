@@ -257,6 +257,13 @@ class PlanCustomizationService
             return ['period' => $period, 'amount' => (int) ($plan->prices[$period] * 100),
                 'options' => null, 'breakdown' => [], 'snapshot' => null];
         }
+        // 前向兼容：只认识三项资源键的旧客户端提交选择时不会带 addon_groups。
+        // 「键缺席」= 沿用用户已购的增值组，而不是「退掉」；想退掉必须显式传 []。
+        // 否则旧前端给买过增值组的用户续费会静默丢掉 10x 节点，买重置包会被判成"更改规格"。
+        if ($options !== null && $current && $hasAddons
+            && !array_key_exists(self::ADDON_KEY, $options) && array_key_exists(self::ADDON_KEY, $current)) {
+            $options[self::ADDON_KEY] = $current[self::ADDON_KEY];
+        }
         if ($period === Plan::PERIOD_RESET_TRAFFIC) {
             if (!$user || (int) $user->plan_id !== (int) $plan->id) {
                 throw new ApiException('流量重置仅可用于当前订阅');

@@ -396,6 +396,76 @@ class AddonGroupTest extends TestCase
         $this->assertSame(['mode', 'price', 'name', 'server_count'], array_keys($addons[(string) $this->premium->id]), '不得暴露节点名称 / 地址');
     }
 
+    // ───────────────────────── 前向兼容：旧客户端 + 新后端 ─────────────────────────
+
+    /** 只认识三项资源键的旧前端给买过增值组的用户续费：不能静默退掉他的 10x 节点。 */
+    public function test_old_client_omitting_addon_groups_keeps_purchased_addons_on_renewal(): void
+    {
+        $plan = $this->sellablePlan();
+        $user = $this->user(['plan_id' => $plan->id, 'group_id' => $this->base->id, 'plan_options' => $this->resources() + [
+            'addon_groups' => [$this->premium->id], 'granted_groups' => [$this->premium->id, $this->vip->id],
+        ]]);
+        $quote = (new PlanCustomizationService())->quote($plan, 'monthly', $this->resources(), $user);
+        $this->assertSame(800, $quote['amount'], '缺席的 addon_groups 应继承已购，价格仍含增值组');
+        $this->assertSame([$this->premium->id], $quote['options']['addon_groups']);
+    }
+
+    /** 旧前端给买过增值组的用户买流量重置包：不能被判成"更改规格"。 */
+    public function test_old_client_can_buy_a_reset_package_without_knowing_about_addons(): void
+    {
+        $plan = $this->sellablePlan();
+        $user = $this->user(['plan_id' => $plan->id, 'group_id' => $this->base->id, 'plan_options' => $this->resources() + [
+            'addon_groups' => [$this->premium->id], 'granted_groups' => [$this->premium->id, $this->vip->id],
+        ]]);
+        $quote = (new PlanCustomizationService())->quote($plan, 'reset_traffic', $this->resources(), $user);
+        $this->assertSame(300, $quote['amount']);
+        $this->assertSame([$this->premium->id], $quote['options']['addon_groups']);
+    }
+
+    /**
+     * 旧前端（sufe-my-theme #5 之前的 origin/main 第 329/514/531 行）续费时把
+     * user.plan_options **原样**回传当 options —— 含服务端派生的 granted_groups。
+     * 走真实 HTTP 端点必须 200，且派生键不能混进快照。
+     */
+    public function test_old_client_echoing_plan_options_with_granted_groups_is_accepted(): void
+    {
+        $plan = $this->sellablePlan();
+        // device_limit / speed_limit 列必须与已购规格一致：hasChangedOptions 拿它们和快照比，
+        // 真实用户这两列由 open() 写入；夹具不设会被判成"规格变了"而成为套餐变更。
+        $user = $this->user(['plan_id' => $plan->id, 'group_id' => $this->base->id,
+            'device_limit' => 2, 'speed_limit' => 100,
+            'plan_options' => $this->resources() + [
+                'addon_groups' => [$this->premium->id], 'granted_groups' => [$this->premium->id, $this->vip->id],
+            ]]);
+        \Laravel\Sanctum\Sanctum::actingAs($user);
+
+        $this->postJson('/api/v1/user/order/save', [
+            'plan_id' => $plan->id, 'period' => 'monthly', 'options' => $user->plan_options,
+        ])->assertOk();
+
+        $order = Order::first();
+        $this->assertSame(800, (int) $order->total_amount);
+        $this->assertSame(Order::TYPE_RENEWAL, (int) $order->type, '原样回传 = 什么都没改 = 续费，不是套餐变更');
+        $this->assertSame([$this->premium->id], $order->plan_snapshot['options']['addon_groups']);
+        $this->assertArrayNotHasKey('granted_groups', $order->plan_snapshot['options']);
+    }
+
+    /** 与上面对照：显式传 [] 才是"退掉增值组"，且按套餐变更处理。 */
+    public function test_explicit_empty_addon_list_drops_addons(): void
+    {
+        $plan = $this->sellablePlan();
+        $user = $this->user(['plan_id' => $plan->id, 'group_id' => $this->base->id,
+            'device_limit' => 2, 'speed_limit' => 100,
+            'plan_options' => $this->resources() + [
+                'addon_groups' => [$this->premium->id], 'granted_groups' => [$this->premium->id, $this->vip->id],
+            ]]);
+        $quote = (new PlanCustomizationService())->quote($plan, 'monthly', $this->resources() + ['addon_groups' => []], $user);
+        $this->assertSame(300, $quote['amount']);
+        $this->assertSame([], $quote['options']['addon_groups']);
+        $order = OrderService::createFromRequest($user, $plan, 'monthly', null, $this->resources() + ['addon_groups' => []]);
+        $this->assertSame(Order::TYPE_UPGRADE, (int) $order->type);
+    }
+
     public function test_user_observer_reports_lost_addon_groups_to_the_sync_job(): void
     {
         Bus::fake([NodeUserSyncJob::class]);

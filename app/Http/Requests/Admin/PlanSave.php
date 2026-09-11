@@ -35,7 +35,8 @@ class PlanSave extends FormRequest
             'device_limit' => 'integer|nullable|min:0',
             'capacity_limit' => 'integer|nullable|min:0',
             'tags' => 'array|nullable',
-            'customization' => 'nullable|array:transfer_enable,device_limit,speed_limit',
+            // addon_groups：增值节点组配置，深层结构由 PlanCustomizationService::validateConfiguration 校验
+            'customization' => 'nullable|array:transfer_enable,device_limit,speed_limit,addon_groups',
             'show' => 'sometimes|boolean',
             'sell' => 'sometimes|boolean',
             'renew' => 'sometimes|boolean',

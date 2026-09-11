@@ -37,10 +37,30 @@ class UserObserver
 
     // NodeUserSyncJob 派发独立分支，不受上面守卫影响 —— 节点端依赖
     // expired_at / transfer_enable / banned 等字段变化做下发，必须照常 dispatch。
-    if ($user->isDirty(['group_id', 'uuid', 'speed_limit', 'device_limit', 'banned', 'expired_at', 'transfer_enable', 'u', 'd', 'plan_id'])) {
+    // plan_options 也要触发：客户加购 / 退掉增值节点组后，granted_groups 变了，
+    // 增值节点的名单必须跟着变，否则要等下一次全量同步才生效（或永远不失效）。
+    if ($user->isDirty(['group_id', 'uuid', 'speed_limit', 'device_limit', 'banned', 'expired_at', 'transfer_enable', 'u', 'd', 'plan_id', 'plan_options'])) {
       $oldGroupId = $user->isDirty('group_id') ? $user->getOriginal('group_id') : null;
-      NodeUserSyncJob::dispatch($user->id, 'updated', $oldGroupId);
+      $lostAddonGroups = [];
+      if ($user->isDirty('plan_options')) {
+        $before = $this->grantedGroupsOf($user->getOriginal('plan_options'));
+        $lostAddonGroups = array_values(array_diff($before, $user->addonGroupIds()));
+      }
+      NodeUserSyncJob::dispatch($user->id, 'updated', $oldGroupId, $lostAddonGroups);
     }
+  }
+
+  /** 从一份 plan_options 里取出 granted_groups（int 列表）。 */
+  private function grantedGroupsOf(mixed $planOptions): array
+  {
+    if (is_string($planOptions)) {
+      $planOptions = json_decode($planOptions, true);
+    }
+    $granted = is_array($planOptions) ? ($planOptions['granted_groups'] ?? []) : [];
+    if (!is_array($granted)) {
+      return [];
+    }
+    return array_values(array_unique(array_map('intval', array_filter($granted, 'is_numeric'))));
   }
 
   public function created(User $user): void
@@ -51,8 +71,10 @@ class UserObserver
 
   public function deleted(User $user): void
   {
-    if ($user->group_id) {
-      NodeUserSyncJob::dispatch($user->id, 'deleted', $user->group_id);
+    // 增值节点的名单也要把他清掉，不能只清基础组。
+    $addonGroups = $user->addonGroupIds();
+    if ($user->group_id || $addonGroups !== []) {
+      NodeUserSyncJob::dispatch($user->id, 'deleted', $user->group_id ?: null, $addonGroups);
     }
   }
 

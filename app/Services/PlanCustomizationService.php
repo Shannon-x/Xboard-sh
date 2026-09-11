@@ -5,7 +5,10 @@ namespace App\Services;
 use App\Exceptions\ApiException;
 use App\Models\Order;
 use App\Models\Plan;
+use App\Models\Server;
+use App\Models\ServerGroup;
 use App\Models\User;
+use Illuminate\Support\Facades\Cache;
 
 /** Quotes and order creation share this calculator. All public amounts are cents. */
 class PlanCustomizationService
@@ -13,6 +16,30 @@ class PlanCustomizationService
     public const LIMITS = ['transfer_enable' => 1000000, 'device_limit' => 100, 'speed_limit' => 10000];
     public const MAX_AMOUNT = 100000000;
     public const MAX_CHOICES = 100;
+
+    /**
+     * 增值节点组：customization.addon_groups = { "<group_id>": { mode: included|optional, price: 分/月, label?: 展示名 } }
+     *
+     * label 是用户看到的名称（可选，≤32 字）。权限组内部名常带「10x」这类倍率字眼，
+     * 管理员可以用它包装成「高速通道」；留空则回落到权限组名。下发给用户端时 name
+     * 已是解析后的展示名，设了 label 就不再泄露内部组名。
+     *
+     * 一个增值等级就是一个 ServerGroup —— 复用节点编辑器已有的分组多选，零新表、零新列，
+     * 管理员把 10x 节点拉进「10x 高速」分组就完成了打标签。
+     *   included → 随套餐赠送，不计价，客户不可取消；
+     *   optional → 客户按需勾选，按月加价；长周期随套餐自身折扣比例缩放，
+     *              与流量 / 设备 / 速度的加价走同一条规则（见 calculate）；
+     *   未列出   → 该套餐不提供该组。
+     *
+     * 客户侧存两份，语义不同、缺一不可：
+     *   plan_options.addon_groups   客户勾选的 optional 组 —— 续费 / 重置时原样带回重新报价；
+     *   plan_options.granted_groups included ∪ 已购 —— 节点可见性与节点端拉名单直接读它，
+     *                               热路径不回查套餐配置，管理员改配置也不影响已购用户。
+     * 两个键都不存在 = 旧用户或套餐未配置增值组，只有基础组，行为与本功能上线前逐字相同。
+     */
+    public const ADDON_KEY = 'addon_groups';
+    public const GRANTED_KEY = 'granted_groups';
+    public const MAX_ADDON_GROUPS = 20;
 
     public function mode(Plan $plan, string $field): string
     {
@@ -29,14 +56,137 @@ class PlanCustomizationService
             if ($mode === 'range' && ($plan->customization[$field]['max'] ?? 0) > $plan->{$field}) return true;
             if ($mode === 'choices' && count($plan->customization[$field]['choices'] ?? []) > 1) return true;
         }
-        return false;
+        // 配了任何增值组（哪怕只是 included）就是自选套餐：必须走快照，开通时才有 granted_groups 可写。
+        return $this->hasAddonConfig($plan);
+    }
+
+    public function hasAddonConfig(Plan $plan): bool
+    {
+        $addons = $plan->customization[self::ADDON_KEY] ?? null;
+        return is_array($addons) && $addons !== [];
+    }
+
+    /** 增值组规则，键规整为 int group_id。未配置返回空数组。 */
+    public function addonRules(Plan $plan): array
+    {
+        if (!$this->hasAddonConfig($plan)) return [];
+        $rules = [];
+        foreach ($plan->customization[self::ADDON_KEY] as $groupId => $rule) {
+            if (is_numeric($groupId) && is_array($rule)) $rules[(int) $groupId] = $rule;
+        }
+        return $rules;
+    }
+
+    public function includedAddonIds(Plan $plan): array
+    {
+        return array_keys(array_filter($this->addonRules($plan), fn ($rule) => ($rule['mode'] ?? null) === 'included'));
+    }
+
+    public function optionalAddonIds(Plan $plan): array
+    {
+        return array_keys(array_filter($this->addonRules($plan), fn ($rule) => ($rule['mode'] ?? null) === 'optional'));
+    }
+
+    /** included ∪ 已勾选的 optional，升序去重。写进快照与 plan_options.granted_groups。 */
+    public function grantedAddonGroups(Plan $plan, array $selected): array
+    {
+        $chosen = array_intersect($selected[self::ADDON_KEY] ?? [], $this->optionalAddonIds($plan));
+        $granted = array_values(array_unique(array_merge($this->includedAddonIds($plan), $chosen)));
+        sort($granted);
+        return $granted;
+    }
+
+    /**
+     * 给前端展示用的增值组：规则 + 组名 + 节点数。用户端没有分组接口，只能在套餐里内嵌。
+     * 不含 group_id 以外的任何节点细节（名称 / 地址），未购买的客户只看得到「这一组有几个节点」。
+     */
+    public function addonGroupsForDisplay(Plan $plan): array
+    {
+        $rules = $this->addonRules($plan);
+        if ($rules === []) return [];
+        // 套餐列表是每个访客都打的接口，且对整个列表逐套餐调用本方法。组名与节点数
+        // 都从 60 秒缓存里取：整页零额外查询。曾经的写法是每套餐一次 whereIn + 每组一次
+        // ServerGroup::server_count 访问器（各发一条 COUNT），10 个套餐 × 2 组 = 30 条。
+        $names = self::groupNames();
+        $counts = self::serverCountsByGroup();
+        $display = [];
+        foreach ($rules as $groupId => $rule) {
+            if (!isset($names[$groupId])) continue; // 组已被删除：不展示也不可选，validateConfiguration 会在下次保存时拦下
+            $label = trim((string) ($rule['label'] ?? ''));
+            $display[(string) $groupId] = [
+                'mode' => $rule['mode'],
+                'price' => (int) ($rule['price'] ?? 0),
+                // 展示名优先；未设置时才用权限组名。设了展示名就不再把内部组名下发给用户。
+                'name' => $label !== '' ? $label : $names[$groupId],
+                'server_count' => $counts[$groupId] ?? 0,
+            ];
+        }
+        return $display;
+    }
+
+    public const CACHE_GROUP_NAMES = 'plan_addon:group_names';
+    public const CACHE_GROUP_SERVER_COUNTS = 'plan_addon:group_server_counts';
+    public const CACHE_ADDON_GROUP_IDS = 'plan_addon:group_ids_in_use';
+    private const CACHE_TTL = 60;
+
+    /** 权限组 id → 名称。展示用，60 秒内容忍组改名/删除的延迟。 */
+    public static function groupNames(): array
+    {
+        return Cache::remember(self::CACHE_GROUP_NAMES, self::CACHE_TTL, function () {
+            return ServerGroup::query()->pluck('name', 'id')->mapWithKeys(fn ($n, $id) => [(int) $id => (string) $n])->all();
+        });
+    }
+
+    /** 权限组 id → 该组节点数。节点表很小，一次读完在 PHP 里数，而不是每组一条 COUNT。 */
+    public static function serverCountsByGroup(): array
+    {
+        return Cache::remember(self::CACHE_GROUP_SERVER_COUNTS, self::CACHE_TTL, function () {
+            $counts = [];
+            foreach (Server::query()->select('group_ids')->get() as $server) {
+                foreach ((array) ($server->group_ids ?? []) as $gid) {
+                    $gid = (int) $gid;
+                    $counts[$gid] = ($counts[$gid] ?? 0) + 1;
+                }
+            }
+            return $counts;
+        });
+    }
+
+    /**
+     * 所有套餐里作为增值组出现过的权限组 id（含 included / optional）。
+     * 节点端拉名单只对这些组才需要多查 granted_groups；其余节点走纯索引查询。
+     * 套餐保存 / 删除时由 PlanObserver 主动失效，避免刚买完增值组的用户在下一次 pull 里被漏掉。
+     */
+    public static function addonGroupIdsInUse(): array
+    {
+        return Cache::remember(self::CACHE_ADDON_GROUP_IDS, self::CACHE_TTL, function () {
+            $ids = [];
+            foreach (Plan::query()->whereNotNull('customization')->select('customization')->get() as $plan) {
+                foreach (array_keys($plan->customization[self::ADDON_KEY] ?? []) as $gid) {
+                    if (is_numeric($gid)) $ids[(int) $gid] = true;
+                }
+            }
+            return array_keys($ids);
+        });
+    }
+
+    public static function forgetAddonCaches(): void
+    {
+        Cache::forget(self::CACHE_ADDON_GROUP_IDS);
+        Cache::forget(self::CACHE_GROUP_NAMES);
+        Cache::forget(self::CACHE_GROUP_SERVER_COUNTS);
     }
 
     public function validateConfiguration(Plan $plan): void
     {
         $config = $plan->customization;
         if ($config === null) return;
-        if (!is_array($config) || array_diff(array_keys($config), array_keys(self::LIMITS)) || count($config) !== count(self::LIMITS)) {
+        if (!is_array($config)) {
+            throw new ApiException('请为流量、设备数和速度分别设置固定值或自选规则');
+        }
+        $resources = $config;
+        unset($resources[self::ADDON_KEY]);
+        if (array_diff(array_keys($resources), array_keys(self::LIMITS)) || count($resources) !== count(self::LIMITS)) {
             throw new ApiException('请为流量、设备数和速度分别设置固定值或自选规则');
         }
         foreach (self::LIMITS as $field => $limit) {
@@ -86,6 +236,7 @@ class PlanCustomizationService
                 }
             }
         }
+        $this->validateAddonConfiguration($plan, $config[self::ADDON_KEY] ?? null);
         // All fixed: preserve legacy period availability, prices and reset policies.
         if (!$this->isEnabled($plan)) return;
         $prices = array_filter($plan->prices ?? [], fn ($price) => $price !== null && $price !== '');
@@ -106,11 +257,55 @@ class PlanCustomizationService
         foreach ($maxOptions as $field => $base) {
             if ($this->mode($plan, $field) !== 'fixed') $maxOptions[$field] = $config[$field]['max'];
         }
+        // 最贵组合还要把所有可选增值组全部勾上，保证任何合法选择都不会越过 MAX_AMOUNT。
+        if ($this->hasAddonConfig($plan)) $maxOptions[self::ADDON_KEY] = $this->optionalAddonIds($plan);
         foreach ($prices as $period => $price) {
             if (!is_numeric($price) || !is_finite((float) $price) || $price <= 0) {
                 throw new ApiException('自选套餐的周期基础价必须为有限正数');
             }
             $this->calculate($plan, $period, $maxOptions);
+        }
+    }
+
+    private function validateAddonConfiguration(Plan $plan, mixed $addons): void
+    {
+        if ($addons === null || $addons === []) return;
+        if (!is_array($addons) || array_is_list($addons)) {
+            throw new ApiException('增值节点组必须以权限组 ID 为键配置');
+        }
+        if (count($addons) > self::MAX_ADDON_GROUPS) {
+            throw new ApiException('增值节点组最多 ' . self::MAX_ADDON_GROUPS . ' 个');
+        }
+        $ids = [];
+        foreach ($addons as $groupId => $rule) {
+            if (!is_numeric($groupId) || (int) $groupId != $groupId || (int) $groupId < 1) {
+                throw new ApiException('增值节点组的键必须是正整数权限组 ID');
+            }
+            if ((int) $groupId === (int) $plan->group_id) {
+                throw new ApiException('套餐的基础权限组不能再作为增值组出售');
+            }
+            if (!is_array($rule) || array_diff(array_keys($rule), ['mode', 'price', 'label'])) {
+                throw new ApiException('增值节点组配置包含未知字段');
+            }
+            $mode = $rule['mode'] ?? null;
+            if (!in_array($mode, ['included', 'optional'], true)) {
+                throw new ApiException('增值节点组必须是「包含」或「可选购」');
+            }
+            $price = $rule['price'] ?? 0;
+            if (!is_int($price) || $price < 0 || $price > self::MAX_AMOUNT) {
+                throw new ApiException('增值节点组加价（分）必须是 0 至 ' . self::MAX_AMOUNT . ' 的整数');
+            }
+            if ($mode === 'included' && $price !== 0) {
+                throw new ApiException('随套餐包含的增值节点组不能设置加价');
+            }
+            if (array_key_exists('label', $rule) && $rule['label'] !== null
+                && (!is_string($rule['label']) || mb_strlen(trim($rule['label'])) > 32)) {
+                throw new ApiException('增值节点组的展示名必须是不超过 32 字的文本');
+            }
+            $ids[] = (int) $groupId;
+        }
+        if (ServerGroup::whereIn('id', $ids)->count() !== count($ids)) {
+            throw new ApiException('增值节点组引用了不存在的权限组，请刷新后重新选择');
         }
     }
 
@@ -122,6 +317,7 @@ class PlanCustomizationService
         }
         $this->validateConfiguration($plan);
         $current = $user && (int) $user->plan_id === (int) $plan->id ? $user->plan_options : null;
+        $hasAddons = $this->hasAddonConfig($plan);
         if (!$this->isEnabled($plan)) {
             if ($options !== null) $this->validateSelection($plan, $options);
             if ($current) $this->validateSelection($plan, $current);
@@ -129,28 +325,35 @@ class PlanCustomizationService
             return ['period' => $period, 'amount' => (int) ($plan->prices[$period] * 100),
                 'options' => null, 'breakdown' => [], 'snapshot' => null];
         }
+        // 前向兼容：只认识三项资源键的旧客户端提交选择时不会带 addon_groups。
+        // 「键缺席」= 沿用用户已购的增值组，而不是「退掉」；想退掉必须显式传 []。
+        // 否则旧前端给买过增值组的用户续费会静默丢掉 10x 节点，买重置包会被判成"更改规格"。
+        if ($options !== null && $current && $hasAddons
+            && !array_key_exists(self::ADDON_KEY, $options) && array_key_exists(self::ADDON_KEY, $current)) {
+            $options[self::ADDON_KEY] = $current[self::ADDON_KEY];
+        }
         if ($period === Plan::PERIOD_RESET_TRAFFIC) {
             if (!$user || (int) $user->plan_id !== (int) $plan->id) {
                 throw new ApiException('流量重置仅可用于当前订阅');
             }
-            if ($options !== null && $options != ($current ?? $this->baseOptions($plan))) {
+            if ($options !== null && $this->normalizeSelection($options, $hasAddons)
+                != $this->normalizeSelection($current ?? $this->baseOptions($plan), $hasAddons)) {
                 throw new ApiException('流量重置不能更改套餐规格');
             }
             $options = $current;
         } elseif ($options === null && $current) {
             $options = $current;
         }
-        $selected = $options ?? $this->baseOptions($plan);
+        $selected = $this->normalizeSelection($options ?? $this->baseOptions($plan), $hasAddons);
         $this->validateSelection($plan, $selected);
         $quote = $this->calculate($plan, $period, $selected);
-        return $quote + [
-            'period' => $period, 'options' => $selected,
-            'snapshot' => [
-                'version' => 1, 'name' => $plan->name, 'group_id' => $plan->group_id,
-                'reset_traffic_method' => $plan->reset_traffic_method,
-                'options' => $selected, 'amount' => $quote['amount'], 'breakdown' => $quote['breakdown'],
-            ],
+        $snapshot = [
+            'version' => 1, 'name' => $plan->name, 'group_id' => $plan->group_id,
+            'reset_traffic_method' => $plan->reset_traffic_method,
+            'options' => $selected, 'amount' => $quote['amount'], 'breakdown' => $quote['breakdown'],
         ];
+        if ($hasAddons) $snapshot[self::GRANTED_KEY] = $this->grantedAddonGroups($plan, $selected);
+        return $quote + ['period' => $period, 'options' => $selected, 'snapshot' => $snapshot];
     }
 
     public function baseOptions(Plan $plan): array
@@ -169,12 +372,37 @@ class PlanCustomizationService
         foreach ($prices as $period => $price) {
             if ($price !== null) $prices[$period] = $this->quote($plan, $period, null, $user)['amount'] / 100;
         }
-        $result->forceFill($user->plan_options + ['prices' => $prices, 'customization' => null]);
+        // 只回填三项资源字段：addon_groups / granted_groups 不是 Plan 属性，旧客户端也不认识它们。
+        $result->forceFill(array_intersect_key($user->plan_options, self::LIMITS) + ['prices' => $prices, 'customization' => null]);
         return $result;
+    }
+
+    /**
+     * 规整一份选择：去掉派生键 granted_groups；addon_groups 去重升序。
+     * 套餐未配置增值组时不引入 addon_groups 键（保持 #26 的快照 / 报价形状逐字不变），
+     * 但客户硬塞了非空列表时保留它，让 validateSelection 明确拒绝。
+     */
+    private function normalizeSelection(array $selected, bool $withAddons): array
+    {
+        unset($selected[self::GRANTED_KEY]);
+        $raw = $selected[self::ADDON_KEY] ?? [];
+        if (is_array($raw) && array_is_list($raw)) {
+            $raw = array_values(array_unique($raw, SORT_REGULAR));
+            if ($raw === array_filter($raw, 'is_int')) sort($raw);
+        }
+        if ($withAddons || $raw !== []) {
+            $selected[self::ADDON_KEY] = $raw;
+        } else {
+            unset($selected[self::ADDON_KEY]);
+        }
+        return $selected;
     }
 
     private function validateSelection(Plan $plan, array $selected): void
     {
+        $selected = $this->normalizeSelection($selected, $this->hasAddonConfig($plan));
+        $addons = array_key_exists(self::ADDON_KEY, $selected) ? $selected[self::ADDON_KEY] : null;
+        unset($selected[self::ADDON_KEY]);
         if (array_diff(array_keys($selected), array_keys(self::LIMITS)) || count($selected) !== count(self::LIMITS)) {
             throw new ApiException('请完整选择流量、设备数和速度');
         }
@@ -190,6 +418,17 @@ class PlanCustomizationService
                 || ($mode === 'range' && ($value - $base) % $rule['step'] !== 0)
                 || ($mode === 'choices' && !in_array($value, $rule['choices'], true))) {
                 throw new ApiException('所选规格不在可售选项内，请重新选择');
+            }
+        }
+        if ($addons === null) return;
+        if (!is_array($addons) || !array_is_list($addons) || count($addons) > self::MAX_ADDON_GROUPS) {
+            throw new ApiException('增值节点选择格式错误');
+        }
+        $optional = $this->optionalAddonIds($plan);
+        foreach ($addons as $groupId) {
+            // included 的组随套餐自动生效，客户不能也不需要「选」它；不在 optional 里的一律拒绝。
+            if (!is_int($groupId) || !in_array($groupId, $optional, true)) {
+                throw new ApiException('所选增值节点不在可售选项内，请重新选择');
             }
         }
     }
@@ -231,6 +470,21 @@ class PlanCustomizationService
                 throw new ApiException('所选规格总价超过允许上限');
             }
             $breakdown[$field] = (int) $amount;
+        }
+        if ($this->hasAddonConfig($plan)) {
+            // 增值组按月定价，长周期按 baseAmount / reference 缩放 —— 年付折扣自动传导到增值组；
+            // 流量重置包不重复计费：已购的增值组随订阅存在，重置只买流量。
+            $addonAmount = 0;
+            if ($period !== Plan::PERIOD_RESET_TRAFFIC) {
+                $rules = $this->addonRules($plan);
+                foreach ($options[self::ADDON_KEY] ?? [] as $groupId) {
+                    $addonAmount += round((int) ($rules[$groupId]['price'] ?? 0) * ($baseAmount / $reference));
+                }
+            }
+            if (!is_finite((float) $addonAmount) || $addonAmount > self::MAX_AMOUNT) {
+                throw new ApiException('所选规格总价超过允许上限');
+            }
+            $breakdown[self::ADDON_KEY] = (int) $addonAmount;
         }
         $total = array_sum($breakdown);
         if ($total > self::MAX_AMOUNT) throw new ApiException('所选规格总价超过允许上限');

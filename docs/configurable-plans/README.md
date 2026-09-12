@@ -109,9 +109,12 @@ PHPUnit 使用隔离 PHP 8.4 容器和 SQLite 内存数据库，未连接生产�
 ## 流量加购包（traffic_topup）
 
 - 周期 `traffic_topup`、订单类型 `5`。顶层字段 `topup_gb`（GB）。走现有 `plan/quote → order/save → 回调 → open` 链路。
-- 单价：站点设置 `traffic_topup_price_per_gb`（分/GB，0 = 不开放）、`traffic_topup_min_gb/max_gb/presets`；
-  套餐 `customization.traffic_topup = {mode: inherit|off|custom, price_per_gb?, min_gb?, max_gb?}` 覆盖；
-  增值组规则 `topup_price_per_gb` 给持有该组的用户每 GB 加价（同一套餐买了 10x 组的人加购更贵）。
+- **套餐级配置、默认关闭、没有站点级默认**：`customization.traffic_topup = {mode: on|off, price_per_gb: 分, selection: range|choices, min_gb?, max_gb?, step_gb?, choices?: [{gb, price?}]}`。
+  每个套餐的每 GB 成本不同，全局单价要么让便宜套餐套利、要么让贵套餐卖不动。
+- **反套利下限** `topupPriceFloor(plan)` = max(月付价 ÷ 套餐 GB, 购买时自选流量的 price_per_step ÷ step)；
+  单价与档位专价折合单价都不得低于它，否则保存被拒（错误信息给出两个数）。管理端开启时把单价预填成下限。
+- 选购方式：`range` 滑杆按 step 递增，金额 = GB × 单价，choices 只作快捷按钮；`choices` 只能买列出的档，每档可专价（大包更便宜）。
+- 增值组规则 `topup_price_per_gb` 给持有该组的用户每 GB 加价（同一套餐买了 10x 组的人加购更贵）；档位模式下 = 专价 + 加价 × GB。
 - 开通：`transfer_enable += N GB` 且 `transfer_topup += N GB`（记账列）。
 - **不变量**：任何把 u/d 清零的动作（月度重置、重置包、提前周期、换套餐、新购、管理员手动重置）
   由 `TrafficResetService::performReset` / `AdvanceCycleService` 统一 `transfer_enable -= transfer_topup; transfer_topup = 0`。

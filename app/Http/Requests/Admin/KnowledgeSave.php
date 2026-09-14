@@ -20,6 +20,11 @@ class KnowledgeSave extends FormRequest
             // 知识库正文允许较长，10w 字够任何 markdown
             'body' => 'required|string|max:100000',
             'show' => 'nullable|boolean',
+            'id' => 'nullable|integer|min:1',
+            'visibility' => ['sometimes', 'required', \Illuminate\Validation\Rule::in(\App\Models\Knowledge::VISIBILITIES)],
+            'slug' => 'nullable|string|max:120',
+            'summary' => 'nullable|string|max:500',
+            'public_reviewed' => 'sometimes|boolean',
         ];
     }
 

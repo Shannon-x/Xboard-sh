@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\Schema;
 
 class CheckUpgrade extends Command
 {
-    protected $signature = 'xboard:check-upgrade {--require-legacy-rollback : Fail if pre-customization images cannot safely interpret the data}';
+    protected $signature = 'xboard:check-upgrade {--require-legacy-rollback : Fail if older images cannot safely interpret the data or knowledge permissions}';
     protected $description = '只读检查升级所需字段及旧镜像回退条件，不执行迁移或修改配置';
 
     public function handle(): int
@@ -24,6 +24,17 @@ class CheckUpgrade extends Command
                 $this->warn("{$table}.{$column} 已有自选套餐数据；旧镜像可能错误定价或丢失权益，不能仅换镜像回退。");
                 $failed = $failed || (bool) $this->option('require-legacy-rollback');
             }
+        }
+        foreach (['visibility', 'slug', 'summary', 'published_at'] as $column) {
+            if (!Schema::hasColumn('v2_knowledge', $column)) {
+                $this->error("缺少 v2_knowledge.{$column}，禁止向新知识库切换流量。");
+                $failed = true;
+            }
+        }
+        if (Schema::hasColumn('v2_knowledge', 'visibility') && DB::table('v2_knowledge')
+            ->where(fn ($query) => $query->where('visibility', '!=', 'members')->orWhereNull('visibility'))->exists()) {
+            $this->warn('知识库已有新的可见范围；旧后端只检查 show，会暴露内部或订阅专属文章。禁止混用旧实例或直接降级。');
+            $failed = $failed || (bool) $this->option('require-legacy-rollback');
         }
         $migrator = app('migrator');
         if (!$migrator->repositoryExists()) {

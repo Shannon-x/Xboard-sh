@@ -15,6 +15,11 @@ class GuestRoute
         $router->group([
             'prefix' => 'guest'
         ], function ($router) {
+            $router->group(['prefix' => 'knowledge', 'middleware' => [\App\Http\Middleware\KnowledgeNoStore::class, 'throttle:60,1']], function ($router) {
+                $router->get('/fetch', [\App\Http\Controllers\V1\Guest\KnowledgeController::class, 'fetch']);
+                $router->get('/article/{slug}', [\App\Http\Controllers\V1\Guest\KnowledgeController::class, 'article'])
+                    ->where('slug', '[a-z0-9]+(?:-[a-z0-9]+)*');
+            });
             // Plan
             $router->get('/plan/fetch', [PlanController::class, 'fetch']);
             $router->post('/plan/quote', [PlanController::class, 'quote'])

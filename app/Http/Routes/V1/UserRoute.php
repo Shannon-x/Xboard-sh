@@ -105,8 +105,10 @@ class UserRoute
             $router->get('/comm/config', [CommController::class, 'config']);
             $router->Post('/comm/getStripePublicKey', [CommController::class, 'getStripePublicKey']);
             // Knowledge
-            $router->get('/knowledge/fetch', [KnowledgeController::class, 'fetch']);
-            $router->get('/knowledge/getCategory', [KnowledgeController::class, 'getCategory']);
+            $router->get('/knowledge/fetch', [KnowledgeController::class, 'fetch'])
+                ->middleware(\App\Http\Middleware\KnowledgeNoStore::class);
+            $router->get('/knowledge/getCategory', [KnowledgeController::class, 'getCategory'])
+                ->middleware(\App\Http\Middleware\KnowledgeNoStore::class);
             // Stat
             $router->get('/stat/getTrafficLog', [StatController::class, 'getTrafficLog']);
         });

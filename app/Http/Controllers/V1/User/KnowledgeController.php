@@ -9,6 +9,7 @@ use App\Models\Knowledge;
 use App\Models\User;
 use App\Services\Plugin\HookManager;
 use App\Services\UserService;
+use App\Services\KnowledgePublicationService;
 use App\Utils\Helper;
 use Illuminate\Http\Request;
 
@@ -36,12 +37,12 @@ class KnowledgeController extends Controller
 
     private function fetchSingle(Request $request)
     {
-        $knowledge = $this->buildKnowledgeQuery()
+        $knowledge = $this->buildKnowledgeQuery($request->user())
             ->where('id', $request->input('id'))
             ->first();
 
         if (!$knowledge) {
-            return $this->fail([500, __('Article does not exist')]);
+            return $this->fail([404, __('Article does not exist')]);
         }
 
         $knowledge = $knowledge->toArray();
@@ -52,32 +53,39 @@ class KnowledgeController extends Controller
 
     private function fetchList(Request $request)
     {
-        $builder = $this->buildKnowledgeQuery(['id', 'category', 'title', 'updated_at', 'body'])
+        $builder = $this->buildKnowledgeQuery($request->user(), ['id', 'category', 'title', 'updated_at', 'body'])
             ->where('language', $request->input('language'))
             ->orderBy('sort', 'ASC');
 
-        $keyword = $request->input('keyword');
-        if ($keyword) {
-            $builder = $builder->where(function ($query) use ($keyword) {
-                $query->where('title', 'LIKE', "%{$keyword}%")
-                    ->orWhere('body', 'LIKE', "%{$keyword}%");
-            });
-        }
-
+        $keyword = trim((string) $request->input('keyword', ''));
         $knowledges = $builder->get()
             ->map(function ($knowledge) use ($request) {
                 $knowledge = $knowledge->toArray();
-                $knowledge = $this->processKnowledgeContent($knowledge, $request->user());
-                return KnowledgeResource::make($knowledge);
+                return $this->processKnowledgeContent($knowledge, $request->user());
             })
+            // Search only the content this reader may see. Matching the raw
+            // access block first would disclose private words via search hits.
+            ->filter(fn (array $article) => $keyword === '' ||
+                mb_stripos($article['title'] . ' ' . strip_tags($article['body']), $keyword) !== false)
+            ->map(fn (array $article) => KnowledgeResource::make($article))
             ->groupBy('category');
 
         return $this->success($knowledges);
     }
 
-    private function buildKnowledgeQuery(array $select = ['*'])
+    public function getCategory(Request $request)
     {
-        return Knowledge::select($select)->where('show', 1);
+        $request->validate(['language' => 'nullable|string|max:10']);
+        $query = $this->buildKnowledgeQuery($request->user());
+        if ($request->filled('language')) {
+            $query->where('language', $request->input('language'));
+        }
+        return $this->success($query->distinct()->orderBy('category')->pluck('category')->values());
+    }
+
+    private function buildKnowledgeQuery(User $user, array $select = ['*'])
+    {
+        return app(KnowledgePublicationService::class)->userQuery($user)->select($select);
     }
 
     private function processKnowledgeContent(array $knowledge, User $user): array

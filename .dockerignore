@@ -15,6 +15,7 @@
 /storage/framework/cache/*
 /storage/framework/sessions/*
 /storage/framework/views/*
+/database/knowledge-preview.sqlite*
 .phpunit.result.cache
 .idea
 .lock

@@ -206,8 +206,10 @@ class AdminRoute
 
             // Knowledge
             $router->group([
-                'prefix' => 'knowledge'
+                'prefix' => 'knowledge',
+                'middleware' => \App\Http\Middleware\KnowledgeNoStore::class,
             ], function ($router) {
+                $router->get('/capabilities', [KnowledgeController::class, 'capabilities']);
                 $router->get('/fetch', [KnowledgeController::class, 'fetch']);
                 $router->get('/getCategory', [KnowledgeController::class, 'getCategory']);
                 $router->post('/save', [KnowledgeController::class, 'save']);

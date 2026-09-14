@@ -43,3 +43,4 @@ docs/AUDIT_REPORT_*.md
 # phpunit 结果缓存与 Storage::fake 产物
 /.phpunit.cache/
 /storage/framework/testing/
+/database/knowledge-preview.sqlite*

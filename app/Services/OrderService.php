@@ -151,6 +151,15 @@ class OrderService
 
         DB::transaction(function () use ($order, $plan) {
             $this->user = User::lockForUpdate()->find($order->user_id);
+            if (isset($order->plan_snapshot['options'], $order->plan_snapshot['pricing_context'])) {
+                $currentPlan = Plan::find($order->plan_id);
+                $groups = $currentPlan ? app(PlanCustomizationService::class)->purchaseTrafficGroups(
+                    $currentPlan, $order->plan_snapshot['options'], $this->user
+                ) : null;
+                if ($groups !== ($order->plan_snapshot['pricing_context']['addon_group_ids'] ?? null)) {
+                    throw new \RuntimeException('套餐加量的线路权限已变化，中止自动开通转人工处理');
+                }
+            }
             // 已报价的旧订单按原金额履约，但不能冲掉迁移后为本周期补的授权。
             // 仅信任服务端保存的订单 ID 截止线；新订单、显式取消和换套餐不适用。
             $migration = $this->user->plan_options[PlanCustomizationService::MIGRATION_KEY] ?? null;
@@ -921,6 +930,30 @@ class OrderService
         $gb = (int) ($order->plan_snapshot['topup_gb'] ?? 0);
         if ($gb < 1) {
             throw new \RuntimeException('流量加购包开通失败：订单快照缺少加购数量');
+        }
+        if ((int) $this->user->plan_id !== (int) $order->plan_id
+            || $this->user->banned
+            || ($this->user->expired_at !== null && (int) $this->user->expired_at <= time())) {
+            throw new \RuntimeException('流量加购的订阅状态已变化，中止自动开通转人工处理');
+        }
+        $customizer = app(PlanCustomizationService::class);
+        $context = $order->plan_snapshot['pricing_context'] ?? null;
+        if (is_array($context)) {
+            if (($context['addon_group_ids'] ?? null) !== $customizer->purchaseTopupGroups($this->user)) {
+                throw new \RuntimeException('流量加购的线路权限已变化，中止自动开通转人工处理');
+            }
+        } else {
+            // Legacy pending orders have no entitlement snapshot. Do not silently
+            // deliver a cheaper ordinary pack into a now-premium subscription.
+            $plan = Plan::find($order->plan_id);
+            if ($plan) $customizer->assertTrafficPricingAvailable($plan, $this->user->addonGroupIds(), 'topup_price_per_gb');
+            $rule = $plan ? $customizer->topupRule($plan, $this->user) : null;
+            if ($rule && $rule['addon_surcharge_per_gb'] > 0) {
+                $quote = $customizer->quoteTopup($plan, $this->user, ['topup_gb' => $gb]);
+                if ($quote['amount'] > (int) ($order->plan_snapshot['amount'] ?? 0)) {
+                    throw new \RuntimeException('旧流量加购订单与当前线路价格不匹配，中止自动开通转人工处理');
+                }
+            }
         }
         $bytes = $gb * self::BYTES_PER_GB;
         $this->user->transfer_enable = (int) ($this->user->transfer_enable ?? 0) + $bytes;

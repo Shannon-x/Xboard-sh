@@ -399,7 +399,7 @@ class AddonGroupTest extends TestCase
         $this->assertSame('optional', $addons[(string) $this->premium->id]['mode']);
         $this->assertSame(500, $addons[(string) $this->premium->id]['price']);
         $this->assertSame('included', $addons[(string) $this->vip->id]['mode']);
-        $this->assertSame(['mode', 'price', 'name', 'server_count', 'topup_price_per_gb'], array_keys($addons[(string) $this->premium->id]), '不得暴露节点名称 / 地址');
+        $this->assertSame(['mode', 'price', 'name', 'server_count', 'topup_price_per_gb', 'transfer_price_per_gb', 'admin_granted'], array_keys($addons[(string) $this->premium->id]), '不得暴露节点名称 / 地址');
     }
 
     // ───────────────────────── 前向兼容：旧客户端 + 新后端 ─────────────────────────
@@ -676,7 +676,7 @@ class AddonGroupTest extends TestCase
         $addons = PlanResource::make($plan)->resolve()['customization']['addon_groups'];
         $this->assertSame('高速通道', $addons[(string) $this->premium->id]['name'], '展示名要去首尾空白');
         $this->assertSame('VIP 专线', $addons[(string) $this->vip->id]['name'], '未设展示名回落到权限组名');
-        $this->assertSame(['mode', 'price', 'name', 'server_count', 'topup_price_per_gb'], array_keys($addons[(string) $this->premium->id]), '输出键固定，前端契约不变');
+        $this->assertSame(['mode', 'price', 'name', 'server_count', 'topup_price_per_gb', 'transfer_price_per_gb', 'admin_granted'], array_keys($addons[(string) $this->premium->id]), '输出键固定，只新增差异计价字段');
         $this->assertStringNotContainsString('10x', json_encode($addons, JSON_UNESCAPED_UNICODE), '设了展示名就不能泄露内部组名');
     }
 

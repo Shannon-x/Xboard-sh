@@ -151,6 +151,20 @@ class OrderService
 
         DB::transaction(function () use ($order, $plan) {
             $this->user = User::lockForUpdate()->find($order->user_id);
+            // 已报价的旧订单按原金额履约，但不能冲掉迁移后为本周期补的授权。
+            // 仅信任服务端保存的订单 ID 截止线；新订单、显式取消和换套餐不适用。
+            $migration = $this->user->plan_options[PlanCustomizationService::MIGRATION_KEY] ?? null;
+            $preserveMigratedOptions = !$order->plan_snapshot && $plan && is_array($migration)
+                && (int) $this->user->plan_id === (int) $plan->id
+                && (int) ($migration['plan_id'] ?? 0) === (int) $plan->id
+                && (int) $order->id > 0 && (int) $order->id <= (int) ($migration['before_order_id'] ?? 0)
+                && !empty($this->user->plan_options[PlanCustomizationService::ADDON_KEY]);
+            if ($preserveMigratedOptions) {
+                $plan = app(PlanCustomizationService::class)->forGrandfatheredUser($plan, $this->user);
+                $plan = clone $plan;
+                // A subsequently purchased larger tier must not be reset to the historic base by a late old order.
+                $plan->forceFill(array_intersect_key($this->user->plan_options, PlanCustomizationService::LIMITS));
+            }
 
             if (
                 !in_array((string) $order->period, [Plan::PERIOD_RESET_TRAFFIC], true)
@@ -194,12 +208,18 @@ class OrderService
                 $this->setDeviceLimit($plan->device_limit);
             }
             if (!$isTopup && $order->period !== Plan::PERIOD_RESET_TRAFFIC) {
-                if ($order->plan_snapshot || $this->user->plan_options) {
+                if (!$preserveMigratedOptions && ($order->plan_snapshot || $this->user->plan_options)) {
                     $options = $order->plan_snapshot['options'] ?? null;
                     // granted_groups（套餐赠送 ∪ 客户已购的增值组）随快照落到用户身上：
                     // 节点可见性与节点端名单只读这个键，管理员之后改套餐配置不影响已购用户。
                     if ($options !== null && array_key_exists(PlanCustomizationService::GRANTED_KEY, $order->plan_snapshot)) {
                         $options[PlanCustomizationService::GRANTED_KEY] = $order->plan_snapshot[PlanCustomizationService::GRANTED_KEY];
+                    }
+                    if ($options !== null && isset($order->plan_snapshot[PlanCustomizationService::GRANDFATHER_KEY])) {
+                        $options[PlanCustomizationService::GRANDFATHER_KEY] = $order->plan_snapshot[PlanCustomizationService::GRANDFATHER_KEY];
+                    }
+                    if ($options !== null && isset($order->plan_snapshot[PlanCustomizationService::MIGRATION_KEY])) {
+                        $options[PlanCustomizationService::MIGRATION_KEY] = $order->plan_snapshot[PlanCustomizationService::MIGRATION_KEY];
                     }
                     $this->user->plan_options = $options;
                 }

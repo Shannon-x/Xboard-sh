@@ -142,6 +142,7 @@ class PlanCustomizationService
                 'name' => $label !== '' ? $label : $names[$groupId],
                 'server_count' => $counts[$groupId] ?? 0,
                 'topup_price_per_gb' => (int) ($rule['topup_price_per_gb'] ?? 0),
+                ...(isset($rule['topup_final_price_per_gb']) ? ['topup_final_price_per_gb' => $rule['topup_final_price_per_gb']] : []),
                 'transfer_price_per_gb' => (int) ($rule['transfer_price_per_gb'] ?? 0),
                 'admin_granted' => in_array($groupId, $user?->adminGroupIds() ?? [], true),
             ];
@@ -206,17 +207,33 @@ class PlanCustomizationService
     /** Never guess a price for a paid traffic group granted outside this plan's rules. */
     public function assertTrafficPricingAvailable(Plan $plan, array $groups, string $key): void
     {
-        $unknown = array_diff($groups, array_keys($this->addonRules($plan)));
+        $known = array_keys($this->addonRules($plan));
+        if ($key === 'topup_price_per_gb') $known = array_merge($known, array_keys($this->topupFinalGroupPrices($plan)));
+        $unknown = array_diff($groups, $known);
         if ($unknown === []) return;
         // Rare admin/migration exception, not the ordinary quote path. A rate on
         // another plan only marks a billable group; it is NOT borrowed as the price.
         foreach (Plan::query()->whereNotNull('customization')->select('customization')->cursor() as $other) {
             foreach ($unknown as $id) {
-                if ((int) ($other->customization[self::ADDON_KEY][$id][$key] ?? 0) > 0) {
+                if ((int) ($other->customization[self::ADDON_KEY][$id][$key] ?? 0) > 0
+                    || isset($this->topupFinalGroupPrices($other)[$id])) {
                     throw new ApiException('当前授权线路缺少本套餐的流量价格配置，请联系客服');
                 }
             }
         }
+    }
+
+    /** Pricing-only entries do not grant, sell or revoke node permissions. */
+    public function topupFinalGroupPrices(Plan $plan): array
+    {
+        $prices = [];
+        foreach ($this->addonRules($plan) as $id => $rule) {
+            if (isset($rule['topup_final_price_per_gb'])) $prices[$id] = (int) $rule['topup_final_price_per_gb'];
+        }
+        foreach (($plan->customization[self::TOPUP_KEY]['group_prices'] ?? []) as $id => $price) {
+            $prices[(int) $id] = (int) $price;
+        }
+        return $prices;
     }
 
     /**
@@ -263,8 +280,13 @@ class PlanCustomizationService
         // 持有增值组的用户加购更贵：每个增值组规则可设 topup_price_per_gb（分/GB），
         // 同一套餐里买了 10x 组的人与没买的人，加购单价就此拉开。按此刻生效的组算，
         // 管理员手动授予的组若也在本套餐规则里，同样计入。
-        $surcharge = $this->groupTrafficSurcharge($plan, $user?->addonGroupIds() ?? [], 'topup_price_per_gb');
-        $price = $base + $surcharge;
+        $groups = $user?->addonGroupIds() ?? [];
+        $finalPrices = array_intersect_key($this->topupFinalGroupPrices($plan), array_flip($groups));
+        // Several final-price grants are not several traffic purchases: take the
+        // highest final rate, then add surcharges of OTHER groups without overrides.
+        $overridden = $finalPrices !== [];
+        $surcharge = $this->groupTrafficSurcharge($plan, array_diff($groups, array_keys($finalPrices)), 'topup_price_per_gb');
+        $price = ($overridden ? max($finalPrices) : $base) + $surcharge;
         $selection = ($rule['selection'] ?? 'range') === 'choices' ? 'choices' : 'range';
         $tiers = [];
         foreach ((array) ($rule['choices'] ?? []) as $c) {
@@ -280,7 +302,7 @@ class PlanCustomizationService
             if ($tiers === []) return null;   // 没档位就没得买
             $choices = [];
             foreach ($tiers as $t) {
-                $amount = ($t['price'] ?? $t['gb'] * $base) + $surcharge * $t['gb'];
+                $amount = $overridden ? $t['gb'] * $price : ($t['price'] ?? $t['gb'] * $base) + $surcharge * $t['gb'];
                 $choices[] = ['gb' => $t['gb'], 'amount' => $amount, 'unit' => (int) round($amount / $t['gb'])];
             }
             return [
@@ -288,6 +310,7 @@ class PlanCustomizationService
                 'price_per_gb' => $price, 'base_price_per_gb' => $base, 'addon_surcharge_per_gb' => $surcharge,
                 'min_gb' => $choices[0]['gb'], 'max_gb' => end($choices)['gb'], 'step_gb' => 1,
                 'choices' => $choices, 'presets' => array_column($choices, 'gb'),
+                ...($overridden ? ['price_overridden' => true] : []),
             ];
         }
 
@@ -301,6 +324,7 @@ class PlanCustomizationService
             'price_per_gb' => $price, 'base_price_per_gb' => $base, 'addon_surcharge_per_gb' => $surcharge,
             'min_gb' => $min, 'max_gb' => $max, 'step_gb' => $step,
             'choices' => [], 'presets' => $presets,
+            ...($overridden ? ['price_overridden' => true] : []),
         ];
     }
 
@@ -340,6 +364,7 @@ class PlanCustomizationService
             'presets' => $rule['presets'] ?? [],
             'active_bytes' => (int) ($user->transfer_topup ?? 0),
             'valid_until' => $this->topupValidUntil($user),
+            ...(!empty($rule['price_overridden']) ? ['price_overridden' => true] : []),
         ];
     }
 
@@ -388,6 +413,7 @@ class PlanCustomizationService
             'valid_until' => $this->topupValidUntil($user),
             // Fulfilment must not apply a cheap quote to a different entitlement set.
             'pricing_context' => ['addon_group_ids' => $this->purchaseTopupGroups($user)],
+            ...(!empty($rule['price_overridden']) ? ['price_overridden' => true] : []),
         ];
         return [
             'period' => Plan::PERIOD_TRAFFIC_TOPUP, 'amount' => $amount,
@@ -406,8 +432,20 @@ class PlanCustomizationService
     {
         if ($rule === null) return;
         if (!is_array($rule) || array_is_list($rule)
-            || array_diff(array_keys($rule), ['mode', 'price_per_gb', 'min_gb', 'max_gb', 'selection', 'step_gb', 'choices'])) {
+            || array_diff(array_keys($rule), ['mode', 'price_per_gb', 'min_gb', 'max_gb', 'selection', 'step_gb', 'choices', 'group_prices'])) {
             throw new ApiException('流量加购配置包含未知字段');
+        }
+        $groupPrices = $rule['group_prices'] ?? [];
+        if (!is_array($groupPrices) || count($groupPrices) > self::MAX_ADDON_GROUPS) {
+            throw new ApiException('授权组加购最终价配置格式错误');
+        }
+        foreach ($groupPrices as $id => $price) {
+            if (!is_numeric($id) || (int) $id != $id || (int) $id < 1
+                || (int) $id === (int) $plan->group_id || !isset(self::groupNames()[(int) $id])
+                || array_key_exists((int) $id, $this->addonRules($plan))) {
+                throw new ApiException('授权组最终价须使用存在的非基础、非已配置增值组；增值组请在其自身规则内定价');
+            }
+            $this->validateTopupFinalPrice($price);
         }
         $mode = $rule['mode'] ?? 'off';
         if (!in_array($mode, ['off', 'on', 'custom', 'inherit'], true)) {
@@ -467,9 +505,17 @@ class PlanCustomizationService
         // floor this covers every combination without enumerating 2^N selections.
         foreach ($this->addonRules($plan) as $addon) {
             if ($this->mode($plan, 'transfer_enable') !== 'fixed'
+                && !isset($addon['topup_final_price_per_gb'])
                 && (int) ($addon['topup_price_per_gb'] ?? 0) < (int) ($addon['transfer_price_per_gb'] ?? 0)) {
                 throw new ApiException('增值线路的流量包每 GB 附加价不能低于套餐加量每 GB 附加价');
             }
+        }
+    }
+
+    private function validateTopupFinalPrice(mixed $price): void
+    {
+        if (!is_int($price) || $price < 1 || $price > self::MAX_AMOUNT) {
+            throw new ApiException('流量包最终单价须为 1 至 ' . self::MAX_AMOUNT . ' 的整数（分/GB）');
         }
     }
 
@@ -725,12 +771,16 @@ class PlanCustomizationService
             if ((int) $groupId === (int) $plan->group_id) {
                 throw new ApiException('套餐的基础权限组不能再作为增值组出售');
             }
-            if (!is_array($rule) || array_diff(array_keys($rule), ['mode', 'price', 'label', 'topup_price_per_gb', 'transfer_price_per_gb'])) {
+            if (!is_array($rule) || array_diff(array_keys($rule), ['mode', 'price', 'label', 'topup_price_per_gb', 'transfer_price_per_gb', 'topup_final_price_per_gb'])) {
                 throw new ApiException('增值节点组配置包含未知字段');
             }
             $topupSurcharge = $rule['topup_price_per_gb'] ?? 0;
             if (!is_int($topupSurcharge) || $topupSurcharge < 0 || $topupSurcharge > self::MAX_AMOUNT) {
                 throw new ApiException('增值节点组的加购流量加价（分/GB）必须是 0 至 ' . self::MAX_AMOUNT . ' 的整数');
+            }
+            if (isset($rule['topup_final_price_per_gb'])) {
+                $this->validateTopupFinalPrice($rule['topup_final_price_per_gb']);
+                if ($topupSurcharge !== 0) throw new ApiException('流量包最终单价与同组附加价不能同时设置');
             }
             $transferSurcharge = $rule['transfer_price_per_gb'] ?? 0;
             if (!is_int($transferSurcharge) || $transferSurcharge < 0 || $transferSurcharge > self::MAX_AMOUNT) {

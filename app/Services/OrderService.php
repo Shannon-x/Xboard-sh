@@ -102,11 +102,15 @@ class OrderService
 
             // 套餐折抵必须先于优惠券/VIP 折扣计算。优惠券只能减少剩余应付额，
             // 不能把已计算出的旧套餐剩余价值继续放大。
+            $fixedTopupPrice = $period === Plan::PERIOD_TRAFFIC_TOPUP && !empty($quote['snapshot']['price_overridden']);
+            if ($fixedTopupPrice && $couponCode) {
+                throw new ApiException('线路流量包使用固定最终价，不叠加优惠券');
+            }
             if ($couponCode && $order->total_amount > 0) {
                 $orderService->applyCoupon($couponCode);
             }
 
-            if ($order->total_amount > 0) {
+            if ($order->total_amount > 0 && !$fixedTopupPrice) {
                 $orderService->setVipDiscount($user);
             }
 
@@ -948,7 +952,7 @@ class OrderService
             $plan = Plan::find($order->plan_id);
             if ($plan) $customizer->assertTrafficPricingAvailable($plan, $this->user->addonGroupIds(), 'topup_price_per_gb');
             $rule = $plan ? $customizer->topupRule($plan, $this->user) : null;
-            if ($rule && $rule['addon_surcharge_per_gb'] > 0) {
+            if ($rule && ($rule['addon_surcharge_per_gb'] > 0 || !empty($rule['price_overridden']))) {
                 $quote = $customizer->quoteTopup($plan, $this->user, ['topup_gb' => $gb]);
                 if ($quote['amount'] > (int) ($order->plan_snapshot['amount'] ?? 0)) {
                     throw new \RuntimeException('旧流量加购订单与当前线路价格不匹配，中止自动开通转人工处理');

@@ -44,6 +44,9 @@ class PlanCustomizationService
      * 三个来源都为空 = 旧用户或套餐未配置增值组，只有基础组，行为与本功能上线前逐字相同。
      */
     public const ADDON_KEY = 'addon_groups';
+    // Server-written migration metadata. Never trust a copy supplied by a client.
+    public const GRANDFATHER_KEY = 'grandfathered_resources';
+    public const MIGRATION_KEY = 'addon_migration';
     public const GRANTED_KEY = 'granted_groups';
     public const MAX_ADDON_GROUPS = 20;
 
@@ -691,6 +694,7 @@ class PlanCustomizationService
         if ($period === Plan::PERIOD_TRAFFIC_TOPUP) {
             return $this->quoteTopup($plan, $user, $options);
         }
+        $plan = $this->forGrandfatheredUser($plan, $user);
         if (!isset(($plan->prices ?? [])[$period])) {
             throw new ApiException('此套餐不支持所选付款周期');
         }
@@ -732,7 +736,58 @@ class PlanCustomizationService
             'options' => $selected, 'amount' => $quote['amount'], 'breakdown' => $quote['breakdown'],
         ];
         if ($hasAddons) $snapshot[self::GRANTED_KEY] = $this->grantedAddonGroups($plan, $selected);
+        if ($user && (int) $user->plan_id === (int) $plan->id
+            && isset($user->plan_options[self::GRANDFATHER_KEY])) {
+            $snapshot[self::GRANDFATHER_KEY] = $user->plan_options[self::GRANDFATHER_KEY];
+        }
+        if ($user && (int) $user->plan_id === (int) $plan->id
+            && isset($user->plan_options[self::MIGRATION_KEY])) {
+            $snapshot[self::MIGRATION_KEY] = $user->plan_options[self::MIGRATION_KEY];
+        }
         return $quote + ['period' => $period, 'options' => $selected, 'snapshot' => $snapshot];
+    }
+
+    /** Preserve the owner's historic base; optional traffic tiers are priced above that base. */
+    public function forGrandfatheredUser(Plan $plan, ?User $user): Plan
+    {
+        $owned = $user?->plan_options ?? [];
+        $legacy = $owned[self::GRANDFATHER_KEY] ?? null;
+        if (!$user || (int) $user->plan_id !== (int) $plan->id || !is_array($legacy)
+            || (int) ($legacy['plan_id'] ?? 0) !== (int) $plan->id) return $plan;
+        $resources = $legacy['resources'] ?? null;
+        if (!is_array($resources) || count($resources) !== count(self::LIMITS)
+            || array_diff(array_keys($resources), array_keys(self::LIMITS))) {
+            throw new ApiException('历史规格记录不完整，请联系客服');
+        }
+        $config = $plan->customization;
+        if ($this->mode($plan, 'transfer_enable') === 'choices') {
+            $this->validateConfiguration($plan);
+        }
+        foreach (self::LIMITS as $field => $limit) {
+            $value = $resources[$field];
+            if (($value !== null && (!is_int($value) || $value < 0 || $value > $limit))
+                || !array_key_exists($field, $owned)) {
+                throw new ApiException('历史规格与当前套餐不兼容，请联系客服');
+            }
+            $mode = $this->mode($plan, $field);
+            if ($mode === 'fixed' && $owned[$field] === $value) continue;
+            if ($field === 'transfer_enable' && $mode === 'choices' && $value > 0) {
+                $choices = array_map(fn (int $choice) => $value + $choice - (int) $plan->{$field}, $config[$field]['choices']);
+                if (end($choices) > $limit || !in_array($owned[$field], $choices, true)) {
+                    throw new ApiException('历史流量档位与当前套餐不兼容，请联系客服');
+                }
+                $config[$field]['choices'] = $choices;
+                $config[$field]['max'] = end($choices);
+                continue;
+            }
+            throw new ApiException('历史规格与当前套餐不兼容，请联系客服');
+        }
+        if (($resources['transfer_enable'] ?? 0) < 1) {
+            throw new ApiException('历史流量规格无效，请联系客服');
+        }
+        $result = clone $plan;
+        $result->forceFill($resources + ['customization' => $config]);
+        return $result;
     }
 
     public function baseOptions(Plan $plan): array
@@ -745,6 +800,7 @@ class PlanCustomizationService
     /** Resource-only configurators must explicitly opt in before receiving addon fields. */
     public function forClient(Plan $plan, ?User $user, bool $includeCustomization, bool $includeAddonGroups): Plan
     {
+        $plan = $this->forGrandfatheredUser($plan, $user);
         if ($user && (!$includeCustomization || (!$includeAddonGroups && $this->hasAddonConfig($plan)))) {
             $plan = $this->forLegacyUser($plan, $user);
         }
@@ -778,7 +834,7 @@ class PlanCustomizationService
      */
     private function normalizeSelection(array $selected, bool $withAddons): array
     {
-        unset($selected[self::GRANTED_KEY]);
+        unset($selected[self::GRANTED_KEY], $selected[self::GRANDFATHER_KEY], $selected[self::MIGRATION_KEY]);
         $raw = $selected[self::ADDON_KEY] ?? [];
         if (is_array($raw) && array_is_list($raw)) {
             $raw = array_values(array_unique($raw, SORT_REGULAR));
@@ -831,13 +887,20 @@ class PlanCustomizationService
     public function validateExistingSubscribers(Plan $plan): void
     {
         $selections = User::where('plan_id', $plan->id)->whereNotNull('plan_options')->cursor()
-            ->map(fn ($user) => $user->plan_options)
+            ->map(fn ($user) => [$user->plan_options, $user])
             ->concat(Order::where('plan_id', $plan->id)->whereNotNull('plan_snapshot')
                 ->whereIn('status', [Order::STATUS_PENDING, Order::STATUS_PROCESSING])->cursor()
-                ->map(fn ($order) => $order->plan_snapshot['options']));
-        foreach ($selections as $options) {
+                ->filter(fn ($order) => isset($order->plan_snapshot['options']))
+                ->map(function ($order) use ($plan) {
+                    $owned = $order->plan_snapshot['options'];
+                    if (isset($order->plan_snapshot[self::GRANDFATHER_KEY])) {
+                        $owned[self::GRANDFATHER_KEY] = $order->plan_snapshot[self::GRANDFATHER_KEY];
+                    }
+                    return [$owned, new User(['plan_id' => $plan->id, 'plan_options' => $owned])];
+                }));
+        foreach ($selections as [$options, $user]) {
             try {
-                $this->validateSelection($plan, $options);
+                $this->validateSelection($this->forGrandfatheredUser($plan, $user), $options);
             } catch (ApiException $e) {
                 throw new ApiException('新规格会使已有用户或待处理订单无法续费，请保留其规格或新建套餐');
             }

@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Exceptions\ApiException;
 use App\Models\Plan;
+use App\Models\Order;
 use App\Models\ServerGroup;
 use App\Models\User;
 use App\Services\NodeSyncService;
@@ -36,12 +37,14 @@ class GrandfatherAddonGroup extends Command
         {--plan=* : 限定套餐 ID；默认处理所有把该组配成「可选购」的套餐}
         {--include-expired : 连已过期的订阅一并处理（默认只处理未过期的）}
         {--allow-mismatched : 规格与套餐不符的用户也一并处理（默认跳过，见下方说明）}
+        {--preserve-mismatched : 保留历史固定规格并安全续费，不降低流量、限速或设备数}
         {--revert : 反向操作：把该组从用户已购增值组里移除}
         {--dry-run : 只统计不写库}';
 
     protected $description = '把某权限组补进现有订阅者的已购增值组，使其在下一次续费时按增值组计价';
 
     private const BYTES_PER_GB = 1073741824;
+    private int $beforeOrderId = 0;
 
     public function handle(): int
     {
@@ -54,6 +57,7 @@ class GrandfatherAddonGroup extends Command
         }
         $revert = (bool) $this->option('revert');
         $dryRun = (bool) $this->option('dry-run');
+        $this->beforeOrderId = (int) Order::max('id');
 
         $plans = $this->resolvePlans($customizer, $groupId, $revert);
         if ($plans === null) {
@@ -69,7 +73,7 @@ class GrandfatherAddonGroup extends Command
         $this->line(($revert ? '撤销' : '补授权') . "：权限组 #{$groupId}「{$group->name}」"
             . ($dryRun ? '（演练，不写库）' : ''));
 
-        $totals = ['changed' => 0, 'already' => 0, 'mismatched' => 0, 'invalid' => 0];
+        $totals = ['changed' => 0, 'already' => 0, 'mismatched' => 0, 'invalid' => 0, 'preserved' => 0];
         $mismatchedIds = [];
         $invalidIds = [];
 
@@ -94,6 +98,9 @@ class GrandfatherAddonGroup extends Command
         ));
 
         $this->reportMismatched($mismatchedIds);
+        if ($totals['preserved'] > 0) {
+            $this->info('历史固定规格原样保留：' . $totals['preserved'] . '（不属于跳过用户）');
+        }
         if ($invalidIds !== []) {
             $this->warn('以下用户的现有规格选择不被套餐当前配置接受，已跳过（他们本来就续不了费，与本次操作无关）：'
                 . implode(', ', array_slice($invalidIds, 0, 20)) . (count($invalidIds) > 20 ? ' …' : ''));
@@ -154,7 +161,7 @@ class GrandfatherAddonGroup extends Command
         array &$mismatchedIds,
         array &$invalidIds,
     ): array {
-        $stats = ['changed' => 0, 'already' => 0, 'mismatched' => 0, 'invalid' => 0];
+        $stats = ['changed' => 0, 'already' => 0, 'mismatched' => 0, 'invalid' => 0, 'preserved' => 0];
         $base = $customizer->baseOptions($plan);
 
         $query = User::where('plan_id', $plan->id)->orderBy('id');
@@ -166,6 +173,7 @@ class GrandfatherAddonGroup extends Command
             $query->chunkById(500, function ($users) use ($customizer, $plan, $groupId, $revert, $dryRun, $base, &$stats, &$mismatchedIds, &$invalidIds) {
                 foreach ($users as $user) {
                     $current = is_array($user->plan_options) ? $user->plan_options : [];
+                    $legacy = $current[PlanCustomizationService::GRANDFATHER_KEY] ?? null;
                     $owned = array_values(array_unique(array_map('intval',
                         array_filter($current[PlanCustomizationService::ADDON_KEY] ?? [], 'is_numeric'))));
                     $has = in_array($groupId, $owned, true);
@@ -185,7 +193,23 @@ class GrandfatherAddonGroup extends Command
                     if (!$this->resourcesMatch($resources, $user)) {
                         $stats['mismatched']++;
                         $mismatchedIds[] = $user->id;
-                        if (!$this->option('allow-mismatched')) {
+                        if ($this->option('preserve-mismatched') && !$revert) {
+                            $bytes = (int) $user->transfer_enable - (int) ($user->transfer_topup ?? 0);
+                            if ($bytes <= 0 || $bytes % self::BYTES_PER_GB !== 0) {
+                                $stats['invalid']++;
+                                $invalidIds[] = $user->id;
+                                continue;
+                            }
+                            $resources = [
+                                'transfer_enable' => intdiv($bytes, self::BYTES_PER_GB),
+                                'device_limit' => $user->device_limit === null ? null : (int) $user->device_limit,
+                                'speed_limit' => $user->speed_limit === null ? null : (int) $user->speed_limit,
+                            ];
+                            $legacy = ['plan_id' => (int) $plan->id, 'resources' => $resources];
+                            $stats['mismatched']--;
+                            array_pop($mismatchedIds);
+                            $stats['preserved']++;
+                        } elseif (!$this->option('allow-mismatched')) {
                             continue;
                         }
                     }
@@ -195,10 +219,15 @@ class GrandfatherAddonGroup extends Command
                         : array_values(array_unique([...$owned, $groupId]));
                     sort($addons);
                     $selection = $resources + [PlanCustomizationService::ADDON_KEY => $addons];
+                    if ($legacy !== null) $selection[PlanCustomizationService::GRANDFATHER_KEY] = $legacy;
+                    $selection[PlanCustomizationService::MIGRATION_KEY] = $current[PlanCustomizationService::MIGRATION_KEY]
+                        ?? ['plan_id' => (int) $plan->id, 'before_order_id' => $this->beforeOrderId];
 
                     // 写进去的选择必须是「续费时能通过校验」的，否则等于把用户锁死在续不了费的状态。
                     try {
-                        $customizer->validateSelection($plan, $selection);
+                        $candidate = clone $user;
+                        $candidate->plan_options = $selection;
+                        $customizer->validateSelection($customizer->forGrandfatheredUser($plan, $candidate), $selection);
                     } catch (ApiException $e) {
                         $stats['invalid']++;
                         $invalidIds[] = $user->id;

@@ -7,6 +7,7 @@ use App\Contracts\PaymentInterface;
 use App\Support\FeatureFlag;
 use App\Support\PaymentGuard;
 use App\Support\PaymentMetrics;
+use Plugin\PaymentAttempt\Support\Attempts;
 
 class Plugin extends AbstractPlugin implements PaymentInterface
 {
@@ -109,10 +110,66 @@ class Plugin extends AbstractPlugin implements PaymentInterface
             return false;
         }
 
+        $outTradeNo = (string) $params['out_trade_no'];
+        $callbackNo = (string) $params['trade_no'];
+
+        // out_trade_no 可能是「支付会话号」而不是订单号（见 PaymentAttempt 插件）。
+        // 易支付的 submit.php 是「创建预下单」接口，同一个 out_trade_no 只能创建一次，
+        // 所以用订单号意味着一张单只能发起一次支付；换成每次发起都不同的会话号之后，
+        // 用户可以退出来换别的支付方式、也可以换回同一个通道重新发起。
+        $claim = $this->claimPaymentAttempt(
+            $outTradeNo,
+            $callbackNo,
+            PaymentGuard::decimalToMinor($params['money'] ?? null)
+        );
+        if ($claim !== null) {
+            return $claim;
+        }
+
         return [
-            'trade_no' => $params['out_trade_no'],
-            'callback_no' => $params['trade_no']
+            'trade_no' => $outTradeNo,
+            'callback_no' => $callbackNo
         ];
+    }
+
+    /**
+     * 交给支付会话层认领本次回调。
+     *
+     * 必须在**验签通过之后**调用：会话层不做验签，它假定调用方已经证明这条回调确实
+     * 来自本条支付配置。
+     *
+     * @return array|bool|null 非 null 即为 notify() 的最终返回值；
+     *                         null 表示「这不是会话号」，按普通订单号继续（启用会话
+     *                         之前下的单走这条路）。
+     */
+    private function claimPaymentAttempt(string $outTradeNo, string $callbackNo, ?int $paidMinor): array|bool|null
+    {
+        // 插件未安装 / 目录被移除时整条逻辑不存在，退回原行为。
+        if (!class_exists(Attempts::class)) {
+            return null;
+        }
+
+        $claim = Attempts::claim($outTradeNo, (int) $this->getConfig('id'), $callbackNo, $paidMinor);
+
+        switch ($claim['outcome'] ?? Attempts::OUTCOME_UNKNOWN) {
+            case Attempts::OUTCOME_OK:
+                return [
+                    'trade_no' => (string) $claim['trade_no'],
+                    'callback_no' => $callbackNo,
+                    // 会话号原样带回去：核心 PaymentController 用不到会忽略它，而拥有
+                    // 自有单据表的插件（余额充值）需要它来复核网关绑定与应付额。
+                    'attempt_ref' => $outTradeNo,
+                ];
+            case Attempts::OUTCOME_REJECT:
+                // 会话与回调网关对不上 —— 按验签失败拒收。
+                return false;
+            case Attempts::OUTCOME_REFUNDED:
+            case Attempts::OUTCOME_MANUAL:
+                // 已由会话层处置（退余额或告警转人工）。向网关 ACK 让它停止重投，但不开单。
+                return ['acknowledge' => true, 'custom_result' => 'success'];
+            default:
+                return null;
+        }
     }
 
     /**

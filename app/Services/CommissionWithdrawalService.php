@@ -119,6 +119,7 @@ class CommissionWithdrawalService
                 'user_id' => $locked->id,
                 'subject' => $this->ticketSubject($withdrawal),
                 'level' => 2,
+                'reply_status' => Ticket::REPLY_STATUS_PENDING,
             ]);
             $message = TicketMessage::create([
                 'user_id' => $locked->id,
@@ -407,7 +408,9 @@ class CommissionWithdrawalService
             'ticket_id' => $ticket->id,
             'message' => $message,
         ]);
-        $ticket->reply_status = $authorId === $ticket->user_id ? Ticket::STATUS_CLOSED : Ticket::STATUS_OPENING;
+        $ticket->reply_status = $authorId === $ticket->user_id
+            ? Ticket::REPLY_STATUS_PENDING
+            : Ticket::REPLY_STATUS_REPLIED;
         if ($close) {
             $ticket->status = Ticket::STATUS_CLOSED;
         }

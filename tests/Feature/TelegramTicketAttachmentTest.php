@@ -216,7 +216,7 @@ class TelegramTicketAttachmentTest extends TestCase
         $this->assertTrue($attachment->is_image);
         $this->assertSame('file_12.png', $attachment->original_name); // 名字来自 Telegram file_path，扩展名按内容归一
         Storage::disk('local')->assertExists($attachment->path);
-        $this->assertSame(Ticket::STATUS_OPENING, $ticket->fresh()->reply_status);
+        $this->assertSame(Ticket::REPLY_STATUS_REPLIED, $ticket->fresh()->reply_status);
 
         Http::assertSent(fn($req) => str_ends_with($req->url(), '/getFile') && $req['file_id'] === 'PHOTO1');
         Http::assertSent(fn($req) => str_ends_with($req->url(), '/sendMessage') && str_contains((string) $req['text'], '回复成功') && str_contains((string) $req['text'], '1 个附件'));

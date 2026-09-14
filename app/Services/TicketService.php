@@ -28,11 +28,9 @@ class TicketService
             if ($ticketMessage && $attachmentIds) {
                 (new TicketAttachmentService())->attachToMessage($attachmentIds, $ticketMessage, $userId);
             }
-            if ($userId !== $ticket->user_id) {
-                $ticket->reply_status = Ticket::STATUS_OPENING;
-            } else {
-                $ticket->reply_status = Ticket::STATUS_CLOSED;
-            }
+            $ticket->reply_status = $userId !== $ticket->user_id
+                ? Ticket::REPLY_STATUS_REPLIED
+                : Ticket::REPLY_STATUS_PENDING;
             if (!$ticketMessage || !$ticket->save()) {
                 throw new \Exception();
             }
@@ -65,11 +63,9 @@ class TicketService
             if ($ticketMessage && $attachmentIds) {
                 (new TicketAttachmentService())->attachToMessage($attachmentIds, $ticketMessage, $userId);
             }
-            if ($userId !== $ticket->user_id) {
-                $ticket->reply_status = Ticket::STATUS_OPENING;
-            } else {
-                $ticket->reply_status = Ticket::STATUS_CLOSED;
-            }
+            $ticket->reply_status = $userId !== $ticket->user_id
+                ? Ticket::REPLY_STATUS_REPLIED
+                : Ticket::REPLY_STATUS_PENDING;
             if (!$ticketMessage || !$ticket->save()) {
                 throw new ApiException('工单回复失败');
             }
@@ -96,7 +92,9 @@ class TicketService
             $ticket = Ticket::create([
                 'user_id' => $userId,
                 'subject' => $subject,
-                'level' => $level
+                'level' => $level,
+                // 不写就吃列默认值，新工单会被当成「客服已回复」
+                'reply_status' => Ticket::REPLY_STATUS_PENDING
             ]);
             if (!$ticket) {
                 throw new ApiException('工单创建失败');

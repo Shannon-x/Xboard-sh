@@ -34,6 +34,13 @@ class Ticket extends Model
 
     const STATUS_OPENING = 0;
     const STATUS_CLOSED = 1;
+
+    // reply_status 专用。历史上这里误用了上面两个 status 常量，语义正好与列注释
+    // 相反（管理员回复写 0、用户回复写 1），后台按反的语义渲染、用户前端按注释
+    // 语义渲染，于是新建工单一落库就在用户端显示「官方已回复」。
+    const REPLY_STATUS_PENDING = 0;   // 等客服回复
+    const REPLY_STATUS_REPLIED = 1;   // 客服已回复
+
     public static $statusMap = [
         self::STATUS_OPENING => '开启',
         self::STATUS_CLOSED => '关闭'

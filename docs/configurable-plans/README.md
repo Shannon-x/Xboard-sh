@@ -128,3 +128,17 @@ PHPUnit 使用隔离 PHP 8.4 容器和 SQLite 内存数据库，未连接生产�
 - `plan_options.granted_groups` 只作兼容字段：开通时仍写入，热路径不读；`getSubscribe?include_addon_groups=1` 用生效集合覆盖它。
 - 节点端名单三条索引分支：`group_id`、`plan_id`（包含组）、JSON（optional / 授予组，仅在相关组时才发）。
 - 管理端：`user/update` 接受 `admin_group_ids`；用户筛选虚拟字段 `addon_group`。
+
+## 续费助手：快捷续费可加减增值线路（2026-09-14）
+
+- `getSubscribe.renew.spec` 新增 `discount`（专属折扣 %）与 `addons[]`（套餐 `optional` 增值组：`id / name / server_count / price / selected`）。
+  `price` 已按上次周期换算（`optionalAddonPricesForPeriod`，与 `calculate()` 同一公式）；`selected` = 上次是否带了这条线路。
+  `included` 组随套餐生效、管理员授予的组用户已经有了，都不列进 `addons`。`addons` 为空 → 前端保持一键续费。
+- **下单守卫回传折前价**：`spec.amount` 是折后展示价，`spec.list_amount` 是折前价；`createFromRequest` 先比 `expected_amount` 再算 VIP 折扣，
+  所以前端必须回传 `list_amount`（此前一键续费回传折后价，VIP 用户会被"套餐价格已更新"拒单——本次一并修正）。
+- **改了线路 = 套餐变更，不是续费**：`hasChangedOptions` 把增值组差异视作改规格 → `TYPE_UPGRADE`，旧周期剩余价值折抵、新周期从付款起算。
+  这是既有规则（否则周期中途加线路会被当成叠时长拿不到节点、或去掉线路白拿剩余时间），前端必须如实告知。
+- `/user/plan/quote`（登录）响应新增 `order = {type, surplus_amount, payable, blocked}`：`OrderService::previewOrderType` 用内存 Order 干跑 `setOrderType`
+  （只读库、不落盘），前端据此在确认按钮前展示"本单按更换配置处理，剩余价值 ¥x 已折抵"，并按 `afterDiscount(payable)` 算最终应付。
+  `blocked` 非空（站点关闭套餐变更）时前端把原因当报价错误展示。游客报价与旧前端不受影响：纯新增键。
+- 自动续费不经过勾选步骤，永远按上次配置原样续（`attemptAutoRenew` 用 `spec.options`）。

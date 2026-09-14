@@ -26,6 +26,10 @@ class PlanController extends Controller
         $user = $request->user();
         (new PlanService($plan))->validatePurchase($user, $data['period']);
         $quote = app(\App\Services\PlanCustomizationService::class)->quote($plan, $data['period'], $request->planOptions(), $user);
+        // 登录用户附带下单预演（续费 / 变更、折抵额、折抵后应付）。纯新增键：旧前端不读，游客路径没有。
+        if ($user) {
+            $quote['order'] = \App\Services\OrderService::previewOrderType($user, $plan, $data['period'], $quote);
+        }
         unset($quote['snapshot']);
         return $this->success($quote);
     }

@@ -14,8 +14,13 @@ use Illuminate\Support\Facades\Log;
  * 续费助手：快捷续费（按上次配置一键下单）与自动续费（余额足够时后台代下单）。
  *
  * 两者共用同一份「续费规格」：当前套餐 + 上一笔已完成订单的周期 + 用户此刻的 plan_options
- * （含增值线路），用现有 quote 报价、扣专属折扣，不用优惠券。金额是服务端算的，
- * 前端一键续费把它当 expected_amount 回传做守卫。
+ * （含增值线路），用现有 quote 报价、扣专属折扣，不用优惠券。金额是服务端算的：
+ * amount 是给用户看的折后价，list_amount 是折前价 —— 下单守卫 expected_amount 比的是折前价
+ * （createFromRequest 里先比报价再算 VIP 折扣），所以前端回传的必须是 list_amount。
+ *
+ * 快捷续费不是"复制上一单"：套餐配了可选购增值组时，规格里附带 addons（逐项本周期价格 +
+ * 上次是否已选），用户可以在下单前加上或去掉，改了就用 /user/plan/quote 重新报价。
+ * 自动续费不走这一步，永远按上次配置原样续。
  *
  * 自动续费的硬规则：余额 ≥ 整笔应付才下单；下单后金额没归零就整体回滚，
  * 绝不扣一部分再留一个待付订单。失败通知同一到期日只发一次。
@@ -92,9 +97,37 @@ class RenewService
             'plan_id' => (int) $plan->id, 'plan_name' => (string) $plan->name,
             'period' => $period, 'period_name' => Plan::getAvailablePeriods()[$period]['name'] ?? $period,
             'options' => $quote['options'],
-            'amount' => $amount, 'list_amount' => $listAmount,
+            'amount' => $amount, 'list_amount' => $listAmount, 'discount' => $discount,
             'summary' => $this->summary($plan, $user, $quote['options']),
+            'addons' => $this->addonChoices($plan, $user, $period, $quote['options']),
         ];
+    }
+
+    /**
+     * 下单前可勾选的增值线路：套餐里 mode=optional 的组，逐项标出本周期价格（折前）与上次是否已选。
+     * included 的组随套餐自动生效、管理员手工授予的组用户已经有了，都不列进来让用户"买"。
+     * 没有可选组时返回 []，前端保持一键续费。
+     */
+    private function addonChoices(Plan $plan, User $user, string $period, ?array $options): array
+    {
+        $customizer = app(PlanCustomizationService::class);
+        $prices = $customizer->optionalAddonPricesForPeriod($plan, $period);
+        if ($prices === []) return [];
+        $selected = array_map('intval', $options[PlanCustomizationService::ADDON_KEY] ?? []);
+        $display = $customizer->addonGroupsForDisplay($plan, $user);
+        $choices = [];
+        foreach ($prices as $groupId => $price) {
+            $info = $display[(string) $groupId] ?? null;
+            if ($info === null || !empty($info['admin_granted'])) continue;
+            $choices[] = [
+                'id' => (int) $groupId,
+                'name' => $info['name'],
+                'server_count' => (int) $info['server_count'],
+                'price' => $price,
+                'selected' => in_array((int) $groupId, $selected, true),
+            ];
+        }
+        return $choices;
     }
 
     /** 自动续费开关状态与余额是否够下一次续费。 */

@@ -144,6 +144,112 @@ class AutoRenewTest extends TestCase
         $this->assertSame(1, (int) $user->fresh()->auto_renew);
     }
 
+    // ───────────────────────── 快捷续费：增值线路可加可减 ─────────────────────────
+
+    public function test_spec_lists_optional_addons_with_period_price_and_last_selection(): void
+    {
+        $plan = $this->addonPlan();
+        $with = $this->user($plan, ['plan_options' => [
+            'transfer_enable' => 100, 'device_limit' => 2, 'speed_limit' => 100,
+            'addon_groups' => [$this->premium->id], 'granted_groups' => [$this->premium->id],
+        ]]);
+        $this->completedOrder($with, $plan, 'yearly');
+        $spec = (new RenewService())->resolveSpec($with);
+        $this->assertSame([[
+            'id' => $this->premium->id, 'name' => '高速通道', 'server_count' => 0,
+            'price' => 5000, 'selected' => true,   // ¥5/月 × 10（年付 ¥100 / 月付 ¥10）
+        ]], $spec['addons']);
+        $this->assertSame(0, $spec['discount']);
+
+        $without = $this->user($plan);   // 上次没买：列出来但未选中，月付原价
+        $this->assertSame([['id' => $this->premium->id, 'name' => '高速通道', 'server_count' => 0, 'price' => 500, 'selected' => false]],
+            (new RenewService())->resolveSpec($without)['addons']);
+
+        // 管理员手工授予的组用户已经有了，不再列出来卖；included 的组也不可选
+        $granted = $this->user($plan, ['admin_group_ids' => [$this->premium->id]]);
+        $this->assertSame([], (new RenewService())->resolveSpec($granted)['addons']);
+        $includedPlan = $this->plan(['customization' => [
+            'transfer_enable' => ['mode' => 'fixed'], 'device_limit' => ['mode' => 'fixed'], 'speed_limit' => ['mode' => 'fixed'],
+            'addon_groups' => [(string) $this->premium->id => ['mode' => 'included', 'price' => 0]],
+        ]]);
+        $this->assertSame([], (new RenewService())->resolveSpec($this->user($includedPlan))['addons']);
+        $this->assertSame([], (new RenewService())->resolveSpec($this->user($this->plan()))['addons'], '没配增值组：空');
+    }
+
+    public function test_quick_renew_can_drop_or_add_addons_before_ordering(): void
+    {
+        $plan = $this->addonPlan();
+        // 上次带高速通道，这次去掉：报价 ¥10，下单守卫用报价金额
+        $drop = $this->user($plan, ['plan_options' => [
+            'transfer_enable' => 100, 'device_limit' => 2, 'speed_limit' => 100,
+            'addon_groups' => [$this->premium->id], 'granted_groups' => [$this->premium->id],
+        ]]);
+        $this->completedOrder($drop, $plan, 'monthly');
+        Sanctum::actingAs($drop);
+        $spec = $this->getJson('/api/v1/user/getSubscribe')->assertOk()->json('data.renew.spec');
+        $this->assertSame(1500, $spec['list_amount']);
+        $options = ['transfer_enable' => 100, 'device_limit' => 2, 'speed_limit' => 100, 'addon_groups' => []];
+        $quote = $this->postJson('/api/v1/user/plan/quote', ['plan_id' => $plan->id, 'period' => 'monthly', 'options' => $options])
+            ->assertOk()->json('data');
+        $this->assertSame(1000, $quote['amount'], '报价是折前价，下单守卫比的就是它');
+        // 增值线路变了就不是"叠时长"而是套餐变更：报价里预演出类型与折抵，前端据此把话讲清楚
+        $this->assertSame(Order::TYPE_UPGRADE, $quote['order']['type']);
+        $this->assertNull($quote['order']['blocked']);
+        $surplus = $quote['order']['surplus_amount'];
+        $this->assertGreaterThan(0, $surplus, '还剩 20 小时、流量没用：有剩余价值可折抵');
+        $this->assertLessThan(1000, $surplus);
+        $this->assertSame(1000 - $surplus, $quote['order']['payable']);
+        $tradeNo = $this->postJson('/api/v1/user/order/save', [
+            'plan_id' => $plan->id, 'period' => 'monthly', 'options' => $options, 'expected_amount' => 1000,
+        ])->assertOk()->json('data');
+        $order = Order::where('trade_no', $tradeNo)->firstOrFail();
+        $this->assertSame(Order::TYPE_UPGRADE, (int) $order->type);
+        $this->assertSame($surplus, (int) $order->surplus_amount, '真下单的折抵与预演一致');
+        $this->assertSame(1000 - $surplus, (int) $order->total_amount);
+        $this->assertSame([], $order->plan_snapshot['granted_groups'], '快照里没有高速通道：付款后会被收回');
+
+        // 上次没买，这次加上；VIP 9 折用户：展示折后价，守卫回传折前价；折扣在折抵之后算
+        $add = $this->user($plan, ['discount' => 10]);
+        $this->completedOrder($add, $plan, 'monthly');
+        Sanctum::actingAs($add);
+        $spec = $this->getJson('/api/v1/user/getSubscribe')->assertOk()->json('data.renew.spec');
+        $this->assertSame(10, $spec['discount']);
+        $this->assertSame(900, $spec['amount']);
+        $this->assertSame(1000, $spec['list_amount']);
+        $this->assertFalse($spec['addons'][0]['selected']);
+        $options['addon_groups'] = [$this->premium->id];
+        $quote = $this->postJson('/api/v1/user/plan/quote', ['plan_id' => $plan->id, 'period' => 'monthly', 'options' => $options])
+            ->assertOk()->json('data');
+        $this->assertSame(1500, $quote['amount']);
+        $this->assertSame(Order::TYPE_UPGRADE, $quote['order']['type']);
+        $payable = $quote['order']['payable'];
+        $this->assertSame(1500 - $quote['order']['surplus_amount'], $payable);
+        $rejected = $this->postJson('/api/v1/user/order/save', [
+            'plan_id' => $plan->id, 'period' => 'monthly', 'options' => $options, 'expected_amount' => 1350,
+        ]);
+        $this->assertNotSame(200, $rejected->status(), '折后价当守卫会被拒：前端必须回传折前的报价金额');
+        $this->assertSame(0, Order::where('user_id', $add->id)->where('status', Order::STATUS_PENDING)->count());
+        $tradeNo = $this->postJson('/api/v1/user/order/save', [
+            'plan_id' => $plan->id, 'period' => 'monthly', 'options' => $options, 'expected_amount' => 1500,
+        ])->assertOk()->json('data');
+        $order = Order::where('trade_no', $tradeNo)->firstOrFail();
+        $this->assertSame($payable - (int) round($payable * 0.1), (int) $order->total_amount, '折抵后再打 9 折');
+        $this->assertSame([$this->premium->id], $order->plan_snapshot['granted_groups']);
+
+        // 不改线路：还是普通续费，叠时长、不折抵
+        $same = $this->user($plan, ['plan_options' => [
+            'transfer_enable' => 100, 'device_limit' => 2, 'speed_limit' => 100,
+            'addon_groups' => [$this->premium->id], 'granted_groups' => [$this->premium->id],
+        ]]);
+        $this->completedOrder($same, $plan, 'monthly');
+        Sanctum::actingAs($same);
+        $quote = $this->postJson('/api/v1/user/plan/quote', ['plan_id' => $plan->id, 'period' => 'monthly', 'options' => $options])
+            ->assertOk()->json('data');
+        $this->assertSame(Order::TYPE_RENEWAL, $quote['order']['type']);
+        $this->assertSame(0, $quote['order']['surplus_amount']);
+        $this->assertSame(1500, $quote['order']['payable']);
+    }
+
     // ───────────────────────── 自动续费 ─────────────────────────
 
     public function test_renews_from_balance_and_marks_the_order(): void

@@ -109,6 +109,25 @@ class PlanCustomizationService
         return array_keys(array_filter($this->addonRules($plan), fn ($rule) => ($rule['mode'] ?? null) === 'optional'));
     }
 
+    /**
+     * 可选增值组换算到某个付款周期的价格（分）：[group_id => cents]。
+     * 增值组按月定价，长周期按 baseAmount / reference 缩放 —— 与 calculate() 同一条公式，
+     * 续费助手拿它给用户逐项标价，勾选后的总价仍以 quote() 为准。
+     */
+    public function optionalAddonPricesForPeriod(Plan $plan, string $period): array
+    {
+        $period = PlanService::getPeriodKey($period);
+        $baseAmount = (int) round(($plan->prices[$period] ?? 0) * 100);
+        $reference = (int) round(($plan->prices[Plan::PERIOD_MONTHLY] ?? $plan->prices[Plan::PERIOD_ONETIME] ?? 0) * 100);
+        if ($baseAmount < 1 || $reference < 1) return [];
+        $prices = [];
+        foreach ($this->addonRules($plan) as $groupId => $rule) {
+            if (($rule['mode'] ?? null) !== 'optional') continue;
+            $prices[$groupId] = (int) round((int) ($rule['price'] ?? 0) * ($baseAmount / $reference));
+        }
+        return $prices;
+    }
+
     /** included ∪ 已勾选的 optional，升序去重。写进快照与 plan_options.granted_groups。 */
     public function grantedAddonGroups(Plan $plan, array $selected): array
     {

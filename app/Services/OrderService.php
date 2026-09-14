@@ -289,6 +289,35 @@ class OrderService
         }
     }
 
+    /**
+     * 下单前预演 setOrderType：这张报价真下单会被判成续费还是套餐变更、折抵多少、折抵后应付多少。
+     * 只在内存里建一个 Order 跑同一段逻辑，不落库、不锁行。续费助手让用户勾改增值线路时靠它
+     * 把"改了线路 = 重开周期 + 折抵剩余价值"如实摆给用户看，而不是到收银台才发现金额变了。
+     * VIP 折扣在折抵之后才算（与 createFromRequest 顺序一致），所以 payable 是折抵后、折扣前。
+     *
+     * @return array{type: int|null, surplus_amount: int, payable: int, blocked: string|null}
+     */
+    public static function previewOrderType(User $user, Plan $plan, string $period, array $quote): array
+    {
+        $order = new Order([
+            'user_id' => $user->id, 'plan_id' => $plan->id,
+            'period' => PlanService::getPeriodKey($period),
+            'total_amount' => (int) $quote['amount'],
+            ...(!empty($quote['snapshot']) ? ['plan_snapshot' => $quote['snapshot']] : []),
+        ]);
+        try {
+            (new self($order))->setOrderType($user);
+        } catch (ApiException $e) {
+            return ['type' => null, 'surplus_amount' => 0, 'payable' => (int) $quote['amount'], 'blocked' => $e->getMessage()];
+        }
+        return [
+            'type' => (int) $order->type,
+            'surplus_amount' => (int) ($order->surplus_amount ?? 0),
+            'payable' => (int) $order->total_amount,
+            'blocked' => null,
+        ];
+    }
+
     private function hasChangedOptions(User $user): bool
     {
         $selected = $this->order->plan_snapshot['options'] ?? null;

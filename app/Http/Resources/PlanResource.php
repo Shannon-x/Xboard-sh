@@ -36,7 +36,7 @@ class PlanResource extends JsonResource
         if ($customization !== null && $customizer->hasAddonConfig($this->resource)) {
             // 用户端没有分组接口：把组名与节点数内嵌进来，未购买者也只看得到「这一组有几个节点」，
             // 不暴露任何具体节点名称 / 地址。
-            $customization[\App\Services\PlanCustomizationService::ADDON_KEY] = $customizer->addonGroupsForDisplay($this->resource);
+            $customization[\App\Services\PlanCustomizationService::ADDON_KEY] = $customizer->addonGroupsForDisplay($this->resource, $request->user());
         }
         return [
             'id' => $this->resource['id'],

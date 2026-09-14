@@ -38,7 +38,7 @@ class PlanCustomizationService
      *   ② plan_options.addon_groups —— 客户勾选并付费的 optional 组。开通时快照写入，
      *      续费 / 重置时原样带回重新报价；管理员事后改价不影响已购用户。
      *   ③ v2_user.admin_group_ids —— 管理员在用户编辑里手动授予的组（赔偿 / 工单），
-     *      与套餐无关、不参与报价、换套餐也保留，只能由管理员撤销。
+     *      换套餐也保留，只能由管理员撤销；不收固定线路费，但额外流量按该组的流量差价计费。
      * plan_options.granted_groups 仍会在开通时写入（included ∪ 已购），但只作为兼容字段：
      * 热路径不再读它；getSubscribe 下发时会用「此刻生效」的集合覆盖它，旧前端照常工作。
      * 三个来源都为空 = 旧用户或套餐未配置增值组，只有基础组，行为与本功能上线前逐字相同。
@@ -122,7 +122,7 @@ class PlanCustomizationService
      * 给前端展示用的增值组：规则 + 组名 + 节点数。用户端没有分组接口，只能在套餐里内嵌。
      * 不含 group_id 以外的任何节点细节（名称 / 地址），未购买的客户只看得到「这一组有几个节点」。
      */
-    public function addonGroupsForDisplay(Plan $plan): array
+    public function addonGroupsForDisplay(Plan $plan, ?User $user = null): array
     {
         $rules = $this->addonRules($plan);
         if ($rules === []) return [];
@@ -142,6 +142,8 @@ class PlanCustomizationService
                 'name' => $label !== '' ? $label : $names[$groupId],
                 'server_count' => $counts[$groupId] ?? 0,
                 'topup_price_per_gb' => (int) ($rule['topup_price_per_gb'] ?? 0),
+                'transfer_price_per_gb' => (int) ($rule['transfer_price_per_gb'] ?? 0),
+                'admin_granted' => in_array($groupId, $user?->adminGroupIds() ?? [], true),
             ];
         }
         return $display;
@@ -173,6 +175,49 @@ class PlanCustomizationService
     }
 
     // ───────────────────────── 流量加购包 ─────────────────────────
+
+    /** Monthly cents per panel GB, never supplier traffic or post-multiplier traffic. */
+    public function transferUnitPrice(Plan $plan, array $groups = []): float
+    {
+        $rule = $plan->customization['transfer_enable'] ?? [];
+        $base = $this->mode($plan, 'transfer_enable') !== 'fixed' && (int) ($rule['step'] ?? 0) > 0
+            ? (int) ($rule['price_per_step'] ?? 0) / (int) $rule['step'] : 0;
+        return $base + $this->groupTrafficSurcharge($plan, $groups, 'transfer_price_per_gb');
+    }
+
+    private function groupTrafficSurcharge(Plan $plan, array $groups, string $key): int
+    {
+        $rules = $this->addonRules($plan);
+        $total = 0;
+        foreach (array_unique(array_map('intval', $groups)) as $id) {
+            $total += (int) ($rules[$id][$key] ?? 0);
+        }
+        return $total;
+    }
+
+    /** Future purchase permissions: selected + included + admin, not old optional selections. */
+    public function purchaseTrafficGroups(Plan $plan, array $options, ?User $user = null): array
+    {
+        $ids = array_values(array_unique(array_merge($this->grantedAddonGroups($plan, $options), $user?->adminGroupIds() ?? [])));
+        sort($ids);
+        return $ids;
+    }
+
+    /** Never guess a price for a paid traffic group granted outside this plan's rules. */
+    public function assertTrafficPricingAvailable(Plan $plan, array $groups, string $key): void
+    {
+        $unknown = array_diff($groups, array_keys($this->addonRules($plan)));
+        if ($unknown === []) return;
+        // Rare admin/migration exception, not the ordinary quote path. A rate on
+        // another plan only marks a billable group; it is NOT borrowed as the price.
+        foreach (Plan::query()->whereNotNull('customization')->select('customization')->cursor() as $other) {
+            foreach ($unknown as $id) {
+                if ((int) ($other->customization[self::ADDON_KEY][$id][$key] ?? 0) > 0) {
+                    throw new ApiException('当前授权线路缺少本套餐的流量价格配置，请联系客服');
+                }
+            }
+        }
+    }
 
     /**
      * 套餐自身每 GB 的到手价（分）—— 加购单价的硬下限。
@@ -218,13 +263,7 @@ class PlanCustomizationService
         // 持有增值组的用户加购更贵：每个增值组规则可设 topup_price_per_gb（分/GB），
         // 同一套餐里买了 10x 组的人与没买的人，加购单价就此拉开。按此刻生效的组算，
         // 管理员手动授予的组若也在本套餐规则里，同样计入。
-        $surcharge = 0;
-        if ($user) {
-            $rules = $this->addonRules($plan);
-            foreach ($user->addonGroupIds() as $gid) {
-                $surcharge += (int) ($rules[$gid]['topup_price_per_gb'] ?? 0);
-            }
-        }
+        $surcharge = $this->groupTrafficSurcharge($plan, $user?->addonGroupIds() ?? [], 'topup_price_per_gb');
         $price = $base + $surcharge;
         $selection = ($rule['selection'] ?? 'range') === 'choices' ? 'choices' : 'range';
         $tiers = [];
@@ -278,9 +317,18 @@ class PlanCustomizationService
     public function topupSummary(?Plan $plan, User $user): array
     {
         $rule = $plan ? $this->topupRule($plan, $user) : null;
+        $pricingError = null;
+        if ($plan && $rule) {
+            try {
+                $this->assertTrafficPricingAvailable($plan, $user->addonGroupIds(), 'topup_price_per_gb');
+            } catch (ApiException $e) {
+                $pricingError = $e->getMessage();
+            }
+        }
         $active = ($user->expired_at === null || (int) $user->expired_at > time()) && !$user->banned;
         return [
-            'enabled' => $rule !== null && $active,
+            'enabled' => $rule !== null && $active && $pricingError === null,
+            ...($pricingError !== null ? ['unavailable_reason' => $pricingError] : []),
             'price_per_gb' => $rule['price_per_gb'] ?? 0,
             'base_price_per_gb' => $rule['base_price_per_gb'] ?? 0,
             'addon_surcharge_per_gb' => $rule['addon_surcharge_per_gb'] ?? 0,
@@ -307,6 +355,7 @@ class PlanCustomizationService
         if ($user->banned || ($user->expired_at !== null && (int) $user->expired_at <= time())) {
             throw new ApiException('订阅已到期，请先续费再加购流量');
         }
+        $this->assertTrafficPricingAvailable($plan, $user->addonGroupIds(), 'topup_price_per_gb');
         $rule = $this->topupRule($plan, $user);
         if ($rule === null) {
             throw new ApiException('当前套餐不支持加购流量');
@@ -337,11 +386,20 @@ class PlanCustomizationService
             'topup_gb' => $gb, 'price_per_gb' => (int) round($amount / $gb), 'amount' => $amount,
             'selection' => $rule['selection'],
             'valid_until' => $this->topupValidUntil($user),
+            // Fulfilment must not apply a cheap quote to a different entitlement set.
+            'pricing_context' => ['addon_group_ids' => $this->purchaseTopupGroups($user)],
         ];
         return [
             'period' => Plan::PERIOD_TRAFFIC_TOPUP, 'amount' => $amount,
             'options' => ['topup_gb' => $gb], 'breakdown' => [self::TOPUP_KEY => $amount], 'snapshot' => $snapshot,
         ];
+    }
+
+    public function purchaseTopupGroups(User $user): array
+    {
+        $ids = array_values(array_unique(array_map('intval', $user->addonGroupIds())));
+        sort($ids);
+        return $ids;
     }
 
     private function validateTopupConfiguration(Plan $plan, mixed $rule): void
@@ -404,6 +462,14 @@ class PlanCustomizationService
         }
         if ($selection === 'choices' && empty($choices)) {
             throw new ApiException('指定档位模式至少要填一档');
+        }
+        // Validate each incremental surcharge independently. Together with the base
+        // floor this covers every combination without enumerating 2^N selections.
+        foreach ($this->addonRules($plan) as $addon) {
+            if ($this->mode($plan, 'transfer_enable') !== 'fixed'
+                && (int) ($addon['topup_price_per_gb'] ?? 0) < (int) ($addon['transfer_price_per_gb'] ?? 0)) {
+                throw new ApiException('增值线路的流量包每 GB 附加价不能低于套餐加量每 GB 附加价');
+            }
         }
     }
 
@@ -659,12 +725,16 @@ class PlanCustomizationService
             if ((int) $groupId === (int) $plan->group_id) {
                 throw new ApiException('套餐的基础权限组不能再作为增值组出售');
             }
-            if (!is_array($rule) || array_diff(array_keys($rule), ['mode', 'price', 'label', 'topup_price_per_gb'])) {
+            if (!is_array($rule) || array_diff(array_keys($rule), ['mode', 'price', 'label', 'topup_price_per_gb', 'transfer_price_per_gb'])) {
                 throw new ApiException('增值节点组配置包含未知字段');
             }
             $topupSurcharge = $rule['topup_price_per_gb'] ?? 0;
             if (!is_int($topupSurcharge) || $topupSurcharge < 0 || $topupSurcharge > self::MAX_AMOUNT) {
                 throw new ApiException('增值节点组的加购流量加价（分/GB）必须是 0 至 ' . self::MAX_AMOUNT . ' 的整数');
+            }
+            $transferSurcharge = $rule['transfer_price_per_gb'] ?? 0;
+            if (!is_int($transferSurcharge) || $transferSurcharge < 0 || $transferSurcharge > self::MAX_AMOUNT) {
+                throw new ApiException('增值节点组的套餐加量加价（分/GB）必须是 0 至 ' . self::MAX_AMOUNT . ' 的整数');
             }
             $mode = $rule['mode'] ?? null;
             if (!in_array($mode, ['included', 'optional'], true)) {
@@ -729,12 +799,16 @@ class PlanCustomizationService
         }
         $selected = $this->normalizeSelection($options ?? $this->baseOptions($plan), $hasAddons);
         $this->validateSelection($plan, $selected);
-        $quote = $this->calculate($plan, $period, $selected);
+        $quote = $this->calculate($plan, $period, $selected, $user);
         $snapshot = [
             'version' => 1, 'name' => $plan->name, 'group_id' => $plan->group_id,
             'reset_traffic_method' => $plan->reset_traffic_method,
             'options' => $selected, 'amount' => $quote['amount'], 'breakdown' => $quote['breakdown'],
         ];
+        if ($selected['transfer_enable'] > (int) $plan->transfer_enable
+            && array_filter($this->addonRules($plan), fn ($rule) => (int) ($rule['transfer_price_per_gb'] ?? 0) > 0)) {
+            $snapshot['pricing_context'] = ['addon_group_ids' => $this->purchaseTrafficGroups($plan, $selected, $user)];
+        }
         if ($hasAddons) $snapshot[self::GRANTED_KEY] = $this->grantedAddonGroups($plan, $selected);
         if ($user && (int) $user->plan_id === (int) $plan->id
             && isset($user->plan_options[self::GRANDFATHER_KEY])) {
@@ -907,7 +981,7 @@ class PlanCustomizationService
         }
     }
 
-    private function calculate(Plan $plan, string $period, array $options): array
+    private function calculate(Plan $plan, string $period, array $options, ?User $user = null): array
     {
         $baseAmount = (int) round($plan->prices[$period] * 100);
         $reference = (int) round(($plan->prices[Plan::PERIOD_MONTHLY] ?? $plan->prices[Plan::PERIOD_ONETIME]) * 100);
@@ -922,8 +996,14 @@ class PlanCustomizationService
             }
             $rule = $plan->customization[$field];
             // Discrete choices can use fractional pricing units, e.g. 250 GB at a per-100-GB rate.
+            if ($field === 'transfer_enable' && $options[$field] > (int) $plan->{$field}) {
+                $this->assertTrafficPricingAvailable($plan, $this->purchaseTrafficGroups($plan, $options, $user), 'transfer_price_per_gb');
+            }
             $units = ($options[$field] - (int) $plan->{$field}) / $rule['step'];
-            $amount = round($units * $rule['price_per_step'] * ($baseAmount / $reference));
+            $unitPrice = $field === 'transfer_enable'
+                ? $this->transferUnitPrice($plan, $this->purchaseTrafficGroups($plan, $options, $user)) * $rule['step']
+                : $rule['price_per_step'];
+            $amount = round($units * $unitPrice * ($baseAmount / $reference));
             if (!is_finite((float) $amount) || $amount > self::MAX_AMOUNT) {
                 throw new ApiException('所选规格总价超过允许上限');
             }

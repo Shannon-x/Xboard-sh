@@ -66,11 +66,43 @@ class StatUserJob implements ShouldQueue
         $driver = config('database.default');
         if ($driver === 'sqlite') {
             $this->processUserStatForSqlite($uid, $v, $recordAt);
-        } elseif ($driver === 'pgsql') {
+            return;
+        }
+
+        // 先 UPDATE 已有行，只有当天该 (用户, 倍率) 首次上报才走 upsert。
+        // MySQL(innodb_autoinc_lock_mode=2) 的 INSERT ... ON DUPLICATE KEY UPDATE 与 PG 的
+        // ON CONFLICT 每执行一次都会消耗一个自增 id（哪怕最终走的是更新）。实测每天烧 ~1600 万个，
+        // 2026-09-15 把 int 主键烧到 2147483647 后，所有新行撞主键被累加到同一行上。
+        if ($this->incrementExistingUserStat($uid, $v, $recordAt)) {
+            return;
+        }
+
+        if ($driver === 'pgsql') {
             $this->processUserStatForPostgres($uid, $v, $recordAt);
         } else {
             $this->processUserStatForOtherDatabases($uid, $v, $recordAt);
         }
+    }
+
+    protected function incrementExistingUserStat(int $uid, array $v, int $recordAt): bool
+    {
+        $u = intval($v[0] * $this->server['rate']);
+        $d = intval($v[1] * $this->server['rate']);
+
+        // 返回的是"实际改动行数"：增量为 0 且同一秒内重复写时会返回 0，
+        // 此时落到 upsert 只是多加一次 0，结果不变。
+        $affected = StatUser::where([
+            'user_id' => $uid,
+            'server_rate' => $this->server['rate'],
+            'record_at' => $recordAt,
+            'record_type' => $this->recordType,
+        ])->toBase()->update([
+            'u' => DB::raw('u + ' . $u),
+            'd' => DB::raw('d + ' . $d),
+            'updated_at' => time(),
+        ]);
+
+        return $affected > 0;
     }
 
     protected function processUserStatForSqlite(int $uid, array $v, int $recordAt): void

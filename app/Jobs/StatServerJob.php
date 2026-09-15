@@ -70,11 +70,35 @@ class StatServerJob implements ShouldQueue
         $driver = config('database.default');
         if ($driver === 'sqlite') {
             $this->processServerStatForSqlite($u, $d, $recordAt);
-        } elseif ($driver === 'pgsql') {
+            return;
+        }
+
+        // 先 UPDATE 已有行，避免 upsert 每次都消耗自增 id（见 StatUserJob::processUserStat）。
+        if ($this->incrementExistingServerStat($u, $d, $recordAt)) {
+            return;
+        }
+
+        if ($driver === 'pgsql') {
             $this->processServerStatForPostgres($u, $d, $recordAt);
         } else {
             $this->processServerStatForOtherDatabases($u, $d, $recordAt);
         }
+    }
+
+    protected function incrementExistingServerStat(int $u, int $d, int $recordAt): bool
+    {
+        $affected = StatServer::where([
+            'record_at' => $recordAt,
+            'server_id' => $this->server['id'],
+            'server_type' => $this->protocol,
+            'record_type' => $this->recordType,
+        ])->toBase()->update([
+            'u' => DB::raw('u + ' . $u),
+            'd' => DB::raw('d + ' . $d),
+            'updated_at' => time(),
+        ]);
+
+        return $affected > 0;
     }
 
     protected function processServerStatForSqlite(int $u, int $d, int $recordAt): void

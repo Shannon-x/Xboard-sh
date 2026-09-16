@@ -25,6 +25,9 @@ class StatUserJob implements ShouldQueue
     public $timeout = 60;
     public $maxExceptions = 3;
 
+    /** 单条批量语句覆盖的用户数上限 */
+    private const BATCH_SIZE = 500;
+
     /**
      * Calculate the number of seconds to wait before retrying the job.
      */
@@ -51,6 +54,17 @@ class StatUserJob implements ShouldQueue
             ? strtotime(date('Y-m-01'))
             : strtotime(date('Y-m-d'));
 
+        // MySQL 走批量路径：一次上报的整个 chunk 合并成 2~3 条语句，而不是每个用户一条。
+        // 逐用户 UPDATE 时每条语句自成一个事务，binlog 里 408B 中有 272B（67%）是事务信封
+        // （Anonymous_GTID + BEGIN + Table_map + Xid），真正的行变更只有 136B。
+        // 实测 26,145 事务/分钟 → v2_stat_user 独占 14.3 GB/天 binlog。
+        // 同一个 chunk 里 TrafficFetchJob 早已用 CASE WHEN 批量化（3,082 事务/分钟），
+        // StatServerJob 每次推送只写 1 行（312 事务/分钟），只有这里还是逐用户。
+        if (config('database.default') === 'mysql') {
+            $this->processChunk($recordAt);
+            return;
+        }
+
         foreach ($this->data as $uid => $v) {
             try {
                 $this->processUserStat($uid, $v, $recordAt);
@@ -59,6 +73,130 @@ class StatUserJob implements ShouldQueue
                 throw $e;
             }
         }
+    }
+
+    /**
+     * 批量累加整个 chunk 的用户统计（MySQL）。
+     *
+     * 同一个 chunk 共享 (server_rate, record_at, record_type)，只有 user_id 不同，
+     * 因此可以先查出当天已存在的行做一条 CASE WHEN 批量 UPDATE，剩下的首次上报再走一次
+     * 批量 upsert。upsert 仍然只覆盖真正缺失的行，保留「不让 upsert 空烧自增 id」的修复
+     * （见 processUserStat 的注释与 2026-09-15 主键耗尽事故）。
+     */
+    protected function processChunk(int $recordAt): void
+    {
+        $rate = $this->server['rate'];
+
+        $deltas = [];
+        foreach ($this->data as $uid => $v) {
+            $uid = (int) $uid;
+            if ($uid <= 0) {
+                continue;
+            }
+            $deltas[$uid] = [intval($v[0] * $rate), intval($v[1] * $rate)];
+        }
+        if (!$deltas) {
+            return;
+        }
+
+        // 按 user_id 排序：并发的多个节点上报同一批用户时保持一致的加锁顺序，避免死锁。
+        ksort($deltas);
+
+        try {
+            $existing = StatUser::query()
+                ->where('server_rate', $rate)
+                ->where('record_at', $recordAt)
+                ->where('record_type', $this->recordType)
+                ->whereIn('user_id', array_keys($deltas))
+                ->toBase()
+                ->pluck('user_id')
+                ->all();
+            $existing = array_flip(array_map('intval', $existing));
+
+            $update = array_intersect_key($deltas, $existing);
+            $insert = array_diff_key($deltas, $existing);
+
+            // 单条语句最多覆盖 500 个用户：CASE WHEN 分支太多会让 SQL 文本和解析开销反超收益。
+            foreach (array_chunk($update, self::BATCH_SIZE, true) as $slice) {
+                $this->bulkIncrement($slice, $recordAt);
+            }
+            foreach (array_chunk($insert, self::BATCH_SIZE, true) as $slice) {
+                $this->bulkUpsert($slice, $recordAt);
+            }
+        } catch (\Exception $e) {
+            Log::error('StatUserJob batch failed for server ' . ($this->server['id'] ?? '?') . ': ' . $e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * 一条 UPDATE 累加一批已存在的统计行。
+     *
+     * @param array<int, array{0:int,1:int}> $deltas
+     */
+    protected function bulkIncrement(array $deltas, int $recordAt): void
+    {
+        $caseU = '';
+        $caseD = '';
+        $bindings = [];
+        foreach ($deltas as $uid => [$u, $d]) {
+            $caseU .= ' WHEN ? THEN u + ?';
+            $bindings[] = $uid;
+            $bindings[] = $u;
+        }
+        foreach ($deltas as $uid => [$u, $d]) {
+            $caseD .= ' WHEN ? THEN d + ?';
+            $bindings[] = $uid;
+            $bindings[] = $d;
+        }
+        $bindings[] = time();
+        $bindings[] = $this->server['rate'];
+        $bindings[] = $recordAt;
+        $bindings[] = $this->recordType;
+        $bindings = array_merge($bindings, array_keys($deltas));
+
+        $table = (new StatUser())->getTable();
+        $ids = implode(',', array_fill(0, count($deltas), '?'));
+        $sql = "UPDATE {$table} SET "
+            . "u = CASE user_id{$caseU} ELSE u END, "
+            . "d = CASE user_id{$caseD} ELSE d END, "
+            . "updated_at = ? "
+            . "WHERE server_rate = ? AND record_at = ? AND record_type = ? AND user_id IN ({$ids})";
+
+        DB::update($sql, $bindings);
+    }
+
+    /**
+     * 批量插入当天首次上报的统计行；若同时被别的节点抢先建出来，按 ON DUPLICATE KEY 累加。
+     *
+     * @param array<int, array{0:int,1:int}> $deltas
+     */
+    protected function bulkUpsert(array $deltas, int $recordAt): void
+    {
+        $now = time();
+        $rows = [];
+        foreach ($deltas as $uid => [$u, $d]) {
+            $rows[] = [
+                'user_id' => $uid,
+                'server_rate' => $this->server['rate'],
+                'record_at' => $recordAt,
+                'record_type' => $this->recordType,
+                'u' => $u,
+                'd' => $d,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
+
+        StatUser::upsert(
+            $rows,
+            ['user_id', 'server_rate', 'record_at', 'record_type'],
+            [
+                'u' => DB::raw('u + VALUES(u)'),
+                'd' => DB::raw('d + VALUES(d)'),
+                'updated_at' => $now,
+            ]
+        );
     }
 
     protected function processUserStat(int $uid, array $v, int $recordAt): void

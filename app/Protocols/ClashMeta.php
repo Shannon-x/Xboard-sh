@@ -11,7 +11,7 @@ use App\Support\AbstractProtocol;
 
 class ClashMeta extends AbstractProtocol
 {
-    public $flags = ['meta', 'verge', 'flclash', 'nekobox', 'clashmetaforandroid'];
+    public $flags = ['meta', 'mihomo', 'verge', 'flclash', 'nekobox', 'clashmetaforandroid'];
     const CUSTOM_TEMPLATE_FILE = 'resources/rules/custom.clashmeta.yaml';
     const CUSTOM_CLASH_TEMPLATE_FILE = 'resources/rules/custom.clash.yaml';
     const DEFAULT_TEMPLATE_FILE = 'resources/rules/default.clash.yaml';
@@ -141,6 +141,19 @@ class ClashMeta extends AbstractProtocol
             1 => '1.19.9',
         ],
         'clashmetaforandroid.anytls.protocol_settings.tls.ech.enabled' => [
+            1 => '1.19.9',
+        ],
+        // Bare `mihomo/x.y.z` UA: the kernel itself, same ECH gate as Clash.Meta.
+        'mihomo.vmess.protocol_settings.tls_settings.ech.enabled' => [
+            1 => '1.19.9',
+        ],
+        'mihomo.vless.protocol_settings.tls_settings.ech.enabled' => [
+            1 => '1.19.9',
+        ],
+        'mihomo.trojan.protocol_settings.tls_settings.ech.enabled' => [
+            1 => '1.19.9',
+        ],
+        'mihomo.anytls.protocol_settings.tls.ech.enabled' => [
             1 => '1.19.9',
         ],
     ];

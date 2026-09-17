@@ -355,9 +355,15 @@ class TicketAttachmentService
             ->sum('size');
     }
 
-    public function pendingCount(int $userId): int
+    /**
+     * @param int|null $since 只统计该时间戳之后上传的；null 统计全部
+     */
+    public function pendingCount(int $userId, ?int $since = null): int
     {
-        return TicketAttachment::where('user_id', $userId)->whereNull('ticket_message_id')->count();
+        return TicketAttachment::where('user_id', $userId)
+            ->whereNull('ticket_message_id')
+            ->when($since !== null, fn ($query) => $query->where('created_at', '>', $since))
+            ->count();
     }
 
     /**
@@ -365,8 +371,9 @@ class TicketAttachmentService
      */
     private function assertQuota(int $userId, int $size): void
     {
-        // 待绑定的附件不能囤积：一条消息最多带 maxCount 个，没发出去的会在 24h 后被回收
-        if ($this->pendingCount($userId) >= $this->config->maxCount) {
+        // 待绑定的附件不能囤积：一条消息最多带 maxCount 个。只数近期上传的，更早没发出去的算作已放弃，
+        // 不再占名额（由清理任务在 24h 后回收），否则丢了草稿的用户会被一直锁住
+        if ($this->pendingCount($userId, time() - AttachmentConfig::PENDING_QUOTA_WINDOW) >= $this->config->maxCount) {
             throw new ApiException(__('Too many attachments, at most :count per message', ['count' => $this->config->maxCount]));
         }
         $quota = $this->config->dailyQuotaBytes();

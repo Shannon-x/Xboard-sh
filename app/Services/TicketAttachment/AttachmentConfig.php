@@ -23,6 +23,12 @@ final class AttachmentConfig
     public const HARD_MAX_COUNT = 10;
     /** 待绑定附件的存活时间：上传后一直没随消息发出的，超过该时长由清理任务回收 */
     public const PENDING_TTL = 86400;
+    /**
+     * 待绑定数量上限只统计这段时间内上传的附件。更早的视为已被放弃（前端刷新 / 换页后丢了草稿，
+     * 用户看不到也删不掉），不再占用名额，留给清理任务回收；否则用户最长要被锁一天多，
+     * 传一张图都提示「附件数量过多」。记录不删，所以仍计入每日额度。
+     */
+    public const PENDING_QUOTA_WINDOW = 600;
     /** 只有这几类图片才会以 inline 方式输出，其余一律 attachment 下载（防 SVG / HTML 型 XSS） */
     public const INLINE_IMAGE_MIMES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
     public const DEFAULT_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif,webp,pdf,txt,log,zip';

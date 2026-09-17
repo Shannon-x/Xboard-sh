@@ -180,6 +180,33 @@ class TicketAttachmentTest extends TestCase
         $this->post('/api/v1/user/ticket/attachment/upload', ['file' => $text])->assertStatus(400);
     }
 
+    public function test_abandoned_pending_attachments_do_not_block_new_uploads(): void
+    {
+        $user = $this->makeUser();
+
+        $this->post('/api/v1/user/ticket/attachment/upload', ['file' => $this->png('a.png')])->assertStatus(200);
+        $this->post('/api/v1/user/ticket/attachment/upload', ['file' => $this->png('b.png')])->assertStatus(200);
+        $this->post('/api/v1/user/ticket/attachment/upload', ['file' => $this->png('c.png')])->assertStatus(400);
+
+        // 前端丢了草稿：两张图一直没发出去，过了统计窗口后不应再挡住新上传
+        TicketAttachment::where('user_id', $user->id)->update([
+            'created_at' => time() - \App\Services\TicketAttachment\AttachmentConfig::PENDING_QUOTA_WINDOW - 60,
+        ]);
+        $id = $this->post('/api/v1/user/ticket/attachment/upload', ['file' => $this->png('d.png')])
+            ->assertStatus(200)
+            ->json('data.id');
+
+        // 放弃的记录仍保留（计入每日额度，由清理任务回收），新图可以正常随工单发出
+        $this->assertSame(3, TicketAttachment::where('user_id', $user->id)->whereNull('ticket_message_id')->count());
+        $this->postJson('/api/v1/user/ticket/save', [
+            'subject' => 's',
+            'level' => 0,
+            'message' => 'hello',
+            'attachment_ids' => [$id],
+        ])->assertStatus(200);
+        $this->assertNotNull(TicketAttachment::find($id)->ticket_message_id);
+    }
+
     public function test_attachment_binds_to_message_and_is_downloadable_only_after_sending(): void
     {
         $user = $this->makeUser();

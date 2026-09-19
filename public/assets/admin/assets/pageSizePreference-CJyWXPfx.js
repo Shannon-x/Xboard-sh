@@ -1,0 +1,1 @@
+function e(e,t,n){let r=`xboard-admin:page-size:${e}`,i=t;try{let e=Number(localStorage.getItem(r));n.includes(e)&&(i=e)}catch{}function a(e){if(n.includes(e))try{localStorage.setItem(r,String(e))}catch{}}return{initialSize:i,pageSizes:n,save:a}}export{e as t};

@@ -569,7 +569,10 @@ class OrderService
             $cycleStart = max($now - $monthSeconds, $cycleEnd - $monthSeconds);
         }
 
-        $cycleSeconds = max(1, $cycleEnd - $cycleStart);
+        // 当前周期按「一个月的价钱」计值，分母至少取 28 天（最短的自然月）。补偿/延期留下的
+        // 短尾巴周期（如 8-21 补的 7 天被月度重置单独切成一段）若按自身长度算比例，剩 3.5 天
+        // 会被当成半个月值钱；28–31 天的正常周期不受影响。
+        $cycleSeconds = max(28 * 86400, $cycleEnd - $cycleStart);
         $currentRemainSeconds = max(0, $cycleEnd - $now);
         $futureSeconds = max(0, $expiredAt - $cycleEnd);
 

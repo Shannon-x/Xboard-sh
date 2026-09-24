@@ -146,6 +146,22 @@ class SurplusEarlyRenewalTest extends TestCase
         $this->assertGreaterThan(0, (int) $order->refund_amount);
     }
 
+    public function test_short_compensation_tail_cycle_is_valued_by_days_not_as_a_month(): void
+    {
+        // 生产实例 user 893：月付 ¥40 在 9-21 结束，补偿 7 天到 9-28，9-21 又做了一次月度重置，
+        // 当前周期只有 7 天、剩 3.57 天。按周期自身长度算比例会折成 ¥20（半个月），实际只值约 ¥4.76。
+        $plan = $this->plan(40);
+        $user = $this->user($plan, (int) (3.57 * self::DAY));
+        $user->last_reset_at = time() - (int) (3.43 * self::DAY);
+        $user->save();
+        $this->paidOrder($user, $plan, 'monthly', 4000, 34);
+
+        $order = $this->changeTo($user, $this->plan(20));
+
+        $this->assertGreaterThan(0, $order->surplus_amount);
+        $this->assertLessThanOrEqual((int) ceil(4000 * 3.57 / 28), $order->surplus_amount, '短周期只能按天数折价');
+    }
+
     public function test_discounted_orders_are_never_reused_by_fallback(): void
     {
         $plan = $this->plan(40);

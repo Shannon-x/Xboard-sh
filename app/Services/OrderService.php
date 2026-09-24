@@ -460,19 +460,30 @@ class OrderService
 
     private function getSurplusValueByPeriod(User $user, Order $order): void
     {
-        $orders = Order::query()
+        $periodMonths = fn(Order $item): int => self::STR_TO_TIME[PlanService::getPeriodKey((string) $item->period)] ?? 0;
+        $completed = Order::query()
             ->where('user_id', $user->id)
             ->whereNotIn('period', [Plan::PERIOD_RESET_TRAFFIC, Plan::PERIOD_ONETIME])
             ->where('status', Order::STATUS_COMPLETED)
+            ->orderByDesc('id')
             ->get()
-            ->filter(function (Order $item) {
-                $months = self::STR_TO_TIME[PlanService::getPeriodKey((string) $item->period)] ?? 0;
-                if ($months <= 0) {
-                    return false;
-                }
+            ->filter(fn(Order $item) => $periodMonths($item) > 0);
 
-                return Carbon::createFromTimestamp($item->created_at)->addMonths($months)->timestamp > time();
-            });
+        $orders = $completed->filter(
+            fn(Order $item) => Carbon::createFromTimestamp($item->created_at)->addMonths($periodMonths($item))->timestamp > time()
+        );
+
+        // 「下单日 + 周期」只是订单覆盖期的近似：提前续费的单覆盖的是旧到期日之后那一段，
+        // 补偿/人工延期的天数更没有任何订单对应。这类用户按下单日筛会一张单都剩不下，
+        // 但 setOrderType 判套餐变更的前提恰恰是 expired_at > now —— 剩余天数被清零、折抵却是 ¥0。
+        // 兜底只取最近一张已完成的周期单作计价基准，并且：
+        //   - 折抵值仍按剩余时间×流量比例算，上限是这一张单的实付（不会超过用户真付过的钱）；
+        //   - 只抵新单价格、不产生 refund_amount 退余额，零现金/余额流出。
+        $fallback = false;
+        if ($orders->isEmpty() && (int) $user->expired_at > time() && $completed->isNotEmpty()) {
+            $orders = $completed->take(1);
+            $fallback = true;
+        }
 
         if ($orders->isEmpty()) {
             $order->surplus_amount = 0;
@@ -507,6 +518,9 @@ class OrderService
         $currentCycleValue = $monthlyAmount * min($currentCycleTimeRatio, $trafficRatio);
         $futureCycleValue = $monthlyAmount * $futureCycleRatio;
         $surplusAmount = min($orderAmountSum, $currentCycleValue + $futureCycleValue);
+        if ($fallback) {
+            $surplusAmount = min($surplusAmount, max(0, (int) $order->total_amount));
+        }
 
         $order->surplus_amount = (int) max(0, $surplusAmount);
         $order->surplus_order_ids = $orders->pluck('id')->all();

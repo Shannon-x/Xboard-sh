@@ -2,16 +2,18 @@
 
 namespace App\Services\Billing;
 
+use App\Models\CommissionWithdrawal;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\User;
+use App\Services\Commission\WithdrawalConfig;
 use App\Services\PlanCustomizationService;
 use App\Services\RenewService;
 use Illuminate\Support\Facades\App;
 use Mpdf\Mpdf;
 
 /**
- * 收据 / 续费账单：组装数据 → 渲染邮件正文与 PDF。
+ * 收据 / 续费账单 / 提现结果：组装数据 → 渲染邮件正文与 PDF。
  *
  * 模板在 resources/views/billing/，刻意不放 resources/views/mail/：生产上那个目录被宿主机挂载覆盖，
  * 放进去的新模板不会生效，也不该受 email_template 主题切换影响。视觉沿用 editorial 的米色纸感 + 衬线标题。
@@ -309,10 +311,81 @@ class BillingDocumentService
         return $best;
     }
 
+    // ---------------------------------------------------------------- 佣金提现
+
+    /**
+     * 提现打款 / 驳回的通知邮件（不附 PDF）。待处理或用户自己取消的申请没有邮件，返回 null。
+     * 金额、USDT、链、地址、交易哈希都来自提现记录本身，和工单回复里写的一致。
+     */
+    public function withdrawal(CommissionWithdrawal $w): ?array
+    {
+        $user = User::find($w->user_id);
+        if (!$user || !$user->email) return null;
+        $status = (int) $w->status;
+        if (!in_array($status, [CommissionWithdrawal::STATUS_COMPLETED, CommissionWithdrawal::STATUS_REJECTED], true)) return null;
+        $completed = $status === CommissionWithdrawal::STATUS_COMPLETED;
+
+        $config = WithdrawalConfig::fromSettings();
+        $chain = $config->findChain((string) $w->chain_code);
+        $explorer = $w->txid && $chain && $chain['explorer_tx'] !== ''
+            ? str_replace('{txid}', rawurlencode($w->txid), $chain['explorer_tx'])
+            : null;
+        $usdt = $w->paid_usdt ?? $w->usdt_amount;
+        $rate = $w->settle_rate ?? $w->usdt_rate;
+        $fee = $w->usdt_fee !== null && (float) $w->usdt_fee > 0 ? $this->usdt((string) $w->usdt_fee) : null;
+        $outcome = $completed ? 'completed' : 'rejected';
+        $settledAt = $this->dateTime((int) ($w->settled_at ?: time()));
+        $historyUrl = $this->url('/invite');
+
+        $data = $this->base() + [
+            'kind' => 'withdrawal',
+            'outcome' => $outcome,
+            'doc_title' => __('billing.withdrawal.doc_title'),
+            'doc_title_en' => __('billing.withdrawal.doc_title_en'),
+            'doc_no' => '#' . (int) $w->id,
+            'stamp' => __('billing.withdrawal.stamp_' . $outcome),
+            'stamp_soft' => !$completed,
+            'has_pdf' => false,
+            'withdrawal_id' => (int) $w->id,
+            'usdt' => $usdt !== null ? $this->usdt((string) $usdt) : null,
+            'usdt_is_actual' => $w->paid_usdt !== null,
+            'usdt_fee' => $fee,
+            'usdt_rate' => $rate !== null ? $this->usdt((string) $rate) : null,
+            'chain' => $w->network ? "{$w->chain_name} · {$w->network}" : (string) $w->chain_name,
+            'address' => (string) $w->address,
+            'txid' => $w->txid ?: null,
+            'explorer_url' => $explorer,
+            'reason' => $completed ? null : ($w->reject_reason ?: null),
+            'thanks' => $completed ? $config->thanks : null,
+            'settled_at' => $settledAt,
+            'bill_to' => ['email' => $user->email, 'id' => (int) $user->id],
+            'headline' => __('billing.withdrawal.headline_' . $outcome),
+            'intro' => $completed
+                ? __('billing.withdrawal.intro_completed', ['id' => $w->id, 'date' => $settledAt])
+                : __('billing.withdrawal.intro_rejected', ['id' => $w->id, 'reason' => $w->reject_reason ?: '—', 'amount' => $this->money((int) $w->amount)]),
+            // 有交易哈希就把区块浏览器放在主按钮上，佣金记录退到下面的文字链接
+            'cta_label' => $explorer ? __('billing.withdrawal.explorer') : __('billing.withdrawal.cta_' . $outcome),
+            'cta_url' => $explorer ?: $historyUrl,
+            'secondary_label' => $explorer ? __('billing.withdrawal.cta_completed') : null,
+            'secondary_url' => $explorer ? $historyUrl : null,
+            'subject' => __('billing.withdrawal.subject_' . $outcome, ['id' => $w->id, 'app' => (string) admin_setting('app_name', 'XBoard')]),
+            'meta' => [],
+            'items' => [],
+            'totals' => [],
+            'total' => (int) $w->amount,
+            'payments' => [],
+            'balance_due' => 0,
+            'notes' => [],
+            'alternatives' => [],
+        ];
+        return $this->decorate($data);
+    }
+
     // ---------------------------------------------------------------- 渲染
 
     public function pdf(array $data): string
     {
+        $data['logo_data'] = BrandLogo::dataUri();   // 嵌进 PDF 的 logo（拉取 + 缓存见 BrandLogo），取不到就纯文字抬头
         $tempDir = storage_path('framework/cache/mpdf');
         if (!is_dir($tempDir)) @mkdir($tempDir, 0775, true);
         $defaults = (new \Mpdf\Config\ConfigVariables())->getDefaults();
@@ -357,6 +430,8 @@ class BillingDocumentService
             'currency' => (string) admin_setting('currency', 'CNY'),
             'locale' => App::getLocale(),
             'settings_url' => $this->url('/settings'),
+            'logo_url' => BrandLogo::url(),
+            'logo_size' => BrandLogo::mailSize(),
         ];
     }
 
@@ -379,6 +454,14 @@ class BillingDocumentService
         $symbol = (string) admin_setting('currency_symbol', '¥');
         // 用 ASCII 连字符而不是 U+2212：子集字体里没有后者，mPDF 会回落到 Symbol 字体，渲染成一道怪杠
         return ($cents < 0 ? '-' : '') . $symbol . number_format(abs($cents) / 100, 2);
+    }
+
+    /** USDT 金额 / 汇率：去掉库里 decimal 带的多余 0，但至少留 2 位小数（5.9000 → 5.90，1.0000 → 1.00，7.2125 → 7.2125）。 */
+    private function usdt(string $value): string
+    {
+        $value = str_contains($value, '.') ? rtrim(rtrim($value, '0'), '.') : $value;
+        [$int, $dec] = array_pad(explode('.', $value, 2), 2, '');
+        return ($int === '' ? '0' : $int) . '.' . str_pad($dec, 2, '0');
     }
 
     private function specLines($transferGb, $devices, $speed, array $addons): array

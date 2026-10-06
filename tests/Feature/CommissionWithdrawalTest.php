@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\SendBillingMailJob;
 use App\Jobs\SendEmailJob;
 use App\Models\CommissionWithdrawal;
 use App\Models\Ticket;
@@ -214,10 +215,9 @@ class CommissionWithdrawalTest extends TestCase
         $this->assertStringContainsString('0xdeadbeef', $reply->message);
         $this->assertStringContainsString('感谢你对我们的支持', $reply->message);
 
-        Queue::assertPushed(SendEmailJob::class, function (SendEmailJob $job) use ($user) {
-            $params = (fn() => $this->params)->call($job);
-            return $params['email'] === $user->email && str_contains($params['subject'], '提现已完成');
-        });
+        // 结果邮件走财务邮件模板族（billing/ 下带品牌 logo 的模板），内容到 worker 里按记录组装
+        Queue::assertPushed(SendBillingMailJob::class, fn (SendBillingMailJob $job) => $job->kind === SendBillingMailJob::KIND_WITHDRAWAL && $job->id === $withdrawal->id);
+        Queue::assertNotPushed(SendEmailJob::class, fn (SendEmailJob $job) => (fn() => $this->params)->call($job)['template_name'] === 'withdrawCompleted');
 
         // 用户端能看到 txid 与浏览器链接
         $list = $this->getJson('/api/v1/user/withdraw/fetch')->assertStatus(200);
@@ -238,7 +238,7 @@ class CommissionWithdrawalTest extends TestCase
         $this->assertSame('地址与截图不一致', $withdrawal->reject_reason);
         $this->assertSame(20000, $user->fresh()->commission_balance, '驳回退回冻结佣金');
         $this->assertSame(Ticket::STATUS_CLOSED, Ticket::findOrFail($withdrawal->ticket_id)->status);
-        Queue::assertPushed(SendEmailJob::class, fn(SendEmailJob $job) => str_contains((fn() => $this->params)->call($job)['subject'], '未通过'));
+        Queue::assertPushed(SendBillingMailJob::class, fn (SendBillingMailJob $job) => $job->kind === SendBillingMailJob::KIND_WITHDRAWAL && $job->id === $withdrawal->id);
 
         // 已驳回的不能再结算
         $this->expectException(\App\Exceptions\ApiException::class);
@@ -299,8 +299,10 @@ class CommissionWithdrawalTest extends TestCase
         $this->getJson('/api/v1/user/withdraw/config')->assertJsonPath('data.saved', null);
     }
 
+    /** 后台关掉财务邮件模板族（billing_receipt_enable=0）：回落到各邮件主题自带的 withdrawCompleted / withdrawRejected。 */
     public function test_settle_uses_dedicated_email_template_with_structured_vars(): void
     {
+        config(['v2board.billing_receipt_enable' => 0]);
         $user = $this->makeUser();
         $admin = $this->makeUser(['is_admin' => 1]);
         Sanctum::actingAs($user);

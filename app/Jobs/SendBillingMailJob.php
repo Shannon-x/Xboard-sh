@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Models\CommissionWithdrawal;
 use App\Models\Order;
 use App\Models\User;
 use App\Services\Billing\BillingDocumentService;
@@ -14,7 +15,7 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
 
 /**
- * 收据 / 续费账单邮件：payload 只带 id，到 worker 里才组装数据、渲染 PDF。
+ * 收据 / 续费账单 / 提现结果邮件：payload 只带 id，到 worker 里才组装数据、渲染 PDF。
  * PDF 是二进制，塞进 payload 会让 json_encode 失败；重试时按当时的订单 / 用户状态重新生成也更稳。
  * 与普通邮件同走 send_email 队列，复用 MailService 的后台 SMTP 配置与 v2_mail_log。
  */
@@ -24,6 +25,7 @@ class SendBillingMailJob implements ShouldQueue
 
     public const KIND_RECEIPT = 'receipt';
     public const KIND_INVOICE = 'invoice';
+    public const KIND_WITHDRAWAL = 'withdrawal';
 
     public $tries = 3;
     public $timeout = 60;   // 首次渲染要建字体度量缓存，比普通邮件慢得多
@@ -47,6 +49,12 @@ class SendBillingMailJob implements ShouldQueue
         self::dispatch(self::KIND_INVOICE, (int) $user->id, $stage, (int) $user->expired_at);
     }
 
+    /** 打款 / 驳回后派发；邮件内容到执行时再按记录当时的状态组装。 */
+    public static function dispatchWithdrawal(CommissionWithdrawal $withdrawal): void
+    {
+        self::dispatch(self::KIND_WITHDRAWAL, (int) $withdrawal->id)->afterCommit();
+    }
+
     public function handle(BillingDocumentService $docs): void
     {
         // mPDF 嵌中文字体时峰值 ~40MB，生产 memory_limit=128M 够用；只在被压得更低时抬一下
@@ -54,9 +62,11 @@ class SendBillingMailJob implements ShouldQueue
         if ($limit > 0 && $limit < 128 * 1024 * 1024) {
             ini_set('memory_limit', '128M');
         }
-        $log = BillingDocumentService::withLocale(fn () => $this->kind === self::KIND_RECEIPT
-            ? $this->sendReceipt($docs)
-            : $this->sendInvoice($docs));
+        $log = BillingDocumentService::withLocale(fn () => match ($this->kind) {
+            self::KIND_RECEIPT => $this->sendReceipt($docs),
+            self::KIND_WITHDRAWAL => $this->sendWithdrawal($docs),
+            default => $this->sendInvoice($docs),
+        });
         if ($log !== null && $log['error']) {
             $this->release(30);   // 与 SendEmailJob 一致：发送失败触发重试
         }
@@ -100,6 +110,16 @@ class SendBillingMailJob implements ShouldQueue
             ? [['name' => $docs->attachmentName($data), 'data' => $docs->pdf($data), 'mime' => 'application/pdf']]
             : [];
         return MailService::deliver($user->email, $data['subject'], 'billing.mail.invoice', $data, $attachments);
+    }
+
+    private function sendWithdrawal(BillingDocumentService $docs): ?array
+    {
+        $withdrawal = CommissionWithdrawal::find($this->id);
+        $data = $withdrawal ? $docs->withdrawal($withdrawal) : null;
+        if ($data === null) {
+            return null;   // 记录没了 / 还在待处理 / 用户自己取消的：没有邮件可发
+        }
+        return MailService::deliver($data['bill_to']['email'], $data['subject'], 'billing.mail.withdrawal', $data);
     }
 
     private static function bytes(string $ini): int

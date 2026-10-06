@@ -53,9 +53,14 @@ a { color: #c94f2e; text-decoration: none; }
 {{-- 抬头：左品牌，右文件名 + 状态章 --}}
 <table width="100%"><tr>
 <td width="55%">
+<table><tr>
+@if($logo_data)<td style="vertical-align:middle;padding-right:9pt"><img src="{{ $logo_data }}" style="height:14mm"></td>@endif
+<td style="vertical-align:middle">
 <div class="brand">{{ $app_name }}</div>
 @if($issuer)<div class="faint" style="font-size:8pt;margin-top:4pt">{{ $issuer }}</div>@endif
 <div class="faint" style="font-size:8pt;{{ $issuer ? '' : 'margin-top:4pt' }}">{{ $app_url }}</div>
+</td>
+</tr></table>
 </td>
 <td width="45%" class="right">
 <div class="eyebrow">{{ $doc_title_en }}</div>

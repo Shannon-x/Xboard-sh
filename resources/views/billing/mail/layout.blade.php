@@ -19,8 +19,18 @@
                         <td style="padding:40px 44px 0 44px;">
                             <table width="100%" border="0" cellspacing="0" cellpadding="0">
                                 <tr>
-                                    <td style="font-family:'Noto Serif SC',Georgia,'Songti SC',serif;font-size:18px;font-weight:600;color:#716a65;letter-spacing:1.5px;">{{ $app_name }}</td>
-                                    <td align="right" style="font-family:'Noto Sans SC',sans-serif;font-size:11px;color:#a09890;letter-spacing:2px;text-transform:uppercase;">{{ $doc_title_en }} · {{ $doc_no }}</td>
+                                    <td style="vertical-align:middle;">
+                                        <table border="0" cellspacing="0" cellpadding="0">
+                                            <tr>
+                                                @if($logo_url)
+                                                {{-- 高固定 40px，宽按比例：Outlook 只认属性，不认 CSS 的 width:auto --}}
+                                                <td style="padding-right:12px;vertical-align:middle;"><img src="{{ $logo_url }}" alt="{{ $app_name }}" height="{{ $logo_size['height'] ?? 40 }}"@if($logo_size) width="{{ $logo_size['width'] }}"@endif style="display:block;height:{{ $logo_size['height'] ?? 40 }}px;width:{{ $logo_size ? $logo_size['width'] . 'px' : 'auto' }};max-width:160px;border:0;outline:none;text-decoration:none;" /></td>
+                                                @endif
+                                                <td style="font-family:'Noto Serif SC',Georgia,'Songti SC',serif;font-size:18px;font-weight:600;color:#716a65;letter-spacing:1.5px;vertical-align:middle;">{{ $app_name }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                    <td align="right" style="font-family:'Noto Sans SC',sans-serif;font-size:11px;color:#a09890;letter-spacing:2px;text-transform:uppercase;vertical-align:middle;white-space:nowrap;">{{ $doc_title_en }} · {{ $doc_no }}</td>
                                 </tr>
                             </table>
                         </td>

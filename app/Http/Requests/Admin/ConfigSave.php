@@ -118,6 +118,7 @@ class ConfigSave extends FormRequest
         'billing_invoice_days' => 'nullable|integer|min:0|max:30',
         'billing_locale' => 'nullable|in:zh-CN,zh-TW,en-US',
         'billing_issuer' => 'nullable|string|max:255',
+        'billing_logo' => ['nullable', 'string', 'max:500', 'regex:#^(https?://\S+|/\S*)$#'],
         'billing_recommend_plan_ids' => ['nullable', 'string', 'max:255', 'regex:/^\s*(\d+\s*(,\s*\d+\s*)*)?$/'],
         // telegram
         'telegram_bot_enable' => 'boolean',

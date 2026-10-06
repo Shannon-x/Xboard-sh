@@ -214,6 +214,7 @@ class ConfigController extends Controller
                 'billing_invoice_days' => (int) admin_setting('billing_invoice_days', 7),
                 'billing_locale' => (string) admin_setting('billing_locale', 'zh-CN'),
                 'billing_issuer' => (string) admin_setting('billing_issuer', ''),
+                'billing_logo' => (string) admin_setting('billing_logo', ''),
                 'billing_recommend_plan_ids' => (string) admin_setting('billing_recommend_plan_ids', ''),
             ],
             'telegram' => [

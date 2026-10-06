@@ -4,16 +4,19 @@ namespace Tests\Feature;
 
 use App\Jobs\SendBillingMailJob;
 use App\Jobs\SendEmailJob;
+use App\Models\CommissionWithdrawal;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\ServerGroup;
 use App\Models\User;
 use App\Services\Billing\BillingDocumentService;
+use App\Services\Billing\BrandLogo;
 use App\Services\MailService;
 use App\Services\OrderService;
 use App\Utils\Helper;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -191,5 +194,84 @@ class BillingDocumentsTest extends TestCase
         $this->runJob(SendBillingMailJob::KIND_INVOICE, $user->id, BillingDocumentService::STAGE_FIRST, (int) $user->expired_at);
         $this->assertCount(1, $this->sent());
         $this->assertStringContainsString('自动续费', $this->sent()->first()->getOriginalMessage()->getHtmlBody());
+    }
+
+    // ───────────────────────── 品牌 logo ─────────────────────────
+
+    public function test_logo_is_linked_in_the_mail_and_embedded_in_the_pdf(): void
+    {
+        $url = 'https://cdn.example.test/brand/logo.png';
+        config(['v2board.billing_logo' => $url]);
+        @unlink(storage_path('app/billing/logo/' . sha1($url) . '.png'));
+        $im = imagecreatetruecolor(120, 60);
+        imagefill($im, 0, 0, imagecolorallocate($im, 201, 79, 46));
+        ob_start();
+        imagepng($im);
+        Http::fake([$url => Http::response(ob_get_clean(), 200, ['Content-Type' => 'image/png'])]);
+
+        $order = $this->order($this->user());
+        (new OrderService($order))->open();
+        $message = $this->sent()->first()->getOriginalMessage();
+        $html = $message->getHtmlBody();
+        $this->assertStringContainsString('<img src="' . $url . '"', $html, '邮件里直接引用 logo URL');
+        $this->assertStringContainsString('height="40" width="80"', $html, '高固定 40px，宽按 120:60 等比');
+        $this->assertStringContainsString('/Subtype /Image', $message->getAttachments()[0]->getBody(), 'PDF 里嵌进了 logo');
+
+        BrandLogo::dataUri();
+        Http::assertSentCount(1);   // 之后走缓存，不再请求
+
+        config(['v2board.billing_logo' => '']);
+        $this->runJob(SendBillingMailJob::KIND_RECEIPT, $this->order($this->user())->id);
+    }
+
+    public function test_without_a_logo_the_header_is_text_only(): void
+    {
+        config(['v2board.billing_logo' => '', 'v2board.logo' => '']);
+        $order = $this->order($this->user());
+        (new OrderService($order))->open();
+        $message = $this->sent()->first()->getOriginalMessage();
+        $this->assertStringNotContainsString('<img', $message->getHtmlBody());
+        $this->assertStringNotContainsString('/Subtype /Image', $message->getAttachments()[0]->getBody());
+    }
+
+    // ───────────────────────── 佣金提现 ─────────────────────────
+
+    private function withdrawal(User $user, array $attributes = []): CommissionWithdrawal
+    {
+        return CommissionWithdrawal::create($attributes + [
+            'user_id' => $user->id, 'amount' => 5000, 'currency' => 'CNY', 'chain_code' => 'usdt_trc20', 'chain_name' => 'USDT', 'network' => 'TRC20 (Tron)',
+            'address' => 'TXYZabcdefghijklmnopqrstuvwxyz1234', 'usdt_rate' => '7.2000', 'usdt_fee' => '1.0000', 'usdt_amount' => '5.9400',
+            'status' => CommissionWithdrawal::STATUS_PENDING,
+        ]);
+    }
+
+    public function test_withdrawal_result_mails_render_from_the_record(): void
+    {
+        $user = $this->user();
+        $paid = $this->withdrawal($user, ['status' => CommissionWithdrawal::STATUS_COMPLETED, 'txid' => 'abc123', 'paid_usdt' => '5.9000', 'settle_rate' => '7.2500', 'settled_at' => time()]);
+        $this->runJob(SendBillingMailJob::KIND_WITHDRAWAL, $paid->id);
+        $this->assertCount(1, $this->sent());
+        $message = $this->sent()->first()->getOriginalMessage();
+        $this->assertStringContainsString('#' . $paid->id, $message->getSubject());
+        $html = $message->getHtmlBody();
+        $this->assertStringContainsString('¥50.00', $html);
+        $this->assertStringContainsString('实付 5.90 USDT', $html, '库里的 5.9000（MySQL）或 5.9（sqlite）都整理成 5.90');
+        $this->assertStringContainsString('已扣通道费 1.00 USDT', $html);
+        $this->assertStringContainsString('汇率 7.25', $html);
+        $this->assertStringContainsString('abc123', $html);
+        $this->assertStringContainsString('https://tronscan.org/#/transaction/abc123', $html, '有交易哈希时主按钮指向区块浏览器');
+        $this->assertCount(0, $message->getAttachments(), '提现结果不附 PDF');
+
+        $declined = $this->withdrawal($user, ['status' => CommissionWithdrawal::STATUS_REJECTED, 'reject_reason' => '地址与截图不一致', 'settled_at' => time()]);
+        $this->runJob(SendBillingMailJob::KIND_WITHDRAWAL, $declined->id);
+        $this->assertCount(2, $this->sent());
+        $html = $this->sent()->last()->getOriginalMessage()->getHtmlBody();
+        $this->assertStringContainsString('地址与截图不一致', $html);
+        $this->assertStringContainsString('¥50.00', $html, '驳回邮件写明退回的金额');
+
+        // 待处理 / 用户自己取消的申请没有结果可发
+        $this->runJob(SendBillingMailJob::KIND_WITHDRAWAL, $this->withdrawal($user)->id);
+        $this->runJob(SendBillingMailJob::KIND_WITHDRAWAL, $this->withdrawal($user, ['status' => CommissionWithdrawal::STATUS_CANCELLED])->id);
+        $this->assertCount(2, $this->sent());
     }
 }

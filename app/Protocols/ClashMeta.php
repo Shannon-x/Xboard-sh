@@ -214,6 +214,7 @@ class ClashMeta extends AbstractProtocol
         }
 
         $config['proxies'] = array_merge($config['proxies'] ? $config['proxies'] : [], $proxy);
+        self::moveGlobalFingerprintToProxies($config);
         foreach ($config['proxy-groups'] as $k => $v) {
             if (!is_array($config['proxy-groups'][$k]['proxies']))
                 $config['proxy-groups'][$k]['proxies'] = [];
@@ -868,6 +869,29 @@ class ClashMeta extends AbstractProtocol
                         'down' => data_get($multiplex, 'brutal.down_mbps'),
                     ];
                 }
+            }
+        }
+    }
+
+    /**
+     * mihomo 已移除顶层 global-client-fingerprint（v1.19.30+ 加载即报 error，且不再生效）。
+     * 把模板里的全局值下放到每个走 TCP+TLS 的出站上，只补没有自带指纹的节点，语义与旧版一致；
+     * proxy 级 client-fingerprint 在所有 Meta 内核上都支持，老客户端不受影响。
+     * hysteria2/tuic 走 QUIC，没有 uTLS 指纹；ss 只有 shadow-tls/restls 插件才用 TLS，本站未用。
+     */
+    protected static function moveGlobalFingerprintToProxies(array &$config): void
+    {
+        $fingerprint = $config['global-client-fingerprint'] ?? null;
+        unset($config['global-client-fingerprint']);
+        if (!$fingerprint) {
+            return;
+        }
+        foreach ($config['proxies'] as $i => $proxy) {
+            $type = $proxy['type'] ?? '';
+            $usesTls = in_array($type, ['trojan', 'anytls'], true)
+                || (in_array($type, ['vless', 'vmess'], true) && !empty($proxy['tls']));
+            if ($usesTls && !isset($proxy['client-fingerprint'])) {
+                $config['proxies'][$i]['client-fingerprint'] = $fingerprint;
             }
         }
     }

@@ -158,7 +158,12 @@ class ConfigController extends Controller
                 'ticket_must_wait_reply' => (bool) admin_setting('ticket_must_wait_reply', 0),
             ],
             // 工单附件（存储驱动 / 体积与数量限制 / 自动清理）—— 默认值集中在 AttachmentConfig
-            'ticket' => AttachmentConfig::fromSettings()->toAdminArray(),
+            'ticket' => [
+                ...AttachmentConfig::fromSettings()->toAdminArray(),
+                // 工单分类：隐藏哪些分类（逗号分隔 code）、是否开放「建议与反馈」
+                'ticket_category_hidden' => (string) admin_setting('ticket_category_hidden', ''),
+                'ticket_feedback_enable' => (bool) (int) admin_setting('ticket_feedback_enable', 1),
+            ],
             'subscribe' => [
                 'plan_change_enable' => (bool) admin_setting('plan_change_enable', 1),
                 'reset_traffic_method' => (int) admin_setting('reset_traffic_method', 0),

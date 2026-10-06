@@ -183,5 +183,7 @@
     "Invite code may only contain letters, numbers, hyphens and underscores, and must start with a letter or number": "Invite code may only contain letters, numbers, hyphens and underscores, and must start with a letter or number",
     "This invite code is reserved": "This invite code is reserved",
     "This invite code is already taken": "This invite code is already taken",
-    "Please try again": "Please try again"
+    "Please try again": "Please try again",
+    "Invalid ticket category": "Invalid ticket category",
+    "Too many open feedback tickets": "You have too many open suggestions. Please wait until earlier ones are handled."
 }

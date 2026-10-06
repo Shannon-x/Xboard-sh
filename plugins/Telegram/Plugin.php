@@ -10,6 +10,7 @@ use App\Services\Plugin\HookManager;
 use App\Services\TelegramService;
 use App\Services\TicketAttachmentService;
 use App\Services\TicketService;
+use App\Services\TicketCategory\TicketCategories;
 use App\Utils\Helper;
 use Illuminate\Support\Facades\Log;
 
@@ -138,6 +139,7 @@ class Plugin extends AbstractPlugin
     $TGmessage .= "💰 余额: <code>{$money}元</code>\n";
     $TGmessage .= "💸 佣金: <code>{$affmoney}元</code>\n";
     $TGmessage .= "━━━━━━━━━━━━━━━━━━━━\n";
+    $TGmessage .= "🏷 <b>分类</b>: {$e(TicketCategories::label($ticket))}\n";
     $TGmessage .= "📝 <b>主题</b>: {$e($ticket->subject)}\n";
     $TGmessage .= "💬 <b>内容</b>:\n<blockquote>{$e($content)}</blockquote>";
 

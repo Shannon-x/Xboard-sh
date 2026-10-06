@@ -54,6 +54,9 @@ class ConfigSave extends FormRequest
         'ticket_must_wait_reply' => '',
         // ticket attachment（硬上限见 AttachmentConfig::HARD_MAX_*，超过会被 Swoole / PHP 请求体上限掐断）
         'ticket_attachment_enable' => 'boolean',
+        // 工单分类（code 列表见 TicketCategories::CATEGORIES；other 永远可选，写进来也不会被隐藏）
+        'ticket_category_hidden' => 'nullable|string|max:255|regex:/^[a-z_]+(\s*[,，;\s]\s*[a-z_]+)*$/i',
+        'ticket_feedback_enable' => 'boolean',
         'ticket_attachment_driver' => 'in:local,s3',
         'ticket_attachment_max_size_mb' => 'integer|min:1|max:20',
         'ticket_attachment_max_count' => 'integer|min:1|max:10',

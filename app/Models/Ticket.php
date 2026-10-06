@@ -13,6 +13,9 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property int $user_id 用户ID
  * @property string $subject 工单主题
  * @property string|null $level 工单等级
+ * @property string $category 分类 code，见 TicketCategories::CATEGORIES
+ * @property int $type 0:求助 1:建议与反馈
+ * @property string|null $feedback_state 建议/反馈跟进状态，求助类为 NULL
  * @property int $status 工单状态
  * @property int|null $reply_status 回复状态
  * @property int|null $last_reply_user_id 最后回复人
@@ -29,7 +32,8 @@ class Ticket extends Model
     protected $guarded = ['id'];
     protected $casts = [
         'created_at' => 'timestamp',
-        'updated_at' => 'timestamp'
+        'updated_at' => 'timestamp',
+        'type' => 'integer',
     ];
 
     const STATUS_OPENING = 0;

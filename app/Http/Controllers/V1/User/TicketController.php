@@ -61,7 +61,8 @@ class TicketController extends Controller
             $request->input('subject'),
             $request->input('level'),
             $request->input('message'),
-            $attachmentIds
+            $attachmentIds,
+            $request->input('category')
         );
         HookManager::call('ticket.create.after', $ticket);
         return $this->success(true);

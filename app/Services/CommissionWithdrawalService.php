@@ -119,6 +119,7 @@ class CommissionWithdrawalService
                 'user_id' => $locked->id,
                 'subject' => $this->ticketSubject($withdrawal),
                 'level' => 2,
+                'category' => 'withdraw',
                 'reply_status' => Ticket::REPLY_STATUS_PENDING,
             ]);
             $message = TicketMessage::create([

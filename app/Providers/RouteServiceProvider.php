@@ -158,6 +158,15 @@ class RouteServiceProvider extends ServiceProvider
         RateLimiter::for('ticket-attachment-download', function (Request $request) {
             return Limit::perMinute(240)->by('ticket_attachment_download:ip:' . $request->ip());
         });
+
+        RateLimiter::for('billing-document-download', function (Request $request) {
+            return Limit::perMinute(120)->by('billing_document_download:ip:' . $request->ip());
+        });
+
+        // 邮箱投递自测：控制器里还有 10 分钟一次的业务限制，这里只防脚本刷
+        RateLimiter::for('mail-test', function (Request $request) use ($byUserOrIp) {
+            return Limit::perMinute(3)->by($byUserOrIp($request, 'mail_test'));
+        });
     }
 
     /**

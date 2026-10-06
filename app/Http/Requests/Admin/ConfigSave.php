@@ -120,6 +120,11 @@ class ConfigSave extends FormRequest
         'billing_issuer' => 'nullable|string|max:255',
         'billing_logo' => ['nullable', 'string', 'max:500', 'regex:#^(https?://\S+|/\S*)$#'],
         'billing_recommend_plan_ids' => ['nullable', 'string', 'max:255', 'regex:/^\s*(\d+\s*(,\s*\d+\s*)*)?$/'],
+        'billing_expired_enable' => '',
+        'billing_winback_enable' => '',
+        'billing_winback_days' => ['nullable', 'string', 'max:32', 'regex:/^\s*(\d+\s*(,\s*\d+\s*)*)?$/'],
+        'billing_winback_coupon' => 'nullable|string|max:64',
+        'mail_digest_enable' => '',
         // telegram
         'telegram_bot_enable' => 'boolean',
         'telegram_bot_token' => 'nullable|string|max:128',

@@ -6,6 +6,7 @@ use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\User\OrderSave;
 use App\Http\Resources\OrderResource;
+use App\Models\BalanceLog;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\Plan;
@@ -14,6 +15,7 @@ use App\Services\CouponService;
 use App\Services\OrderService;
 use App\Services\PaymentService;
 use App\Services\PlanService;
+use App\Services\BalanceLedger;
 use App\Services\UserService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -103,13 +105,15 @@ class OrderController extends Controller
         $remainingBalance = $user->balance - $order->total_amount;
 
         if ($remainingBalance > 0) {
-            if (!$userService->addBalance($order->user_id, -$order->total_amount)) {
+            if (!$userService->addBalance($order->user_id, -$order->total_amount, BalanceLog::TYPE_ORDER_PAY,
+                BalanceLedger::orderCtx($order, '余额支付'))) {
                 throw new ApiException(__('Insufficient balance'));
             }
             $order->balance_amount = $order->total_amount;
             $order->total_amount = 0;
         } else {
-            if (!$userService->addBalance($order->user_id, -$user->balance)) {
+            if (!$userService->addBalance($order->user_id, -$user->balance, BalanceLog::TYPE_ORDER_PAY,
+                BalanceLedger::orderCtx($order, '余额抵扣部分金额'))) {
                 throw new ApiException(__('Insufficient balance'));
             }
             $order->balance_amount = $user->balance;

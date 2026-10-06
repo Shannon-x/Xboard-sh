@@ -59,3 +59,5 @@ XBoard-admin 目前没有这些开关的界面，用默认值即可；要改可�
 1. 镜像需要重新构建：Dockerfile 新增 `gd` 扩展（mPDF 的硬依赖），composer 新增 `mpdf/mpdf`。
 2. 升级时跑一次 `php artisan xboard:update`：迁移 `2026_10_06_000002_add_billing_documents` 只加三列，可重复执行。
 3. 不需要改中间件或前端。
+
+归档与重新下载、退信处理、余额流水、到期后的通知见 [财务面板补全](finance-panel.md)。

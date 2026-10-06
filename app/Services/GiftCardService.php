@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\BalanceLog;
 use App\Exceptions\ApiException;
 use App\Http\Resources\PlanResource;
 use App\Models\GiftCardCode;
@@ -177,7 +178,9 @@ class GiftCardService
         $userService = app(UserService::class);
 
         if (isset($rewards['balance']) && $rewards['balance'] > 0) {
-            if (!$userService->addBalance($this->user->id, $rewards['balance'])) {
+            if (!$userService->addBalance($this->user->id, $rewards['balance'], BalanceLog::TYPE_GIFT_CARD, [
+                'ref_type' => 'gift_card', 'ref_id' => $this->code->code, 'remark' => '礼品卡 ' . ($this->template->name ?? ''),
+            ])) {
                 throw new ApiException('余额发放失败');
             }
         }
@@ -247,7 +250,9 @@ class GiftCardService
         if (isset($rewards['balance']) && $rewards['balance'] > 0) {
             $inviteBalance = intval($rewards['balance'] * $rate);
             if ($inviteBalance > 0) {
-                $userService->addBalance($inviteUser->id, $inviteBalance);
+                $userService->addBalance($inviteUser->id, $inviteBalance, BalanceLog::TYPE_GIFT_CARD, [
+                    'ref_type' => 'gift_card', 'ref_id' => $this->code->code, 'remark' => '邀请奖励：被邀请人兑换礼品卡',
+                ]);
                 $inviteRewards['balance'] = $inviteBalance;
             }
         }

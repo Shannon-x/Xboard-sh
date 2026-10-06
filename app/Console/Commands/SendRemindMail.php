@@ -86,6 +86,8 @@ class SendRemindMail extends Command
             ['过期提醒邮件', number_format($stats['expire_emails'])],
             ['续费账单邮件', number_format($stats['invoice_emails'] ?? 0)],
             ['流量提醒邮件', number_format($stats['traffic_emails'])],
+            ['已到期通知', number_format($stats['expired_emails'] ?? 0)],
+            ['挽回邮件', number_format($stats['winback_emails'] ?? 0)],
             ['跳过用户', number_format($stats['skipped'])],
             ['错误数量', number_format($stats['errors'])],
             ['总耗时', round($duration, 2) . ' 秒'],

@@ -30,7 +30,7 @@
                                             </tr>
                                         </table>
                                     </td>
-                                    <td align="right" style="font-family:'Noto Sans SC',sans-serif;font-size:11px;color:#a09890;letter-spacing:2px;text-transform:uppercase;vertical-align:middle;white-space:nowrap;">{{ $doc_title_en }} · {{ $doc_no }}</td>
+                                    <td align="right" style="font-family:'Noto Sans SC',sans-serif;font-size:11px;color:#a09890;letter-spacing:2px;text-transform:uppercase;vertical-align:middle;white-space:nowrap;">{{ $doc_title_en }}@if($doc_no !== '') · {{ $doc_no }}@endif</td>
                                 </tr>
                             </table>
                         </td>
@@ -66,6 +66,9 @@
                         <td style="padding:{{ $has_pdf ? '24px' : '12px' }} 44px 40px 44px;">
                             @if($has_pdf)
                             <div style="font-family:'Noto Sans SC',sans-serif;font-size:12px;color:#a09890;line-height:1.7;">{{ __('billing.footer.attachment', ['file' => $attachment_name]) }}</div>
+                            @endif
+                            @if(!empty($archive_note))
+                            <div style="font-family:'Noto Sans SC',sans-serif;font-size:12px;color:#a09890;line-height:1.7;margin-top:4px;">{{ __('billing.archive.note') }} <a href="{{ $archive_url }}" target="_blank" style="color:#a09890;text-decoration:underline;">{{ __('billing.archive.link') }}</a></div>
                             @endif
                         </td>
                     </tr>

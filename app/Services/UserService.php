@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Jobs\StatServerJob;
 use App\Jobs\StatUserJob;
 use App\Jobs\TrafficFetchJob;
+use App\Models\BalanceLog;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\Server;
@@ -96,7 +97,10 @@ class UserService
         return User::all();
     }
 
-    public function addBalance(int $userId, int $balance): bool
+    /**
+     * 加减余额并记流水。$type / $ctx 见 BalanceLedger；不传就按「后台调整」记，便于定位漏传的调用方。
+     */
+    public function addBalance(int $userId, int $balance, string $type = BalanceLog::TYPE_ADMIN_ADJUST, array $ctx = []): bool
     {
         $user = User::lockForUpdate()->find($userId);
         if (!$user) {
@@ -109,6 +113,7 @@ class UserService
         if (!$user->save()) {
             return false;
         }
+        BalanceLedger::record($user, $type, $balance, $ctx);
         return true;
     }
 

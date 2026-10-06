@@ -20,6 +20,8 @@ use App\Http\Controllers\V2\Admin\SystemController;
 use App\Http\Controllers\V2\Admin\ThemeController;
 use App\Http\Controllers\V2\Admin\TrafficResetController;
 use App\Http\Controllers\V2\Admin\WithdrawController;
+use App\Http\Controllers\V2\Admin\BillingController;
+use App\Http\Controllers\V2\Admin\MailController;
 use Illuminate\Contracts\Routing\Registrar;
 
 class AdminRoute
@@ -167,6 +169,26 @@ class AdminRoute
                 $router->get('/rate', [WithdrawController::class, 'rate']);
                 $router->post('/settle', [WithdrawController::class, 'settle']);
                 $router->post('/reject', [WithdrawController::class, 'reject']);
+            });
+
+            // Billing：归档的收据 / 账单（查询、重发）与余额流水（查询、手工调整）
+            $router->group([
+                'prefix' => 'billing'
+            ], function ($router) {
+                $router->any('/document/fetch', [BillingController::class, 'fetchDocuments']);
+                $router->post('/document/resend', [BillingController::class, 'resendDocument']);
+                $router->any('/balance/log', [BillingController::class, 'balanceLog']);
+                $router->post('/balance/adjust', [BillingController::class, 'adjustBalance']);
+            });
+
+            // Mail：投递日志、统计、暂停投递的用户与解除
+            $router->group([
+                'prefix' => 'mail'
+            ], function ($router) {
+                $router->any('/log/fetch', [MailController::class, 'fetch']);
+                $router->get('/stats', [MailController::class, 'stats']);
+                $router->any('/suppressed', [MailController::class, 'suppressed']);
+                $router->post('/unsuppress', [MailController::class, 'unsuppress']);
             });
 
             // Coupon

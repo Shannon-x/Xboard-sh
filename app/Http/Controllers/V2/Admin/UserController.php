@@ -7,9 +7,11 @@ use App\Http\Requests\Admin\UserGenerate;
 use App\Http\Requests\Admin\UserSendMail;
 use App\Http\Requests\Admin\UserUpdate;
 use App\Jobs\SendEmailJob;
+use App\Models\BalanceLog;
 use App\Models\Plan;
 use App\Models\TicketAttachment;
 use App\Models\User;
+use App\Services\BalanceLedger;
 use App\Services\AuthService;
 use App\Services\NodeSyncService;
 use App\Services\Plugin\HookManager;
@@ -486,8 +488,18 @@ class UserController extends Controller
             'request' => $request,
         ]);
 
+        $balanceBefore = (int) ($user->balance ?? 0);
         try {
             $user->update($params);
+            // 后台直接改余额也要进流水，带操作人；没动余额就不记
+            if (array_key_exists('balance', $params)) {
+                $delta = (int) round((float) $params['balance']) - $balanceBefore;
+                if ($delta !== 0) {
+                    BalanceLedger::record($user->refresh(), BalanceLog::TYPE_ADMIN_ADJUST, $delta, [
+                        'ref_type' => 'admin', 'operator_id' => (int) $request->user()->id, 'remark' => '后台修改用户余额',
+                    ]);
+                }
+            }
         } catch (\Exception $e) {
             Log::error($e);
             return $this->fail([500, '保存失败']);

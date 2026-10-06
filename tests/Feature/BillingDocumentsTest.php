@@ -9,6 +9,7 @@ use App\Models\Order;
 use App\Models\Plan;
 use App\Models\ServerGroup;
 use App\Models\User;
+use App\Services\Billing\BillingArchive;
 use App\Services\Billing\BillingDocumentService;
 use App\Services\Billing\BrandLogo;
 use App\Services\MailService;
@@ -71,7 +72,7 @@ class BillingDocumentsTest extends TestCase
 
     private function runJob(string $kind, int $id, ?string $stage = null, ?int $expiry = null): void
     {
-        (new SendBillingMailJob($kind, $id, $stage, $expiry))->handle(app(BillingDocumentService::class));
+        (new SendBillingMailJob($kind, $id, $stage, $expiry))->handle(app(BillingDocumentService::class), app(BillingArchive::class));
     }
 
     // ───────────────────────── 收据 ─────────────────────────

@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Services\Mail\DeliveryMonitor;
 use App\Services\MailService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -35,8 +36,8 @@ class SendEmailJob implements ShouldQueue
     public function handle()
     {
         $mailLog = MailService::sendEmail($this->params);
-        if ($mailLog['error']) {
-            $this->release(); //发送失败将触发重试
+        if ($mailLog['error'] && DeliveryMonitor::isRetryable($mailLog['category'] ?? DeliveryMonitor::TEMPORARY)) {
+            $this->release(); // 临时失败 / SMTP 配置问题才重试；退信重试只会再退一次
         }
     }
 }

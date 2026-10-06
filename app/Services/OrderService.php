@@ -6,6 +6,7 @@ use App\Exceptions\ApiException;
 use App\Jobs\OrderHandleJob;
 use App\Jobs\SendBillingMailJob;
 use App\Models\Coupon;
+use App\Models\BalanceLog;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\TrafficResetLog;
@@ -246,6 +247,10 @@ class OrderService
 
             if (!$this->user->save()) {
                 throw new \RuntimeException('用户信息保存失败');
+            }
+            if ((int) ($order->refund_amount ?? 0) > 0) {
+                BalanceLedger::record($this->user, BalanceLog::TYPE_ORDER_REFUND, (int) $order->refund_amount,
+                    BalanceLedger::orderCtx($order, '套餐变更：旧套餐折抵超出本单金额的部分退回'));
             }
 
             $order->status = Order::STATUS_COMPLETED;
@@ -833,6 +838,8 @@ class OrderService
                     if (!$lockedUser->save()) {
                         throw new \RuntimeException('re-deduct balance failed');
                     }
+                    BalanceLedger::record($lockedUser, BalanceLog::TYPE_ORDER_PAY, -$balanceAmount,
+                        BalanceLedger::orderCtx($locked, '余额支付（订单重新开通，重新扣除）'));
                 }
 
                 if (
@@ -926,7 +933,8 @@ class OrderService
             }
             if ($order->balance_amount) {
                 $userService = new UserService();
-                if (!$userService->addBalance($order->user_id, $order->balance_amount)) {
+                if (!$userService->addBalance($order->user_id, $order->balance_amount, BalanceLog::TYPE_ORDER_CANCEL,
+                    BalanceLedger::orderCtx($order, '取消订单，退回余额抵扣'))) {
                     throw new \Exception('Failed to add balance.');
                 }
             }
@@ -1206,13 +1214,15 @@ class OrderService
         $remainingBalance = $user->balance - $this->order->total_amount;
 
         if ($remainingBalance >= 0) {
-            if (!$userService->addBalance($this->order->user_id, -$this->order->total_amount)) {
+            if (!$userService->addBalance($this->order->user_id, -$this->order->total_amount, BalanceLog::TYPE_ORDER_PAY,
+                BalanceLedger::orderCtx($this->order, '余额支付'))) {
                 throw new ApiException(__('Insufficient balance'));
             }
             $this->order->balance_amount = $this->order->total_amount;
             $this->order->total_amount = 0;
         } else {
-            if (!$userService->addBalance($this->order->user_id, -$user->balance)) {
+            if (!$userService->addBalance($this->order->user_id, -$user->balance, BalanceLog::TYPE_ORDER_PAY,
+                BalanceLedger::orderCtx($this->order, '余额抵扣部分金额'))) {
                 throw new ApiException(__('Insufficient balance'));
             }
             $this->order->balance_amount = $user->balance;

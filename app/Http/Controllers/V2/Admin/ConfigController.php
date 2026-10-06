@@ -216,6 +216,11 @@ class ConfigController extends Controller
                 'billing_issuer' => (string) admin_setting('billing_issuer', ''),
                 'billing_logo' => (string) admin_setting('billing_logo', ''),
                 'billing_recommend_plan_ids' => (string) admin_setting('billing_recommend_plan_ids', ''),
+                'billing_expired_enable' => (bool) (int) admin_setting('billing_expired_enable', 1),
+                'billing_winback_enable' => (bool) (int) admin_setting('billing_winback_enable', 1),
+                'billing_winback_days' => (string) admin_setting('billing_winback_days', '7,30'),
+                'billing_winback_coupon' => (string) admin_setting('billing_winback_coupon', ''),
+                'mail_digest_enable' => (bool) (int) admin_setting('mail_digest_enable', 1),
             ],
             'telegram' => [
                 'telegram_bot_enable' => (bool) admin_setting('telegram_bot_enable', 0),

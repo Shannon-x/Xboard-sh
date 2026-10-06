@@ -4,11 +4,13 @@ namespace App\Services;
 
 use App\Exceptions\ApiException;
 use App\Jobs\OrderHandleJob;
+use App\Jobs\SendBillingMailJob;
 use App\Models\Coupon;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\TrafficResetLog;
 use App\Models\User;
+use App\Services\Billing\BillingDocumentService;
 use App\Services\Plugin\HookManager;
 use App\Support\PaymentGatewayBinding;
 use App\Support\PaymentMetrics;
@@ -259,6 +261,11 @@ class OrderService
         }
 
         HookManager::call('order.open.after', $order);
+
+        // 付款开通后给用户发带 PDF 的收据。afterCommit：OrderHandleJob 把 open() 包在事务里，回滚了就不发
+        if (BillingDocumentService::receiptEnabled()) {
+            SendBillingMailJob::dispatchReceipt($order);
+        }
     }
 
 

@@ -112,6 +112,13 @@ class ConfigSave extends FormRequest
         'email_encryption' => 'nullable|string|max:32',
         'email_from_address' => 'nullable|string|email:strict|max:255',
         'remind_mail_enable' => '',
+        // 收据 / 续费账单邮件：开关、提前天数（0 或 1 = 只发到期前 24h 的最后提醒）、文案语言、开具方抬头、推荐套餐 id 列表
+        'billing_receipt_enable' => '',
+        'billing_invoice_enable' => '',
+        'billing_invoice_days' => 'nullable|integer|min:0|max:30',
+        'billing_locale' => 'nullable|in:zh-CN,zh-TW,en-US',
+        'billing_issuer' => 'nullable|string|max:255',
+        'billing_recommend_plan_ids' => ['nullable', 'string', 'max:255', 'regex:/^\s*(\d+\s*(,\s*\d+\s*)*)?$/'],
         // telegram
         'telegram_bot_enable' => 'boolean',
         'telegram_bot_token' => 'nullable|string|max:128',

@@ -1,0 +1,419 @@
+<?php
+
+namespace App\Services\Billing;
+
+use App\Models\Order;
+use App\Models\Plan;
+use App\Models\User;
+use App\Services\PlanCustomizationService;
+use App\Services\RenewService;
+use Illuminate\Support\Facades\App;
+use Mpdf\Mpdf;
+
+/**
+ * 收据 / 续费账单：组装数据 → 渲染邮件正文与 PDF。
+ *
+ * 模板在 resources/views/billing/，刻意不放 resources/views/mail/：生产上那个目录被宿主机挂载覆盖，
+ * 放进去的新模板不会生效，也不该受 email_template 主题切换影响。视觉沿用 editorial 的米色纸感 + 衬线标题。
+ *
+ * 金额全部是「分」。字体是仓库内子集化的 Noto Sans SC / Noto Serif SC（GB2312 + Big5 常用字），
+ * PDF 只嵌入用到的字形，单份几十 KB，远低于 OCI Email Delivery 默认 2MB 的整封邮件上限。
+ */
+class BillingDocumentService
+{
+    public const STAGE_FIRST = 'first';
+    public const STAGE_FINAL = 'final';
+
+    public const LOCALES = ['zh-CN', 'zh-TW', 'en-US'];
+
+    public static function receiptEnabled(): bool
+    {
+        return (bool) (int) admin_setting('billing_receipt_enable', 1);
+    }
+
+    /** 到期前几天发首张续费账单；0 或 1 = 不发提前账单，只保留到期前 24 小时的最后提醒。 */
+    public static function invoiceDays(): int
+    {
+        return max(0, min(30, (int) admin_setting('billing_invoice_days', 7)));
+    }
+
+    /** 到期前 24 小时的最后提醒是否改用带账单 PDF 的新模板；关掉则回落旧的 remindExpire。 */
+    public static function invoiceEnabled(): bool
+    {
+        return (bool) (int) admin_setting('billing_invoice_enable', 1);
+    }
+
+    /** 用户表没有语言字段，收据 / 账单按站点统一语言出；默认跟 app.locale（zh-CN）。 */
+    public static function locale(): string
+    {
+        $locale = (string) admin_setting('billing_locale', config('app.locale', 'zh-CN'));
+        return in_array($locale, self::LOCALES, true) ? $locale : 'zh-CN';
+    }
+
+    /** 在账单语言下执行，结束后恢复（队列 worker 常驻，不能把 locale 留给下一个任务）。 */
+    public static function withLocale(callable $fn)
+    {
+        $previous = App::getLocale();
+        App::setLocale(self::locale());
+        try {
+            return $fn();
+        } finally {
+            App::setLocale($previous);
+        }
+    }
+
+    // ---------------------------------------------------------------- 收据
+
+    /** 已完成订单的收据数据；免费单（实付 0）或用户没邮箱时返回 null，不发收据。 */
+    public function receipt(Order $order): ?array
+    {
+        $order->loadMissing(['user', 'payment']);
+        $user = $order->user;
+        if (!$user || !$user->email) return null;
+
+        $cash = max(0, (int) $order->total_amount);
+        $balance = max(0, (int) ($order->balance_amount ?? 0));
+        $discount = max(0, (int) ($order->discount_amount ?? 0));
+        $surplus = max(0, (int) ($order->surplus_amount ?? 0));
+        $handling = max(0, (int) ($order->handling_amount ?? 0));
+        if ($cash + $balance + $handling <= 0) return null;
+
+        $subtotal = $cash + $balance + $discount + $surplus;
+        $total = $subtotal - $discount - $surplus + $handling;
+        $paidAt = (int) ($order->paid_at ?: $order->updated_at ?: time());
+        $isAuto = !empty($order->auto_renew);
+
+        $payments = [];
+        if ($balance > 0) {
+            $payments[] = ['label' => __('billing.field.paid_balance'), 'method' => __('billing.payment.balance'), 'amount' => $balance];
+        }
+        if ($cash + $handling > 0) {
+            $payments[] = ['label' => __('billing.field.paid_online'), 'method' => $order->payment?->name ?: '—', 'amount' => $cash + $handling];
+        }
+
+        $plan = Plan::find($order->plan_id);
+        $data = $this->base() + [
+            'kind' => 'receipt',
+            'doc_title' => __('billing.receipt.doc_title'),
+            'doc_title_en' => __('billing.receipt.doc_title_en'),
+            'stamp' => __('billing.receipt.stamp'),
+            'stamp_soft' => false,
+            'doc_no' => sprintf('RC-%s-%06d', date('Ymd', $paidAt), $order->id),
+            'trade_no' => (string) $order->trade_no,
+            'issued_at' => $this->date(time()),
+            'paid_at' => $this->dateTime($paidAt),
+            'order_type' => __('billing.type.' . (int) $order->type),
+            'payment_method' => implode(' + ', array_column($payments, 'method')),
+            'bill_to' => ['email' => $user->email, 'id' => (int) $user->id],
+            'items' => [$this->orderItem($order, $plan, $user)],
+            'totals' => array_values(array_filter([
+                ['label' => __('billing.field.subtotal'), 'amount' => $subtotal],
+                $discount > 0 ? ['label' => __('billing.field.discount'), 'amount' => -$discount] : null,
+                $surplus > 0 ? ['label' => __('billing.field.surplus'), 'amount' => -$surplus] : null,
+                $handling > 0 ? ['label' => __('billing.field.handling'), 'amount' => $handling] : null,
+            ])),
+            'total' => $total,
+            'payments' => $payments,
+            'balance_due' => 0,
+            'notes' => array_values(array_filter([
+                $isAuto ? __('billing.receipt.auto_renew_note') : null,
+                (int) ($order->refund_amount ?? 0) > 0 ? __('billing.receipt.refund_note', ['amount' => $this->money((int) $order->refund_amount)]) : null,
+            ])),
+            'headline' => __('billing.receipt.headline'),
+            'intro' => __('billing.receipt.intro'),
+            'cta_label' => __('billing.receipt.cta'),
+            'cta_url' => $this->url('/dashboard'),
+            'has_pdf' => true,
+            'alternatives' => [],
+        ];
+        $data['subject'] = __('billing.receipt.subject', ['no' => $data['doc_no'], 'app' => $data['app_name']]);
+        $data['meta'] = [
+            [__('billing.field.receipt_no'), $data['doc_no']],
+            [__('billing.field.trade_no'), $data['trade_no']],
+            [__('billing.field.paid_at'), $data['paid_at']],
+            [__('billing.field.payment_method'), $data['payment_method']],
+            [__('billing.field.order_type'), $data['order_type']],
+        ];
+        return $this->decorate($data);
+    }
+
+    private function orderItem(Order $order, ?Plan $plan, User $user): array
+    {
+        $period = (string) $order->period;
+        $snapshot = (array) ($order->plan_snapshot ?? []);
+        $name = (string) ($snapshot['name'] ?? $plan?->name ?? ('#' . $order->plan_id));
+
+        if ($period === Plan::PERIOD_TRAFFIC_TOPUP) {
+            $details = isset($snapshot['topup_gb']) ? [__('billing.field.traffic') . ' +' . (int) $snapshot['topup_gb'] . ' GB'] : [];
+        } elseif ($period === Plan::PERIOD_RESET_TRAFFIC) {
+            $details = [];
+        } else {
+            $options = $snapshot['options'] ?? null;
+            $pick = fn (string $key) => is_array($options) && array_key_exists($key, $options) ? $options[$key] : $plan?->{$key};
+            $details = $this->specLines($pick('transfer_enable'), $pick('device_limit'), $pick('speed_limit'),
+                $plan ? array_column(app(PlanCustomizationService::class)->addonGroupsForUser($plan, $user), 'name') : []);
+        }
+
+        $periodic = !in_array($period, [Plan::PERIOD_ONETIME, Plan::PERIOD_RESET_TRAFFIC, Plan::PERIOD_TRAFFIC_TOPUP], true);
+        return [
+            'name' => $name,
+            'period' => $this->periodName($period),
+            'details' => $details,
+            'until' => $periodic && $user->expired_at ? $this->date((int) $user->expired_at) : null,
+            'amount' => max(0, (int) $order->total_amount) + max(0, (int) ($order->balance_amount ?? 0))
+                + max(0, (int) ($order->discount_amount ?? 0)) + max(0, (int) ($order->surplus_amount ?? 0)),
+        ];
+    }
+
+    // ---------------------------------------------------------------- 续费账单
+
+    /**
+     * 到期前续费账单。spec 不可续（套餐下架 / 不允许续费…）时 has_pdf=false：
+     * 邮件只引导换套餐、不附 PDF —— 一张没有应付金额的账单没有意义。
+     */
+    public function invoice(User $user, string $stage): array
+    {
+        $renew = app(RenewService::class);
+        $spec = $renew->resolveSpec($user);
+        $auto = $renew->autoState($user, $spec);
+        $expiredAt = (int) $user->expired_at;
+        $days = max(1, (int) ceil(($expiredAt - time()) / 86400));
+        $plan = Plan::find($spec['plan_id'] ?? $user->plan_id);
+        $planName = (string) ($spec['plan_name'] ?? ($plan?->name ?? ''));
+
+        $autoCovered = $spec['available'] && $auto['enabled'] && $auto['site_enabled'] && $auto['balance_enough'];
+        $autoShort = $spec['available'] && $auto['enabled'] && $auto['site_enabled'] && !$auto['balance_enough'];
+
+        $data = $this->base() + [
+            'kind' => 'invoice',
+            'stage' => $stage,
+            'doc_title' => __('billing.invoice.doc_title'),
+            'doc_title_en' => __('billing.invoice.doc_title_en'),
+            'stamp' => $autoCovered ? __('billing.invoice.stamp_auto') : __('billing.invoice.stamp_unpaid'),
+            'stamp_soft' => $autoCovered,
+            'has_pdf' => (bool) $spec['available'],
+            'auto_covered' => $autoCovered,
+            'doc_no' => sprintf('INV-%s-%06d', date('Ymd', $expiredAt), $user->id),
+            'issued_at' => $this->date(time()),
+            'due_at' => $this->dateTime($expiredAt),
+            'due_date' => $this->date($expiredAt),
+            'days' => $days,
+            'plan_name' => $planName,
+            'bill_to' => ['email' => $user->email, 'id' => (int) $user->id],
+            'alternatives' => $this->alternatives($user, $plan),
+            'browse_url' => $this->url('/plans'),
+            'headline' => $stage === self::STAGE_FINAL
+                ? __('billing.invoice.headline_final')
+                : __('billing.invoice.headline_first', ['days' => $days]),
+            'meta' => [],
+            'items' => [],
+            'totals' => [],
+            'total' => 0,
+            'payments' => [],
+            'balance_due' => 0,
+            'notes' => [],
+        ];
+
+        if (!$spec['available']) {
+            $data['subject'] = __('billing.invoice.subject_unavailable', ['app' => $data['app_name']]);
+            $data['intro'] = __('billing.invoice.intro_unavailable', ['reason' => $spec['message']]);
+            $data['cta_label'] = __('billing.invoice.cta_browse');
+            $data['cta_url'] = $data['browse_url'];
+            $data['meta'] = [
+                [__('billing.field.invoice_no'), $data['doc_no']],
+                [__('billing.field.expires_at'), $data['due_at']],
+            ];
+            return $this->decorate($data);
+        }
+
+        $list = (int) $spec['list_amount'];
+        $amount = (int) $spec['amount'];
+        $data = array_replace($data, [
+            'items' => [[
+                'name' => $planName,
+                'period' => $this->periodName($spec['period']),
+                'details' => $this->specLines($spec['summary']['transfer_enable'], $spec['summary']['device_limit'],
+                    $spec['summary']['speed_limit'], $spec['summary']['addon_names']),
+                'until' => null,
+                'amount' => $list,
+            ]],
+            'totals' => array_values(array_filter([
+                ['label' => __('billing.field.subtotal'), 'amount' => $list],
+                $list > $amount ? ['label' => __('billing.field.vip_discount', ['pct' => (int) $spec['discount']]), 'amount' => $amount - $list] : null,
+            ])),
+            'total' => $amount,
+            'balance_due' => $amount,
+            'account_balance' => (int) $auto['balance'],
+            'meta' => [
+                [__('billing.field.invoice_no'), $data['doc_no']],
+                [__('billing.field.issued_at'), $data['issued_at']],
+                [__('billing.field.due_at'), $data['due_at']],
+                [__('billing.field.expires_at'), $data['due_at']],
+            ],
+            'subject' => $stage === self::STAGE_FINAL
+                ? __('billing.invoice.subject_final', ['plan' => $planName, 'app' => $data['app_name']])
+                : __('billing.invoice.subject_first', ['no' => $data['doc_no'], 'plan' => $planName, 'date' => $data['due_date'], 'app' => $data['app_name']]),
+            'intro' => $autoCovered
+                ? __('billing.invoice.intro_auto')
+                : ($autoShort
+                    ? __('billing.invoice.intro_auto_short', ['amount' => $this->money((int) $auto['shortfall'])])
+                    : __('billing.invoice.intro')),
+            'cta_label' => $autoCovered ? __('billing.invoice.cta_auto') : __('billing.invoice.cta'),
+            'cta_url' => $autoCovered ? $this->url('/dashboard') : $this->url('/plans?mode=renew'),
+        ]);
+        return $this->decorate($data);
+    }
+
+    /**
+     * 「也可以看看」：后台 billing_recommend_plan_ids（逗号分隔）优先；
+     * 没配就挑在售套餐里月均价最接近当前套餐的 3 个。
+     */
+    public function alternatives(User $user, ?Plan $current): array
+    {
+        $configured = array_values(array_filter(array_map('intval', explode(',', (string) admin_setting('billing_recommend_plan_ids', '')))));
+        $query = Plan::where('show', true)->where('sell', true)->where('id', '!=', (int) $user->plan_id);
+        if ($configured) $query->whereIn('id', $configured);
+        $candidates = [];
+        foreach ($query->orderBy('sort')->get() as $plan) {
+            $best = $this->cheapestMonthly($plan);
+            if ($best === null) continue;
+            $candidates[] = ['plan' => $plan, 'monthly' => $best['monthly']];
+        }
+        if ($configured) {
+            usort($candidates, fn ($a, $b) => array_search($a['plan']->id, $configured) <=> array_search($b['plan']->id, $configured));
+        } else {
+            $anchor = $current ? ($this->cheapestMonthly($current)['monthly'] ?? null) : null;
+            if ($anchor !== null) {
+                usort($candidates, fn ($a, $b) => abs($a['monthly'] - $anchor) <=> abs($b['monthly'] - $anchor));
+            }
+        }
+        return array_map(fn ($c) => [
+            'name' => (string) $c['plan']->name,
+            'price' => __('billing.invoice.from_price', ['price' => $this->money($c['monthly']), 'period' => __('billing.period.unit_monthly')]),
+            'details' => $this->specLines($c['plan']->transfer_enable, $c['plan']->device_limit, $c['plan']->speed_limit, []),
+            'url' => $this->url('/plans?plan=' . $c['plan']->id),
+        ], array_slice($candidates, 0, 3));
+    }
+
+    /** 最划算周期折算的月均价（分）。只看周期价，不算一次性 / 重置包。 */
+    private function cheapestMonthly(Plan $plan): ?array
+    {
+        $best = null;
+        foreach (Plan::getAvailablePeriods() as $key => $meta) {
+            $price = ($plan->prices ?? [])[$key] ?? null;
+            if (!is_numeric($price) || $price <= 0 || in_array($key, [Plan::PERIOD_ONETIME, Plan::PERIOD_RESET_TRAFFIC], true)) continue;
+            $months = max(1, (int) ($meta['value'] ?? 1));
+            $monthly = (int) round($price * 100 / $months);
+            if ($best === null || $monthly < $best['monthly']) $best = ['monthly' => $monthly, 'period' => $key];
+        }
+        return $best;
+    }
+
+    // ---------------------------------------------------------------- 渲染
+
+    public function pdf(array $data): string
+    {
+        $tempDir = storage_path('framework/cache/mpdf');
+        if (!is_dir($tempDir)) @mkdir($tempDir, 0775, true);
+        $defaults = (new \Mpdf\Config\ConfigVariables())->getDefaults();
+        $mpdf = new Mpdf([
+            'mode' => 'utf-8',
+            'format' => 'A4',
+            'margin_left' => 18, 'margin_right' => 18, 'margin_top' => 16, 'margin_bottom' => 22,
+            'margin_footer' => 10,
+            'tempDir' => $tempDir,
+            'fontDir' => array_merge([resource_path('fonts/billing')], $defaults['fontDir']),
+            'fontdata' => [
+                'notosans' => ['R' => 'NotoSansSC-Regular.ttf', 'B' => 'NotoSansSC-Bold.ttf'],
+                'notoserif' => ['R' => 'NotoSerifSC-Bold.ttf', 'B' => 'NotoSerifSC-Bold.ttf'],
+            ],
+            'default_font' => 'notosans',
+            // 子集只覆盖常用字，生僻字（比如用户邮箱 / 套餐名里的）回落到另一字体，而不是显示成方框
+            'useSubstitutions' => true,
+            'backupSubsFont' => ['notosans', 'dejavusans'],
+            'autoScriptToLang' => false,
+            'autoLangToFont' => false,
+        ]);
+        $mpdf->SetTitle($data['doc_title'] . ' ' . $data['doc_no']);
+        $mpdf->SetAuthor($data['app_name']);
+        $mpdf->SetCreator($data['app_name']);
+        $mpdf->WriteHTML(view('billing.pdf.document', $data)->render());
+        return $mpdf->Output('', 'S');
+    }
+
+    public function attachmentName(array $data): string
+    {
+        return $data['doc_no'] . '.pdf';
+    }
+
+    // ---------------------------------------------------------------- 工具
+
+    private function base(): array
+    {
+        return [
+            'app_name' => (string) admin_setting('app_name', 'XBoard'),
+            'app_url' => $this->url(''),
+            'issuer' => trim((string) admin_setting('billing_issuer', '')),
+            'currency' => (string) admin_setting('currency', 'CNY'),
+            'locale' => App::getLocale(),
+            'settings_url' => $this->url('/settings'),
+        ];
+    }
+
+    /** 给模板预格式化金额字符串（*_fmt），模板不碰数字。 */
+    private function decorate(array $data): array
+    {
+        foreach ($data['items'] as &$item) $item['amount_fmt'] = $this->money((int) $item['amount']);
+        foreach ($data['totals'] as &$row) $row['amount_fmt'] = $this->money((int) $row['amount']);
+        foreach ($data['payments'] as &$row) $row['amount_fmt'] = $this->money((int) $row['amount']);
+        unset($item, $row);
+        $data['total_fmt'] = $this->money((int) $data['total']);
+        $data['balance_due_fmt'] = $this->money((int) $data['balance_due']);
+        if (isset($data['account_balance'])) $data['account_balance_fmt'] = $this->money((int) $data['account_balance']);
+        $data['attachment_name'] = $data['has_pdf'] ? $this->attachmentName($data) : null;
+        return $data;
+    }
+
+    public function money(int $cents): string
+    {
+        $symbol = (string) admin_setting('currency_symbol', '¥');
+        // 用 ASCII 连字符而不是 U+2212：子集字体里没有后者，mPDF 会回落到 Symbol 字体，渲染成一道怪杠
+        return ($cents < 0 ? '-' : '') . $symbol . number_format(abs($cents) / 100, 2);
+    }
+
+    private function specLines($transferGb, $devices, $speed, array $addons): array
+    {
+        $unlimited = __('billing.field.unlimited');
+        $lines = [];
+        if ($transferGb !== null) {
+            $lines[] = __('billing.field.traffic') . ' ' . ((int) $transferGb > 0 ? (int) $transferGb . ' GB' : $unlimited);
+        }
+        $lines[] = __('billing.field.devices') . ' ' . ($devices ? __('billing.field.devices_value', ['n' => (int) $devices]) : $unlimited);
+        $lines[] = __('billing.field.speed') . ' ' . ($speed ? (int) $speed . ' Mbps' : $unlimited);
+        if ($addons) $lines[] = __('billing.field.addons') . ' ' . implode('、', $addons);
+        return $lines;
+    }
+
+    private function periodName(string $period): string
+    {
+        $key = 'billing.period.' . $period;
+        $name = __($key);
+        return $name === $key ? $period : $name;
+    }
+
+    private function date(int $ts): string
+    {
+        return date('Y-m-d', $ts);
+    }
+
+    private function dateTime(int $ts): string
+    {
+        return date('Y-m-d H:i', $ts);
+    }
+
+    /** 链接一律基于后台 app_url（用户端前端地址），不读 .env 的 APP_URL。 */
+    private function url(string $path): string
+    {
+        return rtrim((string) admin_setting('app_url', ''), '/') . $path;
+    }
+}

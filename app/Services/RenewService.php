@@ -7,6 +7,7 @@ use App\Jobs\SendEmailJob;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\User;
+use App\Services\Billing\BillingDocumentService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -229,18 +230,21 @@ class RenewService
         $content = sprintf('已自动续费：%s · %s · ¥%.2f，已从余额扣除。新到期时间：%s。订单号 %s。',
             $spec['plan_name'], $spec['period_name'], $spec['amount'] / 100,
             $user->expired_at ? date('Y-m-d H:i', (int) $user->expired_at) : '—', $order->trade_no);
-        $this->send($user, '已自动续费', $content);
+        // 开了收据功能时，订单开通会发带 PDF 的收据（注明自动续费扣款），这封纯文字通知就只走 Telegram
+        $this->send($user, '已自动续费', $content, email: !BillingDocumentService::receiptEnabled());
     }
 
-    private function send(User $user, string $subject, string $content): void
+    private function send(User $user, string $subject, string $content, bool $email = true): void
     {
         $appName = admin_setting('app_name', 'XBoard');
-        SendEmailJob::dispatch([
-            'email' => $user->email,
-            'subject' => $subject . ' - ' . $appName,
-            'template_name' => 'notify',
-            'template_value' => ['name' => $appName, 'url' => admin_setting('app_url'), 'content' => $content],
-        ]);
+        if ($email) {
+            SendEmailJob::dispatch([
+                'email' => $user->email,
+                'subject' => $subject . ' - ' . $appName,
+                'template_name' => 'notify',
+                'template_value' => ['name' => $appName, 'url' => admin_setting('app_url'), 'content' => $content],
+            ]);
+        }
         if ($user->telegram_id) {
             try {
                 app(TelegramService::class)->sendMessage((int) $user->telegram_id, $subject . "\n" . $content);

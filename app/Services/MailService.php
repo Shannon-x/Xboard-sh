@@ -2,9 +2,11 @@
 
 namespace App\Services;
 
+use App\Jobs\SendBillingMailJob;
 use App\Jobs\SendEmailJob;
 use App\Models\MailLog;
 use App\Models\User;
+use App\Services\Billing\BillingDocumentService;
 use App\Utils\CacheKey;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Config;
@@ -62,12 +64,14 @@ class MailService
         $statistics = [
             'processed_users' => 0,
             'expire_emails' => 0,
+            'invoice_emails' => 0,
             'traffic_emails' => 0,
             'errors' => 0,
             'skipped' => 0,
         ];
 
-        User::select('id', 'email', 'expired_at', 'transfer_enable', 'u', 'd', 'remind_expire', 'remind_traffic')
+        User::select('id', 'email', 'expired_at', 'transfer_enable', 'u', 'd', 'remind_expire', 'remind_traffic',
+            'plan_id', 'invoice_notified_at', 'invoice_final_notified_at')
             ->where(function ($query) {
                 $query->where('remind_expire', true)
                     ->orWhere('remind_traffic', true);
@@ -100,9 +104,15 @@ class MailService
                 $statistics['processed_users']++;
                 $emailsSent = 0;
 
+                // 到期前 N 天：带续费账单 PDF 的首张账单（24 小时内的归下面的最后提醒）
+                if ($user->remind_expire && $this->shouldSendInvoiceFirst($user)) {
+                    $this->sendInvoiceFirst($user);
+                    $statistics['invoice_emails']++;
+                    $emailsSent++;
+                }
+
                 // 检查并发送过期提醒
-                if ($user->remind_expire && $this->shouldSendExpireRemind($user)) {
-                    $this->remindExpire($user);
+                if ($user->remind_expire && $this->remindExpire($user)) {
                     $statistics['expire_emails']++;
                     $emailsSent++;
                 }
@@ -187,10 +197,57 @@ class MailService
         ]);
     }
 
-    public function remindExpire(User $user)
+    /**
+     * 首张续费账单：到期前 billing_invoice_days 天内、且不在最后 24 小时里，同一个到期日只发一次。
+     */
+    private function shouldSendInvoiceFirst(User $user): bool
+    {
+        $days = BillingDocumentService::invoiceDays();
+        if ($days <= 0 || !BillingDocumentService::invoiceEnabled() || !$user->plan_id || $user->expired_at === null) {
+            return false;
+        }
+        $expiredAt = (int) $user->expired_at;
+        $now = time();
+        if ($expiredAt <= $now + 86400 || $expiredAt > $now + $days * 86400) {
+            return false;
+        }
+        return (int) ($user->invoice_notified_at ?? 0) !== $expiredAt;
+    }
+
+    private function sendInvoiceFirst(User $user): void
+    {
+        if ($this->markInvoiceNotified($user, 'invoice_notified_at')) {
+            SendBillingMailJob::dispatchInvoice($user, BillingDocumentService::STAGE_FIRST);
+        }
+    }
+
+    /**
+     * 先打标记再派发（条件更新：两个进程同时跑也只有一个能改到），标记值是到期时间戳，
+     * 续费后 expired_at 变了下个周期自然再发。
+     */
+    private function markInvoiceNotified(User $user, string $column): bool
+    {
+        $expiredAt = (int) $user->expired_at;
+        $changed = User::where('id', $user->id)
+            ->where(fn ($q) => $q->whereNull($column)->orWhere($column, '!=', $expiredAt))
+            ->update([$column => $expiredAt]);
+        return $changed > 0;
+    }
+
+    /** @return bool 是否真的派发了邮件（同一个到期日的最后提醒只发一次） */
+    public function remindExpire(User $user): bool
     {
         if (!$this->shouldSendExpireRemind($user)) {
-            return;
+            return false;
+        }
+
+        // 新版最后提醒：带续费账单 PDF、续费入口和可选套餐；关掉开关或用户没有套餐时回落旧模板
+        if (BillingDocumentService::invoiceEnabled() && $user->plan_id) {
+            if (!$this->markInvoiceNotified($user, 'invoice_final_notified_at')) {
+                return false;
+            }
+            SendBillingMailJob::dispatchInvoice($user, BillingDocumentService::STAGE_FINAL);
+            return true;
         }
 
         SendEmailJob::dispatch([
@@ -204,6 +261,7 @@ class MailService
                 'url' => admin_setting('app_url')
             ]
         ]);
+        return true;
     }
 
     private function remindTrafficIsWarnValue($u, $d, $transfer_enable)
@@ -238,15 +296,6 @@ class MailService
      */
     public static function sendEmail(array $params)
     {
-        if (admin_setting('email_host')) {
-            Config::set('mail.host', admin_setting('email_host', config('mail.host')));
-            Config::set('mail.port', admin_setting('email_port', config('mail.port')));
-            Config::set('mail.encryption', admin_setting('email_encryption', config('mail.encryption')));
-            Config::set('mail.username', admin_setting('email_username', config('mail.username')));
-            Config::set('mail.password', admin_setting('email_password', config('mail.password')));
-            Config::set('mail.from.address', admin_setting('email_from_address', config('mail.from.address')));
-            Config::set('mail.from.name', admin_setting('app_name', 'XBoard'));
-        }
         $email = $params['email'];
         $subject = $params['subject'];
 
@@ -267,25 +316,43 @@ class MailService
             $templateValue['content'] = e($templateValue['content']);
         }
 
-        $params['template_value'] = $templateValue;
-        $params['template_name'] = 'mail.' . admin_setting('email_template', 'default') . '.' . $params['template_name'];
+        $view = 'mail.' . admin_setting('email_template', 'default') . '.' . $params['template_name'];
+        return self::deliver($email, $subject, $view, is_array($templateValue) ? $templateValue : []);
+    }
+
+    /**
+     * 实际发信：套上后台 SMTP 配置 → Mail::send → 记 v2_mail_log。sendEmail() 与收据 / 账单任务共用。
+     *
+     * @param array $attachments 每项 ['name' => 文件名, 'data' => 二进制内容, 'mime' => MIME]
+     * @return array{email: string, subject: string, template_name: string, error: string|null}
+     */
+    public static function deliver(string $email, string $subject, string $view, array $data, array $attachments = []): array
+    {
+        if (admin_setting('email_host')) {
+            Config::set('mail.host', admin_setting('email_host', config('mail.host')));
+            Config::set('mail.port', admin_setting('email_port', config('mail.port')));
+            Config::set('mail.encryption', admin_setting('email_encryption', config('mail.encryption')));
+            Config::set('mail.username', admin_setting('email_username', config('mail.username')));
+            Config::set('mail.password', admin_setting('email_password', config('mail.password')));
+            Config::set('mail.from.address', admin_setting('email_from_address', config('mail.from.address')));
+            Config::set('mail.from.name', admin_setting('app_name', 'XBoard'));
+        }
         try {
-            Mail::send(
-                $params['template_name'],
-                $params['template_value'],
-                function ($message) use ($email, $subject) {
-                    $message->to($email)->subject($subject);
+            Mail::send($view, $data, function ($message) use ($email, $subject, $attachments) {
+                $message->to($email)->subject($subject);
+                foreach ($attachments as $attachment) {
+                    $message->attachData($attachment['data'], $attachment['name'], ['mime' => $attachment['mime'] ?? 'application/octet-stream']);
                 }
-            );
+            });
             $error = null;
         } catch (\Exception $e) {
             Log::error($e);
             $error = $e->getMessage();
         }
         $log = [
-            'email' => $params['email'],
-            'subject' => $params['subject'],
-            'template_name' => $params['template_name'],
+            'email' => $email,
+            'subject' => $subject,
+            'template_name' => $view,
             'error' => $error,
             // 故意不写 'config' => config('mail')：
             // ① v2_mail_log 表 schema 没有 config 列，Eloquent 会静默丢弃这个 key —— 没有真实写入；

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\SendBillingMailJob;
 use App\Jobs\SendEmailJob;
 use App\Models\Order;
 use App\Models\Plan;
@@ -30,7 +31,7 @@ class AutoRenewTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Bus::fake([SendEmailJob::class]);   // 只拦邮件；OrderHandleJob::dispatchSync 照常执行
+        Bus::fake([SendEmailJob::class, SendBillingMailJob::class]);   // 只拦邮件；OrderHandleJob::dispatchSync 照常执行
         $this->base = $this->group('基础');
         $this->premium = $this->group('10x 专线');
     }
@@ -277,7 +278,9 @@ class AutoRenewTest extends TestCase
         $this->assertSame(500, (int) $user->balance);
         $this->assertGreaterThan($oldExpiredAt + 29 * 86400, (int) $user->expired_at, '叠加了一个月');
         $this->assertSame([$this->premium->id], $user->plan_options['addon_groups'], '增值线路跟着续上');
-        Bus::assertDispatchedTimes(SendEmailJob::class, 1);
+        // 开通时发带 PDF 的收据（注明自动续费扣款），不再另发一封纯文字的「已自动续费」邮件
+        Bus::assertNotDispatched(SendEmailJob::class);
+        Bus::assertDispatched(SendBillingMailJob::class, fn (SendBillingMailJob $job) => $job->kind === SendBillingMailJob::KIND_RECEIPT && $job->id === $order->id);
     }
 
     public function test_insufficient_balance_never_deducts_and_notifies_once_per_expiry(): void

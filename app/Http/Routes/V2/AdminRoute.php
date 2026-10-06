@@ -151,6 +151,8 @@ class AdminRoute
                 $router->any('/fetch', [TicketController::class, 'fetch']);
                 $router->post('/reply', [TicketController::class, 'reply']);
                 $router->post('/close', [TicketController::class, 'close']);
+                $router->post('/update', [TicketController::class, 'update']);
+                $router->get('/stat', [TicketController::class, 'stat']);
                 $router->post('/attachment/upload', [TicketAttachmentController::class, 'upload']);
                 $router->post('/attachment/delete', [TicketAttachmentController::class, 'delete']);
             });

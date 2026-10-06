@@ -183,5 +183,7 @@
     "Invite code may only contain letters, numbers, hyphens and underscores, and must start with a letter or number": "邀请码仅可包含字母、数字、中划线和下划线，且必须以字母或数字开头",
     "This invite code is reserved": "该邀请码为系统保留字，不可使用",
     "This invite code is already taken": "该邀请码已被占用",
-    "Please try again": "请重试"
+    "Please try again": "请重试",
+    "Invalid ticket category": "工单分类无效",
+    "Too many open feedback tickets": "未关闭的建议与反馈已达上限，请等之前的处理完再提交"
 }

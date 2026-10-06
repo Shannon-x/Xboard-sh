@@ -6,6 +6,7 @@ use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Payment;
 use App\Services\TicketAttachment\AttachmentConfig;
+use App\Services\TicketCategory\TicketCategories;
 use App\Utils\Dict;
 use Illuminate\Http\Request;
 
@@ -27,6 +28,9 @@ class CommController extends Controller
             'commission_distribution_l3' => admin_setting('commission_distribution_l3'),
             // 工单附件的公开限制（前端据此决定是否显示上传入口、做本地预检）
             'ticket_attachment' => AttachmentConfig::fromSettings()->toPublicArray(),
+            // 新建工单可选的分类（code / type / 中文名）。前端按 code 取多语言文案；
+            // 老后端没有这个字段时前端退回「无分类」的旧表单
+            'ticket_categories' => TicketCategories::toPublicArray(),
         ];
         return $this->success($data);
     }

@@ -210,9 +210,16 @@ class SingBox extends AbstractProtocol
             $this->stripEchQueryServerName();
         }
 
-        // >= 1.14.0: independent_cache 已废弃（DNS 缓存恒按 transport 隔离）
+        // >= 1.14.0: independent_cache 已废弃（DNS 缓存恒按 transport 隔离）;
+        // 远程规则集的 download_detour 已废弃（1.14 警告、1.15 起不设环境变量直接致命、1.16 删除）
         if (version_compare($coreVersion, '1.14.0', '>=')) {
             unset($this->config['dns']['independent_cache']);
+            $this->migrateRuleSetDownloadDetour();
+        }
+
+        // >= 1.15.0: TUN stack 已废弃（1.17 删除），sing-tun 改用自带协议栈
+        if (version_compare($coreVersion, '1.15.0', '>=')) {
+            $this->stripTunStack();
         }
 
         // < 1.10.0: tun address 数组 → inet4_address/inet6_address
@@ -240,8 +247,10 @@ class SingBox extends AbstractProtocol
         // clientName 是靠 UA 里出现 "sing-box" 字样匹配出来的，而 clientVersion 可能
         // 来自应用自身版本号（如 HiddifyNext/4.1.1 → "4.1.1"）。sing-box 内核至今
         // 都是 1.x，主版本不是 1 就说明这不是内核版本，不能拿来做版本门槛。
+        // 预发布后缀（1.15.0-alpha.10、1.14.0-rc.5）要去掉：version_compare 会把
+        // 1.15.0-alpha.10 判成 < 1.15.0，测试版用户就拿不到该版本已需要的迁移。
         if ($this->clientName === 'sing-box' && str_starts_with($this->clientVersion, '1.')) {
-            return $this->clientVersion;
+            return preg_replace('/[^0-9.].*$/', '', $this->clientVersion);
         }
 
         return null;
@@ -452,6 +461,63 @@ class SingBox extends AbstractProtocol
             unset($server['type'], $server['server']);
         }
         unset($server);
+    }
+
+    /**
+     * sing-box >= 1.14.0: rule_set.download_detour → 顶层 http_clients + rule_set.http_client
+     *
+     * 必须显式定义 http_clients：只删字段会落到「用默认出站的隐式默认客户端」，那条路 1.14 同样废弃。
+     * detour 为 direct 的走一个不带 detour 的客户端（不带即直连；detour 指向空 direct 出站在 DNS 侧
+     * 1.12 起就是致命错误，这里同样不写）。没写 detour 的旧语义是「走默认出站」，按 route.final 还原。
+     */
+    private function migrateRuleSetDownloadDetour(): void
+    {
+        $ruleSets = $this->config['route']['rule_set'] ?? [];
+        $clients = [];
+        foreach ($ruleSets as $i => $ruleSet) {
+            if (($ruleSet['type'] ?? '') !== 'remote') {
+                continue;
+            }
+            $detour = $ruleSet['download_detour'] ?? ($this->config['route']['final'] ?? '');
+            unset($ruleSets[$i]['download_detour']);
+            if (isset($ruleSet['http_client'])) {
+                continue; // 模板已是新写法
+            }
+            if ($detour === '' || $detour === 'direct') {
+                $clients['direct'] = ['tag' => 'direct'];
+                $ruleSets[$i]['http_client'] = 'direct';
+                continue;
+            }
+            $tag = 'via-' . $detour;
+            $clients[$tag] = ['tag' => $tag, 'detour' => $detour];
+            $ruleSets[$i]['http_client'] = $tag;
+        }
+        if (!$clients) {
+            return;
+        }
+        $this->config['route']['rule_set'] = $ruleSets;
+
+        $existingTags = array_column($this->config['http_clients'] ?? [], 'tag');
+        foreach ($clients as $tag => $client) {
+            if (!in_array($tag, $existingTags, true)) {
+                $this->config['http_clients'][] = $client;
+            }
+        }
+        if (empty($this->config['route']['default_http_client'])) {
+            $this->config['route']['default_http_client'] = isset($clients['direct']) ? 'direct' : array_key_first($clients);
+        }
+    }
+
+    /**
+     * sing-box >= 1.15.0: TUN 入站的 stack 选项已废弃，删掉即使用新的 sing-tun 自带协议栈
+     */
+    private function stripTunStack(): void
+    {
+        foreach ($this->config['inbounds'] ?? [] as $i => $inbound) {
+            if (($inbound['type'] ?? '') === 'tun') {
+                unset($this->config['inbounds'][$i]['stack']);
+            }
+        }
     }
 
     /**

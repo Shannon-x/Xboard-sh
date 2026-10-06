@@ -208,6 +208,14 @@ class ConfigController extends Controller
                 'email_encryption' => admin_setting('email_encryption'),
                 'email_from_address' => admin_setting('email_from_address'),
                 'remind_mail_enable' => (bool) admin_setting('remind_mail_enable', false),
+                // 收据 / 续费账单（带 PDF）：付款开通后发收据；到期前 N 天发首张账单，到期前 24h 的提醒换成带账单的版本
+                'billing_receipt_enable' => (bool) (int) admin_setting('billing_receipt_enable', 1),
+                'billing_invoice_enable' => (bool) (int) admin_setting('billing_invoice_enable', 1),
+                'billing_invoice_days' => (int) admin_setting('billing_invoice_days', 7),
+                'billing_locale' => (string) admin_setting('billing_locale', 'zh-CN'),
+                'billing_issuer' => (string) admin_setting('billing_issuer', ''),
+                'billing_logo' => (string) admin_setting('billing_logo', ''),
+                'billing_recommend_plan_ids' => (string) admin_setting('billing_recommend_plan_ids', ''),
             ],
             'telegram' => [
                 'telegram_bot_enable' => (bool) admin_setting('telegram_bot_enable', 0),

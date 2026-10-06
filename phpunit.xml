@@ -28,6 +28,8 @@
         <!-- config/cache.php 读的是 CACHE_DRIVER：限流器 / Setting 缓存都走它，不覆盖会去连 Redis -->
         <env name="CACHE_DRIVER" value="array"/>
         <env name="MAIL_MAILER" value="array"/>
+        <!-- config/mail.php 读的是 MAIL_DRIVER（Laravel 6 式配置，MAIL_MAILER 不生效）：收据 / 账单邮件真的会走 Mail::send，不覆盖会去连 SMTP -->
+        <env name="MAIL_DRIVER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>
         <env name="DB_CONNECTION" value="sqlite"/>

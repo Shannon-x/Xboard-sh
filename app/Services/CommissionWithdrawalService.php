@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Exceptions\ApiException;
+use App\Jobs\SendBillingMailJob;
 use App\Jobs\SendEmailJob;
 use App\Models\CommissionWithdrawal;
 use App\Models\Ticket;
@@ -10,6 +11,7 @@ use App\Models\TicketAttachment;
 use App\Models\TicketMessage;
 use App\Models\User;
 use App\Models\UserPayoutProfile;
+use App\Services\Billing\BillingDocumentService;
 use App\Services\Commission\WithdrawalConfig;
 use App\Services\Plugin\HookManager;
 use Illuminate\Support\Facades\DB;
@@ -419,13 +421,22 @@ class CommissionWithdrawalService
     }
 
     /**
-     * 专用邮件（withdrawCompleted / withdrawRejected）。当前邮件主题目录里没有该模板时
-     * （站长自定义主题）回落到通用 notify，正文用工单回复的纯文本。
+     * 结果邮件。默认走财务邮件模板族（billing/，带品牌 logo，与收据同一视觉，不受 email_template 主题
+     * 和宿主机挂载的 mail/ 目录影响）；后台关掉 billing_receipt_enable 时回落到各主题的
+     * withdrawCompleted / withdrawRejected，主题目录里没有该模板（站长自定义主题）再回落到通用 notify。
      */
     private function notifyUser(CommissionWithdrawal $w, string $subject, string $content, string $template = 'notify'): void
     {
         $user = User::find($w->user_id);
         if (!$user || !$user->email) {
+            return;
+        }
+        if (BillingDocumentService::receiptEnabled()) {
+            try {
+                SendBillingMailJob::dispatchWithdrawal($w);
+            } catch (\Throwable $e) {
+                Log::warning('[withdraw] 邮件通知入队失败', ['withdrawal_id' => $w->id, 'error' => $e->getMessage()]);
+            }
             return;
         }
         $theme = admin_setting('email_template', 'default');

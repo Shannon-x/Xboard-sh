@@ -84,6 +84,7 @@ class SendRemindMail extends Command
         $this->table(['统计项', '数量'], [
             ['总处理用户', number_format($stats['processed_users'])],
             ['过期提醒邮件', number_format($stats['expire_emails'])],
+            ['续费账单邮件', number_format($stats['invoice_emails'] ?? 0)],
             ['流量提醒邮件', number_format($stats['traffic_emails'])],
             ['跳过用户', number_format($stats['skipped'])],
             ['错误数量', number_format($stats['errors'])],

@@ -215,8 +215,8 @@ class SendBillingMailJob implements ShouldQueue
     }
 
     /**
-     * 投递：没被标记的先走邮件；成功记 sent；临时失败 / 配置问题交给队列重试；
-     * 退信（这一次就被标记）或本来就被标记的转 Telegram；都不行就只留在面板。
+     * 投递：没被标记的先走邮件；成功记 sent；临时失败 / 配置问题交给队列重试（配置问题重试用完进 failed_jobs）；
+     * 退信（这一次就被标记）、本来就被标记的、或最后一次重试仍是临时失败的转 Telegram；都不行就只留在面板。
      */
     private function notify(User $user, array $data, string $view, ?string $pdf, ?BillingDocument $doc, BillingDocumentService $docs, ?BillingArchive $archive): string
     {
@@ -233,10 +233,14 @@ class SendBillingMailJob implements ShouldQueue
                 }
                 return self::RESULT_EMAIL;
             }
-            if (DeliveryMonitor::isRetryable($log['category'])) {
+            // 配置问题（我们自己的 SMTP 坏了）每次都交给队列：用完重试次数会留在 failed_jobs，修好 SMTP 后能整批重跑
+            if ($log['category'] === DeliveryMonitor::CONFIG
+                || (DeliveryMonitor::isRetryable($log['category']) && $this->attempts() < $this->tries)) {
                 return self::RESULT_RETRY;
             }
-            // 退信：DeliveryMonitor 已把用户标记为暂停投递，下面改走 Telegram
+            // 退信：DeliveryMonitor 已把用户标记为暂停投递，下面改走 Telegram。
+            // 最后一次重试仍是临时失败也走这里：再 release 就是 MaxAttemptsExceeded，这封信会直接丢掉，
+            // 扫描标记已经打过，之后也不会补发
         }
         if ($this->telegram($user, $data, $pdf, $docs)) {
             if ($doc && $archive) {

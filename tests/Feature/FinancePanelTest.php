@@ -23,6 +23,7 @@ use App\Utils\Helper;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -291,25 +292,36 @@ class FinancePanelTest extends TestCase
         Http::assertSentCount(2);
     }
 
-    public function test_temporary_failures_retry_then_suppress_and_a_successful_test_mail_clears_it(): void
+    public function test_temporary_failures_count_once_per_hour_then_suppress_and_a_successful_test_mail_clears_it(): void
     {
         $arrayTransport = $this->failMailWith('421 4.7.0 Try again later');
         $user = $this->user(['expired_at' => time() + 5 * 86400]);
         $expiry = (int) $user->expired_at;
 
+        // 同一封信的 3 次队列重试：每次都交给队列、都记日志，但只算一次失败 —— 一次 OCI 抖动不该把人标上
         for ($i = 1; $i <= 3; $i++) {
             $job = $this->runJob(SendBillingMailJob::KIND_INVOICE, $user->id, BillingDocumentService::STAGE_FIRST, $expiry);
             $this->assertSame(SendBillingMailJob::RESULT_RETRY, $job->result, "第 {$i} 次临时失败交给队列重试");
+            $this->assertSame(1, (int) $user->fresh()->mail_failed_count, '一小时内的临时失败只算一次');
+            $this->assertNull($user->fresh()->mail_suppressed_at);
+        }
+        $this->assertSame(3, MailLog::where('user_id', $user->id)->where('status', 0)->count());
+
+        // 不同时段各失败一次（上次计数已过一小时），累计 3 次才标记
+        for ($i = 2; $i <= 3; $i++) {
+            User::where('id', $user->id)->update(['mail_failed_at' => time() - DeliveryMonitor::TEMPORARY_FAILURE_WINDOW - 60]);
+            $job = $this->runJob(SendBillingMailJob::KIND_INVOICE, $user->id, BillingDocumentService::STAGE_FIRST, $expiry);
+            $this->assertSame(SendBillingMailJob::RESULT_RETRY, $job->result);
             $this->assertSame($i, (int) $user->fresh()->mail_failed_count);
-            $this->assertSame($i >= 3, $user->fresh()->mail_suppressed_at !== null, '连续 3 次临时失败才标记');
+            $this->assertSame($i >= 3, $user->fresh()->mail_suppressed_at !== null, '不同时段累计 3 次临时失败才标记');
         }
         $this->assertSame(DeliveryMonitor::TEMPORARY, $user->fresh()->mail_suppressed_reason);
-        $this->assertSame(3, MailLog::where('user_id', $user->id)->where('status', 0)->count());
+        $this->assertSame(5, MailLog::where('user_id', $user->id)->where('status', 0)->count());
 
         // 已标记且没绑 Telegram：不再碰 SMTP，账单留在面板里等用户自己下载
         $job = $this->runJob(SendBillingMailJob::KIND_INVOICE, $user->id, BillingDocumentService::STAGE_FIRST, $expiry);
         $this->assertSame(SendBillingMailJob::RESULT_SKIPPED, $job->result);
-        $this->assertSame(3, MailLog::where('user_id', $user->id)->count());
+        $this->assertSame(5, MailLog::where('user_id', $user->id)->count());
         $doc = BillingDocument::where('user_id', $user->id)->firstOrFail();
         $this->assertNull($doc->sent_at);
         $this->assertSame(0, (int) $doc->send_count);
@@ -333,6 +345,122 @@ class FinancePanelTest extends TestCase
         $this->assertNull($user->mail_suppressed_reason);
         $this->assertSame(0, (int) $user->mail_failed_count);
         $this->postJson('/api/v1/user/mail/test')->assertStatus(400);
+    }
+
+    public function test_the_window_does_not_move_and_a_hard_failure_inside_it_still_marks_at_once(): void
+    {
+        $this->failMailWith('421 Timeout waiting for data');
+        $user = $this->user(['expired_at' => time() + 5 * 86400]);
+        $expiry = (int) $user->expired_at;
+
+        $this->runJob(SendBillingMailJob::KIND_INVOICE, $user->id, BillingDocumentService::STAGE_FIRST, $expiry);
+        $anchor = time() - 600;
+        User::where('id', $user->id)->update(['mail_failed_at' => $anchor]);
+        // 窗口内的重试不累加，也不把窗口往后推：否则持续失败的地址永远攒不满 3 次
+        $this->runJob(SendBillingMailJob::KIND_INVOICE, $user->id, BillingDocumentService::STAGE_FIRST, $expiry);
+        $this->assertSame(1, (int) $user->fresh()->mail_failed_count);
+        $this->assertSame($anchor, (int) $user->fresh()->mail_failed_at);
+
+        // 窗口内碰上抑制名单：照样一次就标记
+        $this->failMailWith('254 4.7.1 Recipient address suppressed');
+        $job = $this->runJob(SendBillingMailJob::KIND_INVOICE, $user->id, BillingDocumentService::STAGE_FIRST, $expiry);
+        $this->assertSame(SendBillingMailJob::RESULT_SKIPPED, $job->result);
+        $user->refresh();
+        $this->assertNotNull($user->mail_suppressed_at);
+        $this->assertSame(DeliveryMonitor::SUPPRESSED, $user->mail_suppressed_reason);
+        $this->assertSame(2, (int) $user->mail_failed_count);
+    }
+
+    public function test_last_attempt_still_failing_temporarily_falls_back_instead_of_being_dropped(): void
+    {
+        config(['v2board.telegram_bot_enable' => 1, 'v2board.telegram_bot_token' => '1:test']);
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 1]])]);
+        $this->failMailWith('421 Timeout waiting for data');
+        $user = $this->user(['expired_at' => time() + 5 * 86400, 'telegram_id' => 4242]);
+        $expiry = (int) $user->expired_at;
+
+        $job = (new SendBillingMailJob(SendBillingMailJob::KIND_INVOICE, $user->id, BillingDocumentService::STAGE_FIRST, $expiry))->withFakeQueueInteractions();
+        $job->job->attempts = 2;
+        $job->handle(app(BillingDocumentService::class), app(BillingArchive::class));
+        $this->assertSame(SendBillingMailJob::RESULT_RETRY, $job->result, '还有重试机会：交给队列');
+        $this->assertTrue($job->job->isReleased());
+
+        // 最后一次仍是临时失败：不再 release（那样会变成 MaxAttemptsExceeded，账单邮件直接丢掉），改走 Telegram
+        $job = (new SendBillingMailJob(SendBillingMailJob::KIND_INVOICE, $user->id, BillingDocumentService::STAGE_FIRST, $expiry))->withFakeQueueInteractions();
+        $job->job->attempts = 3;
+        $job->handle(app(BillingDocumentService::class), app(BillingArchive::class));
+        $this->assertSame(SendBillingMailJob::RESULT_TELEGRAM, $job->result);
+        $this->assertFalse($job->job->isReleased());
+        $doc = BillingDocument::where('user_id', $user->id)->firstOrFail();
+        $this->assertSame(BillingDocument::CHANNEL_TELEGRAM, $doc->channel);
+        $this->assertNull($user->fresh()->mail_suppressed_at, '一次临时失败不标记');
+        Http::assertSent(fn (ClientRequest $request) => str_contains($request->url(), '/sendDocument'));
+    }
+
+    public function test_smtp_config_failure_on_the_last_attempt_still_ends_in_failed_jobs(): void
+    {
+        config(['v2board.telegram_bot_enable' => 1, 'v2board.telegram_bot_token' => '1:test']);
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 1]])]);
+        $this->failMailWith('Expected response code "235" but got code "535", with message "535 Authentication failed".');
+        $user = $this->user(['expired_at' => time() + 5 * 86400, 'telegram_id' => 4242]);
+
+        // 我们自己的 SMTP 坏了：最后一次也交给队列，用完重试次数进 failed_jobs，修好后能整批重跑；不改走 Telegram
+        $job = (new SendBillingMailJob(SendBillingMailJob::KIND_INVOICE, $user->id, BillingDocumentService::STAGE_FIRST, (int) $user->expired_at))->withFakeQueueInteractions();
+        $job->job->attempts = 3;
+        $job->handle(app(BillingDocumentService::class), app(BillingArchive::class));
+        $this->assertSame(SendBillingMailJob::RESULT_RETRY, $job->result);
+        $this->assertTrue($job->job->isReleased());
+        Http::assertNotSent(fn (ClientRequest $request) => str_contains($request->url(), 'api.telegram.org'));
+        $this->assertSame(0, (int) $user->fresh()->mail_failed_count, '配置问题不算在用户头上');
+    }
+
+    public function test_a_hard_failure_after_a_temporary_mark_records_the_real_reason(): void
+    {
+        $user = $this->user(['mail_failed_count' => 3, 'mail_failed_at' => time() - 600, 'mail_suppressed_at' => time() - 600, 'mail_suppressed_reason' => DeliveryMonitor::TEMPORARY]);
+        $suppressedAt = (int) $user->mail_suppressed_at;
+
+        DeliveryMonitor::record($user->email, 'code', 'mail.verify', '254 4.7.1 Recipient address suppressed', $user->id);
+        $user->refresh();
+        $this->assertSame(DeliveryMonitor::SUPPRESSED, $user->mail_suppressed_reason);
+        $this->assertSame($suppressedAt, (int) $user->mail_suppressed_at, '标记时间不变');
+    }
+
+    public function test_reset_migration_clears_per_attempt_temporary_marks_only(): void
+    {
+        $temporary = $this->user(['mail_failed_count' => 3, 'mail_failed_at' => time() - 60, 'mail_suppressed_at' => time() - 60, 'mail_suppressed_reason' => DeliveryMonitor::TEMPORARY]);
+        $counting = $this->user(['mail_failed_count' => 2, 'mail_failed_at' => time() - 60]);
+        $bounced = $this->user(['mail_failed_count' => 1, 'mail_failed_at' => time() - 60, 'mail_suppressed_at' => time() - 60, 'mail_suppressed_reason' => DeliveryMonitor::BOUNCE]);
+        // 先因临时失败被标记、之后又进了抑制名单：保留，原因改成抑制名单
+        $laterHard = $this->user(['mail_failed_count' => 4, 'mail_failed_at' => time() - 60, 'mail_suppressed_at' => time() - 600, 'mail_suppressed_reason' => DeliveryMonitor::TEMPORARY]);
+        // 退信在标记之前（之后成功过一次被解除）：和本次标记无关，照常清掉
+        $earlierHard = $this->user(['mail_failed_count' => 3, 'mail_failed_at' => time() - 60, 'mail_suppressed_at' => time() - 60, 'mail_suppressed_reason' => DeliveryMonitor::TEMPORARY]);
+        foreach ([[$laterHard, DeliveryMonitor::SUPPRESSED, time() - 120], [$earlierHard, DeliveryMonitor::BOUNCE, time() - 3 * 86400]] as [$u, $category, $at]) {
+            DB::table('v2_mail_log')->insert([
+                'email' => $u->email, 'user_id' => $u->id, 'subject' => 'x', 'template_name' => 'mail.verify',
+                'error' => 'x', 'status' => 0, 'category' => $category, 'created_at' => $at, 'updated_at' => $at,
+            ]);
+        }
+
+        $migration = require database_path('migrations/2026_10_07_000002_reset_per_attempt_temporary_mail_marks.php');
+        $migration->up();
+        $migration->up();   // 可以重复执行
+
+        $temporary->refresh();
+        $this->assertNull($temporary->mail_suppressed_at);
+        $this->assertNull($temporary->mail_suppressed_reason);
+        $this->assertSame(0, (int) $temporary->mail_failed_count);
+        $this->assertSame(0, (int) $counting->fresh()->mail_failed_count);
+        $this->assertNull($counting->fresh()->mail_failed_at);
+        $bounced->refresh();
+        $this->assertSame(DeliveryMonitor::BOUNCE, $bounced->mail_suppressed_reason);
+        $this->assertSame(1, (int) $bounced->mail_failed_count);
+        $laterHard->refresh();
+        $this->assertSame(DeliveryMonitor::SUPPRESSED, $laterHard->mail_suppressed_reason);
+        $this->assertNotNull($laterHard->mail_suppressed_at);
+        $this->assertSame(4, (int) $laterHard->mail_failed_count);
+        $earlierHard->refresh();
+        $this->assertNull($earlierHard->mail_suppressed_at);
+        $this->assertNull($earlierHard->mail_suppressed_reason);
     }
 
     public function test_failed_test_mail_reports_the_category_and_keeps_the_mark(): void

@@ -16,7 +16,9 @@ use Illuminate\Support\Facades\Log;
  *   temporary   临时失败：4xx、超时、对方繁忙
  *   config      我们自己的问题：SMTP 认证失败、连不上服务器、TLS 证书 —— 与收件人无关，不算在用户头上
  *
- * 标记规则：suppressed / bounce 一次即标记；temporary 连续 3 次才标记；任何一次成功立即清零并解除。
+ * 标记规则：suppressed / bounce 一次即标记；temporary 要在不同时段累计 3 次才标记 —— 一小时内的临时失败只算一次，
+ * 否则同一封信的 3 次队列重试（几秒到一分钟内）就会把人标上，赶上发信高峰时 OCI 偶发超时会误标一批用户；
+ * 任何一次成功立即清零并解除。
  * 标记只拦系统主动发的邮件（收据、账单、提醒、挽回），用户自己点的验证码 / 登录链接照发 ——
  * 既是用户当下要用，也是修好邮箱之后自动解除标记的机会。
  */
@@ -29,6 +31,9 @@ final class DeliveryMonitor
     public const CONFIG = 'config';
 
     public const TEMPORARY_FAILURES_TO_SUPPRESS = 3;
+
+    /** 临时失败的计数窗口（秒）：上次计数后这段时间内的临时失败不再累加 */
+    public const TEMPORARY_FAILURE_WINDOW = 3600;
 
     public static function classify(?string $error): string
     {
@@ -99,12 +104,20 @@ final class DeliveryMonitor
         if ($category === self::CONFIG) {
             return;
         }
+        $now = time();
+        if ($category === self::TEMPORARY && (int) ($user->mail_failed_count ?? 0) > 0
+            && $user->mail_failed_at !== null && $now - (int) $user->mail_failed_at < self::TEMPORARY_FAILURE_WINDOW) {
+            return;   // 同一封信的重试、同一轮扫描里的几封信：已经记过一次，日志照记，计数不再加
+        }
         $count = (int) ($user->mail_failed_count ?? 0) + 1;
-        $data = ['mail_failed_count' => $count, 'mail_failed_at' => time()];
+        $data = ['mail_failed_count' => $count, 'mail_failed_at' => $now];
         if ($user->mail_suppressed_at === null && (self::isHardFailure($category) || $count >= self::TEMPORARY_FAILURES_TO_SUPPRESS)) {
-            $data['mail_suppressed_at'] = time();
+            $data['mail_suppressed_at'] = $now;
             $data['mail_suppressed_reason'] = $category;
             Log::warning('[mail] 用户邮箱标记为暂停投递', ['user_id' => $user->id, 'email' => $user->email, 'reason' => $category, 'failed_count' => $count]);
+        } elseif (self::isHardFailure($category) && $user->mail_suppressed_reason === self::TEMPORARY) {
+            // 因临时失败被标记的地址后来退信了：原因改成退信，后台看得到真实原因，清临时标记时也不会把它放出来
+            $data['mail_suppressed_reason'] = $category;
         }
         User::where('id', $user->id)->update($data);
         $user->forceFill($data);

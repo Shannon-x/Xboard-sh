@@ -291,25 +291,36 @@ class FinancePanelTest extends TestCase
         Http::assertSentCount(2);
     }
 
-    public function test_temporary_failures_retry_then_suppress_and_a_successful_test_mail_clears_it(): void
+    public function test_temporary_failures_count_once_per_hour_then_suppress_and_a_successful_test_mail_clears_it(): void
     {
         $arrayTransport = $this->failMailWith('421 4.7.0 Try again later');
         $user = $this->user(['expired_at' => time() + 5 * 86400]);
         $expiry = (int) $user->expired_at;
 
+        // 同一封信的 3 次队列重试：每次都交给队列、都记日志，但只算一次失败 —— 一次 OCI 抖动不该把人标上
         for ($i = 1; $i <= 3; $i++) {
             $job = $this->runJob(SendBillingMailJob::KIND_INVOICE, $user->id, BillingDocumentService::STAGE_FIRST, $expiry);
             $this->assertSame(SendBillingMailJob::RESULT_RETRY, $job->result, "第 {$i} 次临时失败交给队列重试");
+            $this->assertSame(1, (int) $user->fresh()->mail_failed_count, '一小时内的临时失败只算一次');
+            $this->assertNull($user->fresh()->mail_suppressed_at);
+        }
+        $this->assertSame(3, MailLog::where('user_id', $user->id)->where('status', 0)->count());
+
+        // 不同时段各失败一次（上次计数已过一小时），累计 3 次才标记
+        for ($i = 2; $i <= 3; $i++) {
+            User::where('id', $user->id)->update(['mail_failed_at' => time() - DeliveryMonitor::TEMPORARY_FAILURE_WINDOW - 60]);
+            $job = $this->runJob(SendBillingMailJob::KIND_INVOICE, $user->id, BillingDocumentService::STAGE_FIRST, $expiry);
+            $this->assertSame(SendBillingMailJob::RESULT_RETRY, $job->result);
             $this->assertSame($i, (int) $user->fresh()->mail_failed_count);
-            $this->assertSame($i >= 3, $user->fresh()->mail_suppressed_at !== null, '连续 3 次临时失败才标记');
+            $this->assertSame($i >= 3, $user->fresh()->mail_suppressed_at !== null, '不同时段累计 3 次临时失败才标记');
         }
         $this->assertSame(DeliveryMonitor::TEMPORARY, $user->fresh()->mail_suppressed_reason);
-        $this->assertSame(3, MailLog::where('user_id', $user->id)->where('status', 0)->count());
+        $this->assertSame(5, MailLog::where('user_id', $user->id)->where('status', 0)->count());
 
         // 已标记且没绑 Telegram：不再碰 SMTP，账单留在面板里等用户自己下载
         $job = $this->runJob(SendBillingMailJob::KIND_INVOICE, $user->id, BillingDocumentService::STAGE_FIRST, $expiry);
         $this->assertSame(SendBillingMailJob::RESULT_SKIPPED, $job->result);
-        $this->assertSame(3, MailLog::where('user_id', $user->id)->count());
+        $this->assertSame(5, MailLog::where('user_id', $user->id)->count());
         $doc = BillingDocument::where('user_id', $user->id)->firstOrFail();
         $this->assertNull($doc->sent_at);
         $this->assertSame(0, (int) $doc->send_count);

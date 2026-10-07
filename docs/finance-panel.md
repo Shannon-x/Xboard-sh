@@ -44,7 +44,7 @@
 | `ok` | 交给 SMTP 成功 | 清零失败计数、解除标记 |
 | `suppressed` | 错误里含 `suppress`（OCI Email Delivery 的 `254 4.7.1 … suppressed`、SES 抑制名单） | 一次即标记 |
 | `bounce` | `5.1.x` / `5.2.x` / `5.4.x` / `5.7.x`、`550/551/553/554`、`user unknown`、`mailbox unavailable` 等永久拒收 | 一次即标记 |
-| `temporary` | 其余（4xx、超时、空响应） | 连续 3 次才标记 |
+| `temporary` | 其余（4xx、超时、空响应） | 不同时段累计 3 次才标记（一小时内的临时失败只算一次，同一封信的队列重试不会把人标上） |
 | `config` | SMTP 认证失败、连不上、TLS / 证书 | 不算在用户头上，不标记 |
 
 标记（`v2_user.mail_suppressed_at` / `mail_suppressed_reason` / `mail_failed_count` / `mail_failed_at`）只拦**系统主动发**的邮件：收据、账单、到期 / 流量提醒、到期后通知。用户自己点的验证码 / 登录链接照发，发成功就自动解除标记。

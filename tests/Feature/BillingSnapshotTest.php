@@ -45,6 +45,8 @@ class BillingSnapshotTest extends TestCase
         // Setting 与订阅模板缓存都写死 Cache::store('redis')，而 CI 没起 Redis：桩成内存驱动，/config/fetch 才不会 500
         config(['cache.stores.redis' => ['driver' => 'array']]);
         Cache::forgetDriver('redis');
+        // 启动时已按真 Redis 建好的 Setting 实例丢掉：本机开着 Redis 时也不会读到开发库缓存的站点设置
+        app()->forgetScopedInstances();
         config(['v2board.app_name' => '苏菲家宽', 'v2board.app_url' => 'https://old.example.test']);
         $group = new ServerGroup();
         $group->name = '基础';
@@ -210,6 +212,22 @@ class BillingSnapshotTest extends TestCase
         $this->download($old)->assertStatus(200);
         Sanctum::actingAs($lapsed);
         $this->assertSame('void', $this->getJson('/api/v1/user/billing/documents')->json('data.0.status'));
+
+        // 内容照开具时，状态跟着现状走：已续费 / 已失效的盖对应的章、不再催付款
+        $open = $this->invoice($this->user(['expired_at' => time() + 5 * 86400]));
+        $this->fakePdf();
+        $renewedPdf = $this->download($invoice)->getContent();
+        $this->assertStringContainsString('"stamp":"已续费"', $renewedPdf);
+        $this->assertStringContainsString('"closed_note":"这个周期已经续费', $renewedPdf);
+        $this->assertStringContainsString('"alternatives":[]', $renewedPdf, '开具时的套餐推荐不再带');
+        $this->assertStringContainsString('"balance_due":2000', $renewedPdf, '金额照开具时');
+        $voidPdf = $this->download($old)->getContent();
+        $this->assertStringContainsString('"stamp":"已失效"', $voidPdf);
+        $this->assertStringContainsString('"alternatives":[]', $voidPdf);
+        $openPdf = $this->download($open)->getContent();
+        $this->assertStringContainsString('"stamp":"待付款"', $openPdf);
+        $this->assertStringNotContainsString('closed_note', $openPdf);
+        $this->assertSame('待付款', $invoice->fresh()->payload['stamp'], '快照本身不改');
 
         // 没有快照的老账单（升级前开的）续费后重建不出来：404
         BillingDocument::where('id', $invoice->id)->update(['payload' => null, 'size' => 0]);

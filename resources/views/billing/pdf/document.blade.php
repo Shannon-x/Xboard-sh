@@ -118,7 +118,7 @@ a { color: #c94f2e; text-decoration: none; }
 @endforeach
 <tr class="due"><td>{{ __('billing.field.balance_due') }}</td><td class="right">{{ $balance_due_fmt }}</td></tr>
 @else
-<tr class="grand due"><td>{{ __('billing.field.amount_due') }}</td><td class="right">{{ $balance_due_fmt }}</td></tr>
+<tr class="grand {{ empty($closed_note) ? 'due' : '' }}"><td>{{ __('billing.field.amount_due') }}</td><td class="right">{{ $balance_due_fmt }}</td></tr>
 @if($auto_covered)
 <tr><td class="muted">{{ __('billing.field.account_balance') }}</td><td class="right">{{ $account_balance_fmt }}</td></tr>
 @endif
@@ -127,8 +127,10 @@ a { color: #c94f2e; text-decoration: none; }
 </td></tr></table>
 @endif
 
-{{-- 说明 / 续费入口 --}}
-@if($kind === 'invoice')
+{{-- 说明 / 续费入口；已续费或已失效的旧账单（下载时）只留一句说明 --}}
+@if($kind === 'invoice' && !empty($closed_note))
+<div class="note" style="margin-top:16pt">{{ $closed_note }}</div>
+@elseif($kind === 'invoice')
 <div class="{{ $auto_covered ? 'note' : 'callout' }}" style="margin-top:16pt">
 @if($items){{ __('billing.invoice.due_note', ['date' => $due_at]) }} · @endif<a href="{{ $cta_url }}">{{ $cta_label }}</a> <span class="faint">{{ $cta_url }}</span>
 <div style="margin-top:3pt">{{ $intro }}</div>

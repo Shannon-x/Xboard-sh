@@ -57,14 +57,34 @@ final class BillingArchive
         $doc->save();
     }
 
-    /** 按快照现生成 PDF；快照和重建都拿不到时返回 null（下载接口回 404）。 */
+    /** 按快照现生成 PDF（下载用）；快照和重建都拿不到时返回 null（下载接口回 404）。 */
     public function contents(BillingDocument $doc, BillingDocumentService $docs): ?string
     {
         $data = $this->data($doc, $docs);
         if ($data === null) {
             return null;
         }
-        return BillingDocumentService::withLocale(fn () => $docs->pdf($data), $doc->locale ?: null);
+        return BillingDocumentService::withLocale(fn () => $docs->pdf($this->withStatus($doc, $data)), $doc->locale ?: null);
+    }
+
+    /**
+     * 账单的内容固定在开具那一刻，「待付款」却不是：此后续了费或过期失效，下载时盖上对应的章、
+     * 换掉付款提示，免得用户以为还欠着钱。金额与明细照旧；收据恒为已付款，不受影响。
+     */
+    private function withStatus(BillingDocument $doc, array $data): array
+    {
+        if ($doc->kind !== BillingDocument::KIND_INVOICE) {
+            return $data;
+        }
+        $status = $doc->statusFor(User::find($doc->user_id));
+        if ($status === 'open') {
+            return $data;
+        }
+        $data['stamp'] = __('billing.invoice.stamp_' . $status);
+        $data['stamp_soft'] = true;
+        $data['closed_note'] = __('billing.invoice.closed_' . $status);
+        $data['alternatives'] = [];   // 开具时的套餐推荐和价格早已过时，关了的账单不再带
+        return $data;
     }
 
     /**

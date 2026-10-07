@@ -53,6 +53,25 @@
 
 凭据不对一律 404。前四条登记在 sufe-middleware-rs 的 `XB_EXTRA_PATHS` 走加密通道；一键退订由邮件客户端直接 POST，没有加密能力，中间件内置明文直通规则 `/api/v1/guest/notify/unsubscribe/*`（`BUILTIN_PASSTHROUGH_RULES`），不需要在配置里声明。
 
+## 提醒频率
+
+扫描任务 `send:remindMail` 每天 11:30 跑一次，每封提醒都有自己的去重标记，不会因为天天扫描而天天重发：
+
+| 邮件 | 去重粒度 | 标记 |
+|---|---|---|
+| 续费账单（到期前 N 天）/ 最后提醒（24 小时内） | 同一个到期日各一封 | `v2_user.invoice_notified_at` / `invoice_final_notified_at`（存到期时间戳，续费后自然重新开始） |
+| 到期当天「服务已暂停」/ 第 N 天召回 | 同一个到期日每档一封 | `v2_user.lifecycle_stage` + `lifecycle_expiry` |
+| 流量预警（默认 80%）/ 流量已用完 | 同一个流量周期各一封 | `v2_user.traffic_notified_level`（1 = 预警已发，2 = 用完已发），用量回落到阈值以下时清零 |
+
+流量提醒以前靠 24 小时的 Redis 标记去重，与每日扫描同周期，用量停在 80%–99% 的用户每天都会收到一封；现在按周期记档位：
+
+- 用到 `remind_traffic_percent`（默认 80，可配 50–99）发一封「流量已使用 N%」，正文带已用 / 总量 / 剩余与下次重置日期。
+- 用完时再发一封「本周期流量已用完」（`remind_traffic_exhausted_enable`，默认开），正文带重置日期、加购 / 升级入口与套餐推荐。直接跳到 100% 的用户只收这一封。
+- 流量重置、升级套餐、后台加流量让用量回落到阈值以下，标记清零，下个周期重新计算。
+- 预警那封不和当天的账单 / 到期邮件叠发（顺延到第二天）；「用完」关系到服务可用性，照发。
+- 派发到执行之间用量回落（重置、升级）的，执行时再核一遍，不发。
+- 两封都走 `SendBillingMailJob`（kind `traffic`，类别 `usage`）与 `resources/views/billing/mail/traffic.blade.php`，不在宿主机挂载的目录里。关掉收据 / 账单邮件（`billing_receipt_enable=0`）时回落老的 `remindTraffic` 模板，只有预警这一档。
+
 ## 后台设置（系统设置 → 邮件）
 
 | 键 | 默认 | 含义 |
@@ -60,6 +79,8 @@
 | `notify_optional_categories` | 五类全部 | 允许用户自己关闭的类别，逗号分隔；去掉的类别面板里显示为「始终发送」，用户此前关掉的也照发 |
 | `notify_footer_label` | 空（用字典「管理通知偏好」） | 邮件页脚那行链接的文案 |
 | `notify_list_unsubscribe_enable` | 1 | 批量类邮件是否带一键退订头 |
+| `remind_traffic_percent` | 80 | 流量预警阈值（50–99） |
+| `remind_traffic_exhausted_enable` | 1 | 流量用完时再发一封 |
 
 后台群发（用户管理 → 发送邮件）多了类别单选：服务公告（默认）/ 活动与优惠 / 必达通知（不过网关）。
 

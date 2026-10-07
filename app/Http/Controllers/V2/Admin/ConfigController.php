@@ -210,6 +210,8 @@ class ConfigController extends Controller
                 'email_encryption' => admin_setting('email_encryption'),
                 'email_from_address' => admin_setting('email_from_address'),
                 'remind_mail_enable' => (bool) admin_setting('remind_mail_enable', false),
+                'remind_traffic_percent' => \App\Services\Billing\BillingDocumentService::trafficWarnPercent(),
+                'remind_traffic_exhausted_enable' => \App\Services\Billing\BillingDocumentService::trafficExhaustedEnabled(),
                 // 收据 / 续费账单（带 PDF）：付款开通后发收据；到期前 N 天发首张账单，到期前 24h 的提醒换成带账单的版本
                 'billing_receipt_enable' => (bool) (int) admin_setting('billing_receipt_enable', 1),
                 'billing_invoice_enable' => (bool) (int) admin_setting('billing_invoice_enable', 1),

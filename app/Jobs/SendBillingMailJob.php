@@ -38,6 +38,7 @@ class SendBillingMailJob implements ShouldQueue
     public const KIND_WITHDRAWAL = 'withdrawal';
     public const KIND_EXPIRED = 'expired';     // 到期当天：服务已暂停
     public const KIND_WINBACK = 'winback';     // 到期后第 N 天：挽回
+    public const KIND_TRAFFIC = 'traffic';     // 流量用到阈值 / 用完
 
     /** 各类邮件对应的通知类别：收据 / 提现结果是交易类（null，永远发），账单与到期当天归「账单」，挽回归「营销」 */
     public const CATEGORY = [
@@ -46,6 +47,7 @@ class SendBillingMailJob implements ShouldQueue
         self::KIND_INVOICE => NotificationPreference::BILLING,
         self::KIND_EXPIRED => NotificationPreference::BILLING,
         self::KIND_WINBACK => NotificationPreference::MARKETING,
+        self::KIND_TRAFFIC => NotificationPreference::USAGE,
     ];
 
     public const RESULT_EMAIL = 'email';
@@ -91,6 +93,12 @@ class SendBillingMailJob implements ShouldQueue
         self::dispatch($stage === 1 ? self::KIND_EXPIRED : self::KIND_WINBACK, (int) $user->id, (string) $stage, (int) $user->expired_at);
     }
 
+    /** 流量提醒：stage 是 BillingDocumentService::TRAFFIC_WARN / TRAFFIC_EXHAUSTED；去重标记由扫描侧先打好 */
+    public static function dispatchTraffic(User $user, string $stage): void
+    {
+        self::dispatch(self::KIND_TRAFFIC, (int) $user->id, $stage);
+    }
+
     public static function resendReceipt(Order $order): void
     {
         self::dispatch(self::KIND_RECEIPT, (int) $order->id, null, null, true);
@@ -113,6 +121,7 @@ class SendBillingMailJob implements ShouldQueue
             self::KIND_WITHDRAWAL => $this->sendWithdrawal($docs),
             self::KIND_EXPIRED => $this->sendExpired($docs),
             self::KIND_WINBACK => $this->sendWinback($docs),
+            self::KIND_TRAFFIC => $this->sendTraffic($docs),
             default => $this->sendInvoice($docs, $archive),
         }) ?? self::RESULT_SKIPPED;
         if ($this->result === self::RESULT_RETRY) {
@@ -208,6 +217,27 @@ class SendBillingMailJob implements ShouldQueue
             return null;
         }
         return $this->notify($user, $docs->winback($user, (int) $this->stage), 'billing.mail.winback', null, null, $docs, null);
+    }
+
+    /**
+     * 流量提醒：执行时再核一遍用量（派发到执行之间流量重置了、或套餐升级了就不发），
+     * 用完那封要求当前确实 ≥ 100%，预警那封要求仍 ≥ 阈值。
+     */
+    private function sendTraffic(BillingDocumentService $docs): ?string
+    {
+        $user = User::find($this->id);
+        if (!$user || !$user->email || $user->banned || !$user->remind_traffic || (int) $user->transfer_enable <= 0) {
+            return null;
+        }
+        if (!NotificationPreference::allows($user, self::CATEGORY[self::KIND_TRAFFIC])) {
+            return null;
+        }
+        $percent = ((int) $user->u + (int) $user->d) * 100 / (int) $user->transfer_enable;
+        $stage = $this->stage === BillingDocumentService::TRAFFIC_EXHAUSTED ? BillingDocumentService::TRAFFIC_EXHAUSTED : BillingDocumentService::TRAFFIC_WARN;
+        if ($percent < ($stage === BillingDocumentService::TRAFFIC_EXHAUSTED ? 100 : BillingDocumentService::trafficWarnPercent())) {
+            return null;
+        }
+        return $this->notify($user, $docs->traffic($user, $stage), 'billing.mail.traffic', null, null, $docs, null);
     }
 
     /**

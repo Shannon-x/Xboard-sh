@@ -112,6 +112,9 @@ class ConfigSave extends FormRequest
         'email_encryption' => 'nullable|string|max:32',
         'email_from_address' => 'nullable|string|email:strict|max:255',
         'remind_mail_enable' => '',
+        // 流量提醒：预警阈值（百分比）与「流量已用完」开关，都按周期只发一封
+        'remind_traffic_percent' => 'nullable|integer|min:50|max:99',
+        'remind_traffic_exhausted_enable' => '',
         // 收据 / 续费账单邮件：开关、提前天数（0 或 1 = 只发到期前 24h 的最后提醒）、文案语言、开具方抬头、推荐套餐 id 列表
         'billing_receipt_enable' => '',
         'billing_invoice_enable' => '',

@@ -9,12 +9,13 @@ use App\Models\BillingDocument;
 use App\Models\Order;
 use App\Models\User;
 use App\Services\BalanceLedger;
+use App\Services\Billing\BillingStorageConfig;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 /**
  * 后台财务：归档文档查询 / 重发，余额流水查询 / 手工调整。
- * XBoard-admin 暂时没有对应界面，接口先就位（docs/finance-panel.md 有字段说明）。
+ * 界面在 XBoard-admin「财务管理 → 账单与收据」与用户列表的「余额流水 / 调账」（docs/finance-panel.md 有字段说明）。
  */
 class BillingController extends Controller
 {
@@ -68,7 +69,8 @@ class BillingController extends Controller
                     'order_id' => $d->order_id ? (int) $d->order_id : null,
                     'order_trade_no' => $d->order_id ? ($orders[$d->order_id] ?? null) : null,
                     'expired_at' => $d->expired_at ? (int) $d->expired_at : null,
-                    'size' => (int) $d->size,
+                    'size' => (int) $d->size,   // 0 = 文件已按保留期清理，下载时按订单重建
+                    'disk' => $d->disk ?: BillingDocument::DISK_LOCAL,
                     'sent_at' => $d->sent_at ? (int) $d->sent_at : null,
                     'send_count' => (int) $d->send_count,
                     'channel' => $d->channel,
@@ -77,7 +79,26 @@ class BillingController extends Controller
                 ];
             })->values(),
             'total' => $page->total(),
+            'summary' => $this->summary(),
         ]);
+    }
+
+    /** 归档整体占用与当前策略：让后台一眼看到「会不会无限膨胀」的答案 */
+    private function summary(): array
+    {
+        $config = BillingStorageConfig::fromSettings();
+        $agg = BillingDocument::query()
+            ->selectRaw('count(*) as total, coalesce(sum(size), 0) as bytes, sum(case when size = 0 then 1 else 0 end) as pruned')
+            ->first();
+        return [
+            'total' => (int) ($agg->total ?? 0),
+            'bytes' => (int) ($agg->bytes ?? 0),
+            'pruned' => (int) ($agg->pruned ?? 0),
+            'driver' => $config->driver,
+            'location' => $config->location(),
+            'receipt_retention_days' => $config->receiptRetentionDays,
+            'invoice_retention_days' => $config->invoiceRetentionDays,
+        ];
     }
 
     /** 重发：收据按订单重新渲染后再发；账单只有在仍是当前到期日时才有意义。 */

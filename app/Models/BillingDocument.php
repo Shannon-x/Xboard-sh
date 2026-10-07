@@ -17,8 +17,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int|null $expired_at    账单对应的到期时间戳
  * @property int $amount             收据 = 本单消耗金额，账单 = 应付金额（分）
  * @property string $access_key      下载链接里的随机凭据
- * @property string $path            local 磁盘下的相对路径
- * @property int $size
+ * @property string $path            文件路径 / 对象 key（相对 disk）
+ * @property string $disk            文件在哪：local | s3（按写入时的配置记录，切换存储后旧文件仍按此读）
+ * @property int $size               文件大小；0 = 文件已按保留期清理，下载时按订单重建
  * @property string $locale
  * @property int|null $sent_at       最近一次成功投递时间
  * @property int $send_count
@@ -33,6 +34,9 @@ class BillingDocument extends Model
 
     public const CHANNEL_EMAIL = 'email';
     public const CHANNEL_TELEGRAM = 'telegram';
+
+    public const DISK_LOCAL = 'local';
+    public const DISK_S3 = 's3';
 
     /** 账单过期多久仍未续费就视为作废（面板里不再标「待付款」） */
     public const VOID_AFTER_DAYS = 30;

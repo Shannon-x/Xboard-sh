@@ -43,6 +43,7 @@ class AdminRoute
                 $router->post('/setTelegramWebhook', [ConfigController::class, 'setTelegramWebhook']);
                 $router->post('/testSendMail', [ConfigController::class, 'testSendMail']);
                 $router->post('/testTicketAttachmentStorage', [ConfigController::class, 'testTicketAttachmentStorage']);
+                $router->post('/testBillingStorage', [ConfigController::class, 'testBillingStorage']);
             });
 
             // Plan

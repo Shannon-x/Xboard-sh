@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ConfigSave;
 use App\Models\SubscribeTemplate;
 use App\Services\Auth\GoogleLoginService;
+use App\Services\Billing\BillingStorageConfig;
+use App\Services\Billing\Storage\DocumentStoreFactory;
 use App\Services\MailService;
 use App\Services\Commission\WithdrawalConfig;
 use App\Services\TelegramService;
@@ -43,6 +45,30 @@ class ConfigController extends Controller
         ]);
     }
 
+    /**
+     * 收据 / 账单归档「测试存储连接」：同上，用表单值覆盖已保存配置后写入 → 读回 → 删除一个探针对象。
+     */
+    public function testBillingStorage(Request $request)
+    {
+        $override = array_filter(
+            $request->only(array_keys(BillingStorageConfig::DEFAULTS)),
+            static fn($v) => $v !== null && $v !== ''
+        );
+        $config = BillingStorageConfig::fromSettings($override);
+        try {
+            DocumentStoreFactory::make($config)->probe();
+        } catch (\Throwable $e) {
+            return $this->fail([400, '存储测试失败：' . $e->getMessage()]);
+        }
+        return $this->success([
+            'driver' => $config->driver,
+            'endpoint' => $config->driver === BillingStorageConfig::DRIVER_S3
+                ? ($config->s3['endpoint'] ?: "https://s3.{$config->s3['region']}.amazonaws.com")
+                : storage_path('app/billing/documents'),
+            'bucket' => $config->driver === BillingStorageConfig::DRIVER_S3 ? $config->s3['bucket'] : null,
+            'location' => $config->location(),
+        ]);
+    }
 
     public function getEmailTemplate()
     {
@@ -221,6 +247,9 @@ class ConfigController extends Controller
                 'billing_winback_days' => (string) admin_setting('billing_winback_days', '7,30'),
                 'billing_winback_coupon' => (string) admin_setting('billing_winback_coupon', ''),
                 'mail_digest_enable' => (bool) (int) admin_setting('mail_digest_enable', 1),
+                // 归档存储位置（本地 / S3 兼容）与保留期；投递日志的保留期也在这里
+                ...BillingStorageConfig::fromSettings()->toAdminArray(),
+                'mail_log_retention_days' => (int) admin_setting('mail_log_retention_days', 180),
             ],
             'telegram' => [
                 'telegram_bot_enable' => (bool) admin_setting('telegram_bot_enable', 0),

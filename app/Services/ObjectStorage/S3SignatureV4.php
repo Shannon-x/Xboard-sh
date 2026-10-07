@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\TicketAttachment\Storage;
+namespace App\Services\ObjectStorage;
 
 use DateTimeImmutable;
 use DateTimeInterface;
@@ -10,9 +10,9 @@ use InvalidArgumentException;
 /**
  * AWS Signature Version 4（S3 服务）的最小实现。
  *
- * 只覆盖工单附件用到的操作：PUT / GET / HEAD / DELETE 对象，以及 GET 预签名 URL。
- * 不引入 aws/aws-sdk-php 的原因：SDK 连带二十多个包、composer.lock 需要重新解析，
- * 而本项目的 Docker 构建严格按 lock 安装；SigV4 本身只是一条 HMAC 链，
+ * 只覆盖单对象操作：PUT / GET / HEAD / DELETE 对象，以及 GET 预签名 URL（S3ObjectClient 用它，
+ * 工单附件与收据 / 账单归档共用）。不引入 aws/aws-sdk-php 的原因：SDK 连带二十多个包、
+ * composer.lock 需要重新解析，而本项目的 Docker 构建严格按 lock 安装；SigV4 本身只是一条 HMAC 链，
  * 这里的实现以 AWS 官方文档的示例向量做了单元测试（tests/Unit/S3SignatureV4Test.php）。
  *
  * 与 S3 兼容服务（Cloudflare R2 / MinIO / Backblaze B2 / 阿里云 OSS S3 网关等）均可用。

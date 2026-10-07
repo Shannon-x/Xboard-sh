@@ -552,7 +552,7 @@ class FinancePanelTest extends TestCase
     {
         $user = $this->user(['expired_at' => time() - 3600]);
         $expiry = (int) $user->expired_at;
-        BillingDocument::create(['user_id' => $user->id, 'kind' => BillingDocument::KIND_INVOICE, 'stage' => 'final', 'expired_at' => $expiry,
+        $doc = BillingDocument::create(['user_id' => $user->id, 'kind' => BillingDocument::KIND_INVOICE, 'stage' => 'final', 'expired_at' => $expiry,
             'doc_no' => 'INV-TEST-1', 'amount' => 2000, 'access_key' => bin2hex(random_bytes(16)), 'payload' => ['doc_no' => 'INV-TEST-1'], 'size' => 1, 'locale' => 'zh-CN']);
 
         $job = $this->runJob(SendBillingMailJob::KIND_EXPIRED, $user->id, '1', $expiry);
@@ -562,7 +562,7 @@ class FinancePanelTest extends TestCase
         $this->assertStringContainsString('静态家宽拼车', $message->getSubject());
         $html = $message->getHtmlBody();
         $this->assertStringContainsString('¥20.00', $html, '按原配置续费的金额');
-        $this->assertStringContainsString('/plans?mode=renew', $html);
+        $this->assertStringContainsString('/pay/' . $doc->payToken(), $html, '这期账单还在宽限期内：按钮去免登录付款页');
         $this->assertStringContainsString('/billing', $html, '链接到归档的账单');
         $this->assertCount(0, $message->getAttachments(), '到期后的通知不再附 PDF');
         $this->assertSame(0, BillingDocument::where('user_id', $user->id)->where('kind', BillingDocument::KIND_RECEIPT)->count());

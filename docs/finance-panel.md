@@ -86,7 +86,7 @@
 
 | 档 | 时机 | 邮件 |
 |---|---|---|
-| 1 | 到期后 2 天内 | 「服务已暂停」：原套餐、到期时间、按原配置续费的金额与入口（`/plans?mode=renew`）、其他套餐；有归档账单时链到面板。套餐不可续时只引导换套餐 |
+| 1 | 到期后 2 天内 | 「服务已暂停」：原套餐、到期时间、按原配置续费的金额与入口（这期账单的免登录付款页 `/pay/<凭据>` 还在宽限期内就用它，否则 `/plans?mode=renew`）、其他套餐；有归档账单时链到面板。套餐不可续时只引导换套餐 |
 | 2… | 到期后第 `billing_winback_days` 天（默认 `7,30`，每档 2 天窗口，最多 3 档） | 挽回：已离开 N 天、其他套餐；后台配了 `billing_winback_coupon` 且券仍有效时附优惠码，入口 `/plans?coupon=<code>`（主题会自动校验并应用） |
 
 - 开了自动续费、宽限期内且余额足够的用户不发第 1 档（每小时的 `renew:auto` 马上会续上并发收据）。
@@ -113,7 +113,8 @@
 - 投递：`app/Services/Mail/DeliveryMonitor.php`、`app/Jobs/SendBillingMailJob.php`（`notify()` / `telegram()`）、`app/Console/Commands/MailDeliveryDigest.php`、`app/Http/Controllers/V2/Admin/MailController.php`。
 - 流水：`app/Services/BalanceLedger.php`、`app/Models/BalanceLog.php`；写入点在 `UserService` / `OrderService` / `GiftCardService` / 用户端 `OrderController`、`UserController::transfer` / 后台 `UserController::update`。
 - 到期后：`MailService::lifecycleStageDue()` / `markLifecycle()`，`BillingDocumentService::expired()` / `winback()` / `winbackCoupon()`，模板 `resources/views/billing/mail/{expired,winback,test}.blade.php`，文案在三份 `billing.php` 的 `expired` / `winback` / `mail_test` / `archive` 段。
-- 用户端接口：`app/Http/Controllers/V1/User/BillingController.php`；后台：`app/Http/Controllers/V2/Admin/BillingController.php`。
+- 用户端接口：`app/Http/Controllers/V1/User/BillingController.php`（待付款的账单带 `pay_path`，面板上的「立即付款」与邮件同一个页面）；后台：`app/Http/Controllers/V2/Admin/BillingController.php`。
+- 免登录付款：`app/Services/Billing/BillingPayService.php`、`app/Http/Controllers/V1/Guest/BillingPayController.php`、`app/Services/CheckoutService.php`，见 `docs/billing-pay-link.md`。
 - 测试：`tests/Feature/FinancePanelTest.php`、`tests/Feature/BillingSnapshotTest.php`。
 
 ## 升级

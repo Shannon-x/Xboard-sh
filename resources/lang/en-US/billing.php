@@ -34,6 +34,10 @@ return [
         'intro_unavailable' => 'Your current plan is no longer available for renewal (:reason). Please choose a new plan before it expires to avoid interruption.',
         'cta' => 'Renew now',
         'cta_auto' => 'Review auto-renewal',
+        'cta_pay' => 'Pay now',
+        // 免登录付款按钮下面那句（邮件与 PDF 共用；days = 到期后仍可付款的天数）
+        'pay_note' => 'No sign-in needed. This link pays this invoice only and stays valid for :days days after the expiry date.',
+        'pay_note_strict' => 'No sign-in needed. This link pays this invoice only and stops working at the expiry date.',
         'cta_browse' => 'Browse all plans',
         'due_note' => 'Please pay before :date',
         'alternatives' => 'You might also like',
@@ -208,5 +212,14 @@ return [
         ],
         'success_subject' => 'Auto-renewed',
         'success' => 'Auto-renewed: :plan · :period · :amount, paid from your balance. New expiry: :date. Order :trade_no.',
+    ],
+    // 免登录付款页：下单 / 取消时账单已经不能付的原因（按账单开具时的语言）
+    'pay' => [
+        'paid' => 'This invoice has already been paid.',
+        'pending' => 'This invoice already has an unpaid order.',
+        'settled' => 'This period has already been renewed; nothing is due on this invoice.',
+        'expired' => 'The payment link for this invoice has expired. Please sign in and renew from the plans page.',
+        'unavailable' => 'This link cannot be used for payment right now. Please sign in and renew from the plans page.',
+        'blocked' => 'There is another unpaid order on this account. Please sign in and deal with that one first.',
     ],
 ];

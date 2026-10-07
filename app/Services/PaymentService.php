@@ -89,11 +89,12 @@ class PaymentService
 
         return $this->payment->pay([
             'notify_url' => $notifyUrl,
-            'return_url' => source_base_url('/#/order/' . $order['trade_no']),
+            // 付完回到哪：默认按 Referer 推出的面板订单页；账单的免登录付款页要回到它自己（没登录，订单页打不开）
+            'return_url' => $order['return_url'] ?? source_base_url('/#/order/' . $order['trade_no']),
             'trade_no' => $order['trade_no'],
             'total_amount' => $order['total_amount'],
             'user_id' => $order['user_id'],
-            'stripe_token' => $order['stripe_token']
+            'stripe_token' => $order['stripe_token'] ?? null
         ]);
     }
 

@@ -4,10 +4,12 @@ namespace App\Services;
 
 use App\Exceptions\ApiException;
 use App\Jobs\SendEmailJob;
+use App\Models\BillingDocument;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\User;
 use App\Services\Billing\BillingDocumentService;
+use App\Services\Billing\BillingPayService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Lang;
 use Illuminate\Support\Facades\Log;
@@ -227,9 +229,14 @@ class RenewService
         $expiry = (int) $user->expired_at;
         if ((int) ($user->auto_renew_notified_at ?? 0) === $expiry) return;   // 同一到期日只提醒一次
         User::withoutEvents(fn () => User::where('id', $user->id)->update(['auto_renew_notified_at' => $expiry]));
-        [$subject, $content] = BillingDocumentService::withLocale(function () use ($spec, $shortfall, $expiry) {
+        [$subject, $content] = BillingDocumentService::withLocale(function () use ($user, $spec, $shortfall, $expiry) {
             $plans = rtrim((string) admin_setting('app_url', ''), '/') . '/plans';
             $url = $plans . '?mode=renew';
+            // 这期的账单已经寄过：直接给免登录付款链接，补差额不用先登录
+            $invoice = BillingDocument::where('user_id', $user->id)->where('kind', BillingDocument::KIND_INVOICE)->where('expired_at', $expiry)->first();
+            if ($invoice && BillingPayService::linkable($invoice)) {
+                $url = BillingPayService::url($invoice);
+            }
             if ($shortfall !== null) {
                 $lines = [
                     __('billing.auto_renew.failed_short', ['amount' => app(BillingDocumentService::class)->money($shortfall)]),

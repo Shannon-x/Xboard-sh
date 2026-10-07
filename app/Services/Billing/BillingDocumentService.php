@@ -258,6 +258,7 @@ class BillingDocumentService
             'due_at' => $this->dateTime($expiredAt),
             'due_date' => $this->date($expiredAt),
             'days' => $days,
+            'plan_id' => (int) ($spec['plan_id'] ?? $user->plan_id),   // 免登录付款前核对：账单开出后换了套餐就不能照付
             'plan_name' => $planName,
             'bill_to' => ['email' => $user->email, 'id' => (int) $user->id],
             'alternatives' => $this->alternatives($user, $plan),
@@ -450,8 +451,11 @@ class BillingDocumentService
         $planName = (string) ($spec['plan_name'] ?? ($plan?->name ?? ''));
         $available = (bool) $spec['available'];
         $expiredDate = $this->dateTime($expiredAt);
-        $hasInvoice = BillingDocument::where('user_id', $user->id)
-            ->where('kind', BillingDocument::KIND_INVOICE)->where('expired_at', $expiredAt)->exists();
+        $invoice = BillingDocument::where('user_id', $user->id)
+            ->where('kind', BillingDocument::KIND_INVOICE)->where('expired_at', $expiredAt)->first();
+        $hasInvoice = $invoice !== null;
+        // 这期的账单还在宽限期内：按钮直接去免登录付款页，不用先登录
+        $payUrl = $available && $invoice && BillingPayService::linkable($invoice) ? BillingPayService::url($invoice) : null;
 
         $data = $this->base() + [
             'kind' => 'expired',
@@ -475,7 +479,9 @@ class BillingDocumentService
                 ? __('billing.expired.intro', ['plan' => $planName, 'date' => $expiredDate])
                 : __('billing.expired.intro_unavailable', ['plan' => $planName, 'date' => $expiredDate, 'reason' => $spec['message']]),
             'cta_label' => $available ? __('billing.expired.cta') : __('billing.invoice.cta_browse'),
-            'cta_url' => $available ? $this->url('/plans?mode=renew') : $this->url('/plans'),
+            'cta_url' => $available ? ($payUrl ?? $this->url('/plans?mode=renew')) : $this->url('/plans'),
+            'pay_url' => $payUrl,
+            'pay_note' => $payUrl ? self::payNote() : null,
             'subject' => __('billing.expired.subject', ['plan' => $planName, 'app' => (string) admin_setting('app_name', 'XBoard')]),
             'bill_to' => ['email' => (string) $user->email, 'id' => (int) $user->id],
             'meta' => [],
@@ -694,6 +700,13 @@ class BillingDocumentService
     private function dateTime(int $ts): string
     {
         return date('Y-m-d H:i', $ts);
+    }
+
+    /** 免登录付款按钮下面那句：不用登录、只能付这一张、到期后还能用几天 */
+    public static function payNote(): string
+    {
+        $days = BillingPayService::graceDays();
+        return $days > 0 ? __('billing.invoice.pay_note', ['days' => $days]) : __('billing.invoice.pay_note_strict');
     }
 
     /** 链接一律基于后台 app_url（用户端前端地址），不读 .env 的 APP_URL。 */

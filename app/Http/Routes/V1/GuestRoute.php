@@ -7,6 +7,7 @@ use App\Http\Controllers\V1\Guest\PlanController;
 use App\Http\Controllers\V1\Guest\TelegramController;
 use App\Http\Controllers\V1\Guest\TicketAttachmentController;
 use App\Http\Controllers\V1\Guest\BillingDocumentController;
+use App\Http\Controllers\V1\Guest\BillingPayController;
 use Illuminate\Contracts\Routing\Registrar;
 
 class GuestRoute
@@ -34,6 +35,16 @@ class GuestRoute
             $router->get('/billing/document/{id}/{key}', [BillingDocumentController::class, 'download'])
                 ->where(['id' => '[0-9]+', 'key' => '[a-f0-9]{40}'])
                 ->middleware('throttle:billing-document-download');
+            // 续费账单的免登录付款：凭据（账单 id + 签名）在请求体里，由 BillingPayService 验签；
+            // 查状态的两条给付款页轮询用，下单 / 取消要碰网关和余额，限流更紧
+            $router->post('/billing/pay/fetch', [BillingPayController::class, 'fetch'])
+                ->middleware('throttle:billing-pay');
+            $router->post('/billing/pay/check', [BillingPayController::class, 'check'])
+                ->middleware('throttle:billing-pay');
+            $router->post('/billing/pay/checkout', [BillingPayController::class, 'checkout'])
+                ->middleware('throttle:billing-pay-action');
+            $router->post('/billing/pay/cancel', [BillingPayController::class, 'cancel'])
+                ->middleware('throttle:billing-pay-action');
         });
     }
 }

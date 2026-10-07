@@ -60,6 +60,13 @@
                             </table>
                         </td>
                     </tr>
+                    @if(!empty($pay_note))
+                    <tr>
+                        <td style="padding:12px 44px 0 44px;">
+                            <div style="font-family:'Noto Sans SC',sans-serif;font-size:12px;color:#a09890;line-height:1.7;">{{ $pay_note }}</div>
+                        </td>
+                    </tr>
+                    @endif
                     @yield('after_cta')
                     <!-- Attachment note -->
                     <tr>

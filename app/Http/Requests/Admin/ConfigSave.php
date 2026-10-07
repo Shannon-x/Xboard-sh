@@ -116,6 +116,9 @@ class ConfigSave extends FormRequest
         'billing_receipt_enable' => '',
         'billing_invoice_enable' => '',
         'billing_invoice_days' => 'nullable|integer|min:0|max:30',
+        // 账单邮件里的免登录付款链接：开关与到期后仍可付款的天数（0 = 到期即失效）
+        'billing_pay_link_enable' => '',
+        'billing_pay_link_days' => 'nullable|integer|min:0|max:30',
         'billing_locale' => 'nullable|in:zh-CN,zh-TW,en-US',
         'billing_issuer' => 'nullable|string|max:255',
         'billing_logo' => ['nullable', 'string', 'max:500', 'regex:#^(https?://\S+|/\S*)$#'],

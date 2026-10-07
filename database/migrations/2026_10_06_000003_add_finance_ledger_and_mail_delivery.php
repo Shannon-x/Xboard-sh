@@ -26,6 +26,8 @@ return new class extends Migration {
                 $table->increments('id');
                 $table->integer('user_id');
                 $table->integer('order_id')->nullable()->unique();
+                // 账单通过免登录付款链接下的那一单（收据的 order_id 另有唯一约束，不能复用）
+                $table->integer('pay_order_id')->nullable()->index('idx_billing_doc_pay_order');
                 $table->string('kind', 16);
                 $table->string('doc_no', 40);
                 $table->string('stage', 16)->nullable();

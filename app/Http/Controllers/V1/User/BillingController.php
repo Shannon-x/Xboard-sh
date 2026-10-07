@@ -8,6 +8,7 @@ use App\Models\BillingDocument;
 use App\Models\Order;
 use App\Models\User;
 use App\Services\Billing\BillingDocumentService;
+use App\Services\Billing\BillingPayService;
 use App\Services\MailService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -22,7 +23,8 @@ class BillingController extends Controller
     {
         $user = User::find($request->user()->id);
         $docs = BillingDocument::where('user_id', $user->id)->orderBy('id', 'desc')->limit(200)->get();
-        $tradeNos = Order::whereIn('id', $docs->pluck('order_id')->filter()->all())->pluck('trade_no', 'id');
+        // 收据挂它的订单，账单挂免登录付款链接下的那一单（有的话）
+        $tradeNos = Order::whereIn('id', $docs->map(fn (BillingDocument $d) => $d->order_id ?: $d->pay_order_id)->filter()->all())->pluck('trade_no', 'id');
         // 下载链接一小时后失效；面板据 download_expires_at 在过期前重新拉一次列表
         $expires = time() + BillingDocument::LINK_TTL;
         return $this->success($docs->map(fn (BillingDocument $d) => [
@@ -35,10 +37,12 @@ class BillingController extends Controller
             'created_at' => (int) $d->created_at,
             'sent_at' => $d->sent_at ? (int) $d->sent_at : null,
             'channel' => $d->channel,
-            'order_trade_no' => $d->order_id ? ($tradeNos[$d->order_id] ?? null) : null,
+            'order_trade_no' => ($d->order_id ?: $d->pay_order_id) ? ($tradeNos[$d->order_id ?: $d->pay_order_id] ?? null) : null,
             'expired_at' => $d->expired_at ? (int) $d->expired_at : null,
             'download_path' => $d->downloadPath($expires),
             'download_expires_at' => $expires,
+            // 待付款的账单：与邮件里同一个免登录付款页（登录状态下打开也一样能付）
+            'pay_path' => $d->kind === BillingDocument::KIND_INVOICE && $d->statusFor($user) === 'open' && BillingPayService::linkable($d) ? $d->payPath() : null,
         ])->values());
     }
 

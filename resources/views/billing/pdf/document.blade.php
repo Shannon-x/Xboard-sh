@@ -134,6 +134,7 @@ a { color: #c94f2e; text-decoration: none; }
 <div class="{{ $auto_covered ? 'note' : 'callout' }}" style="margin-top:16pt">
 @if($items){{ __('billing.invoice.due_note', ['date' => $due_at]) }} · @endif<a href="{{ $cta_url }}">{{ $cta_label }}</a> <span class="faint">{{ $cta_url }}</span>
 <div style="margin-top:3pt">{{ $intro }}</div>
+@if(!empty($pay_note))<div class="faint" style="margin-top:3pt">{{ $pay_note }}</div>@endif
 </div>
 @endif
 @foreach($notes as $note)

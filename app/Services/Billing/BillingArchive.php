@@ -17,7 +17,8 @@ final class BillingArchive
 {
     public function storeReceipt(Order $order, array $data): BillingDocument
     {
-        $doc = BillingDocument::where('order_id', $order->id)->first() ?: new BillingDocument();
+        // 按 kind 找：免登录付款把账单也挂在同一个 order_id 上，收据要另起一行，不能覆盖那张账单
+        $doc = BillingDocument::where('order_id', $order->id)->where('kind', BillingDocument::KIND_RECEIPT)->first() ?: new BillingDocument();
         return $this->fill($doc, [
             'user_id' => (int) $order->user_id,
             'order_id' => (int) $order->id,
@@ -30,7 +31,11 @@ final class BillingArchive
 
     /**
      * 同一个到期日只留一份账单：24 小时档覆盖 7 天档的快照（金额按当时规格重算，编号不变）。
-     * 账单在付款前本来就会变，付清或失效后就不再更新。
+     * 账单在付款前本来就会变，付清或失效后就不再更新。pay_order_id 不动：7 天档的链接已经下了单的话，
+     * 24 小时档刷新快照时要保住，再打开链接接着付那一单。
+     *
+     * 免登录付款链接要用这条记录的 id 和 access_key 签名，只能在记录存下之后补进快照（邮件正文、
+     * PDF 和 Telegram 文字都从存好的快照出）。自动续费余额够的账单不放：那封邮件只是告知。
      */
     public function storeInvoice(User $user, string $stage, array $data): BillingDocument
     {
@@ -39,14 +44,22 @@ final class BillingArchive
             ->where('kind', BillingDocument::KIND_INVOICE)
             ->where('expired_at', $expiry)
             ->first() ?: new BillingDocument();
-        return $this->fill($doc, [
+        $doc = $this->fill($doc, [
             'user_id' => (int) $user->id,
-            'order_id' => null,
             'kind' => BillingDocument::KIND_INVOICE,
             'stage' => $stage,
             'expired_at' => $expiry,
             'amount' => (int) $data['balance_due'],
         ], $data);
+        if (empty($data['auto_covered']) && BillingPayService::linkable($doc)) {
+            $data['pay_url'] = BillingPayService::url($doc);
+            $data['cta_url'] = $data['pay_url'];
+            $data['cta_label'] = __('billing.invoice.cta_pay');
+            $data['pay_note'] = BillingDocumentService::payNote();
+            $this->snapshot($doc, $data);
+            $doc->save();
+        }
+        return $doc;
     }
 
     public function markSent(BillingDocument $doc, string $channel): void

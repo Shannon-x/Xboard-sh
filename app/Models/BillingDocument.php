@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int $id
  * @property int $user_id
  * @property int|null $order_id      收据对应的订单
+ * @property int|null $pay_order_id  账单通过免登录付款链接下的订单（BillingPayService）；取消了会被下一单覆盖
  * @property string $kind            receipt | invoice
  * @property string $doc_no          RC-20261007-7KQ2M9XA / INV-20261105-K3D8W1QZ（见 BillingDocumentService::documentNumber）
  * @property string|null $stage      账单：first（到期前 N 天）| final（到期前 24 小时）
@@ -62,6 +63,11 @@ class BillingDocument extends Model
         return $this->belongsTo(Order::class, 'order_id');
     }
 
+    public function payOrder(): BelongsTo
+    {
+        return $this->belongsTo(Order::class, 'pay_order_id');
+    }
+
     /**
      * 下载路径（相对后端根）。<a href> 带不上 Bearer，凭据在 URL 里：8 位十六进制的过期时间 +
      * 用这份单据的 access_key 对「id.过期时间」做的签名。链接到期就失效，外泄（截图、共享电脑的
@@ -75,6 +81,27 @@ class BillingDocument extends Model
     public function linkSignature(int $expires): string
     {
         return substr(hash_hmac('sha256', $this->id . '.' . $expires, (string) $this->access_key), 0, 32);
+    }
+
+    /**
+     * 免登录付款链接的凭据：id 加上用 access_key 对「pay.id」做的签名。一张账单一个、整个有效期内不变
+     * （邮件里的按钮和 PDF 上印的地址要一直能用），能不能付由服务端按账单现状判断（BillingPayService）；
+     * 签名只证明「拿到链接的人收到过这封邮件」。access_key 自己不出现在链接里。
+     */
+    public function payToken(): string
+    {
+        return $this->id . '-' . $this->paySignature();
+    }
+
+    public function paySignature(): string
+    {
+        return substr(hash_hmac('sha256', 'pay.' . $this->id, (string) $this->access_key), 0, 32);
+    }
+
+    /** 用户端前端的付款页路径（相对 app_url） */
+    public function payPath(): string
+    {
+        return '/pay/' . $this->payToken();
     }
 
     /** 面板里展示的状态：收据恒为 paid；账单看用户现在的到期时间，续过费就是 settled，拖太久就是 void。 */

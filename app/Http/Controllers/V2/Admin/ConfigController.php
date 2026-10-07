@@ -7,6 +7,7 @@ use App\Http\Requests\Admin\ConfigSave;
 use App\Models\SubscribeTemplate;
 use App\Services\Auth\GoogleLoginService;
 use App\Services\Billing\BillingDocumentService;
+use App\Services\Billing\BillingPayService;
 use App\Services\MailService;
 use App\Services\Commission\WithdrawalConfig;
 use App\Services\TelegramService;
@@ -212,6 +213,9 @@ class ConfigController extends Controller
                 'billing_receipt_enable' => (bool) (int) admin_setting('billing_receipt_enable', 1),
                 'billing_invoice_enable' => (bool) (int) admin_setting('billing_invoice_enable', 1),
                 'billing_invoice_days' => (int) admin_setting('billing_invoice_days', 7),
+                // 账单邮件里的免登录付款链接：开关、到期后仍能付的天数
+                'billing_pay_link_enable' => BillingPayService::enabled(),
+                'billing_pay_link_days' => BillingPayService::graceDays(),
                 'billing_locale' => (string) admin_setting('billing_locale', 'zh-CN'),
                 'billing_issuer' => (string) admin_setting('billing_issuer', ''),
                 'billing_logo' => (string) admin_setting('billing_logo', ''),

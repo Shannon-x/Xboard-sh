@@ -119,7 +119,7 @@ class SendBillingMailJob implements ShouldQueue
         if ($order->receipt_sent_at && !$this->force) {
             return null;
         }
-        $doc = BillingDocument::where('order_id', $order->id)->first();
+        $doc = BillingDocument::where('order_id', $order->id)->where('kind', BillingDocument::KIND_RECEIPT)->first();
         if ($doc) {
             // 已经开过（后台重发 / 队列重试）：照开具时的快照原样再发，不按订单现状重开一张
             $data = $archive->data($doc, $docs);
@@ -160,8 +160,10 @@ class SendBillingMailJob implements ShouldQueue
         $pdf = null;
         $doc = null;
         if ($data['has_pdf']) {
-            $pdf = $docs->pdf($data);
+            // 先记录再渲染：免登录付款链接要用这条记录的 id 签名，正文和 PDF 都从存好的快照出
             $doc = $archive->storeInvoice($user, $stage, $data);
+            $data = $archive->data($doc, $docs) ?? $data;
+            $pdf = $docs->pdf($data);
         }
         return $this->notify($user, $data, 'billing.mail.invoice', $pdf, $doc, $docs, $archive);
     }

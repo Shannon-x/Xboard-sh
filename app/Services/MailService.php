@@ -73,7 +73,7 @@ class MailService
 
         User::select('id', 'email', 'expired_at', 'transfer_enable', 'u', 'd', 'remind_expire', 'remind_traffic',
             'plan_id', 'invoice_notified_at', 'invoice_final_notified_at', 'lifecycle_stage', 'lifecycle_expiry',
-            'mail_suppressed_at', 'auto_renew', 'balance', 'traffic_notified_level', 'next_reset_at')
+            'mail_suppressed_at', 'auto_renew', 'balance', 'traffic_notified_level', 'next_reset_at', 'banned')
             ->where(function ($query) {
                 $query->where('remind_expire', true)
                     ->orWhere('remind_traffic', true);
@@ -178,6 +178,11 @@ class MailService
      */
     private function trafficStageDue(User $user): ?int
     {
+        // 只提醒套餐还在有效期内的用户：过期或没有套餐的人，用量提醒没有意义（他们收的是到期 / 挽回邮件），
+        // 不然每次扫描都会给一大批早已过期、流量停在 100% 的老用户发「流量已用完」
+        if (!$user->isActive()) {
+            return null;
+        }
         $total = (int) $user->transfer_enable;
         $level = (int) ($user->traffic_notified_level ?? 0);
         if ($total <= 0) {
@@ -393,7 +398,6 @@ class MailService
 
         $templateValue = $params['template_value'] ?? [];
         $vars = is_array($templateValue) ? ($templateValue['vars'] ?? []) : [];
-        $contentMode = is_array($templateValue) ? ($templateValue['content_mode'] ?? null) : null;
 
         if (is_array($vars) && !empty($vars)) {
             $subject = self::renderPlaceholders((string) $subject, $vars);
@@ -403,10 +407,8 @@ class MailService
             }
         }
 
-        // Mass mail default: treat admin content as plain text and escape.
-        if ($contentMode === 'text' && is_array($templateValue) && isset($templateValue['content']) && is_string($templateValue['content'])) {
-            $templateValue['content'] = e($templateValue['content']);
-        }
+        // 群发正文（content_mode = text）按纯文本处理：三套 notify 模板自己用 nl2br(e($content)) 转义并换行，
+        // 这里不能再 e() 一遍，否则 & ' " < > 会被转义两次，邮件里显示成 &amp; &#039; 这类字符。
 
         $view = 'mail.' . admin_setting('email_template', 'default') . '.' . $params['template_name'];
         $userId = isset($params['user_id']) ? (int) $params['user_id'] : null;

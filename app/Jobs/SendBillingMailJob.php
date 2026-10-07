@@ -226,7 +226,8 @@ class SendBillingMailJob implements ShouldQueue
     private function sendTraffic(BillingDocumentService $docs): ?string
     {
         $user = User::find($this->id);
-        if (!$user || !$user->email || $user->banned || !$user->remind_traffic || (int) $user->transfer_enable <= 0) {
+        // 和扫描一样只发给套餐有效的用户：派发后到期了也不再发
+        if (!$user || !$user->email || !$user->isActive() || !$user->remind_traffic || (int) $user->transfer_enable <= 0) {
             return null;
         }
         if (!NotificationPreference::allows($user, self::CATEGORY[self::KIND_TRAFFIC])) {

@@ -53,6 +53,10 @@
 
 凭据不对一律 404。前四条登记在 sufe-middleware-rs 的 `XB_EXTRA_PATHS` 走加密通道；一键退订由邮件客户端直接 POST，没有加密能力，中间件内置明文直通规则 `/api/v1/guest/notify/unsubscribe/*`（`BUILTIN_PASSTHROUGH_RULES`），不需要在配置里声明。
 
+## 正文转义
+
+`notify` 模板（default / classic / editorial 三套）用 `nl2br(e($content))` 输出正文：发件方一律传**纯文本**，模板负责转义与换行。后台群发（`content_mode = text`）、工单回复、自动续费通知、投递日报都按这个约定传值，不要在发件方先 `e()` 或 `nl2br()`，否则会转义两次（邮件里出现 `&amp;#039;` 或字面的 `<br />`）。生产主机挂载了 `resources/views/mail`，更新镜像后要同步这几个模板。
+
 ## 提醒频率
 
 扫描任务 `send:remindMail` 每天 11:30 跑一次，每封提醒都有自己的去重标记，不会因为天天扫描而天天重发：
@@ -68,6 +72,7 @@
 - 用到 `remind_traffic_percent`（默认 80，可配 50–99）发一封「流量已使用 N%」，正文带已用 / 总量 / 剩余与下次重置日期。
 - 用完时再发一封「本周期流量已用完」（`remind_traffic_exhausted_enable`，默认开），正文带重置日期、加购 / 升级入口与套餐推荐。直接跳到 100% 的用户只收这一封。
 - 流量重置、升级套餐、后台加流量让用量回落到阈值以下，标记清零，下个周期重新计算。
+- 只提醒套餐有效的用户（有套餐、未封禁、未过期或长期套餐）。过期用户的流量停在原处没有意义，他们收的是到期 / 召回邮件；续费恢复有效后照常补发。
 - 预警那封不和当天的账单 / 到期邮件叠发（顺延到第二天）；「用完」关系到服务可用性，照发。
 - 派发到执行之间用量回落（重置、升级）的，执行时再核一遍，不发。
 - 两封都走 `SendBillingMailJob`（kind `traffic`，类别 `usage`）与 `resources/views/billing/mail/traffic.blade.php`，不在宿主机挂载的目录里。关掉收据 / 账单邮件（`billing_receipt_enable=0`）时回落老的 `remindTraffic` 模板，只有预警这一档。

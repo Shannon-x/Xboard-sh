@@ -9,6 +9,7 @@ use App\Http\Controllers\V1\User\GiftCardController;
 use App\Http\Controllers\V1\User\InviteController;
 use App\Http\Controllers\V1\User\KnowledgeController;
 use App\Http\Controllers\V1\User\NoticeController;
+use App\Http\Controllers\V1\User\NotificationController;
 use App\Http\Controllers\V1\User\OrderController;
 use App\Http\Controllers\V1\User\PlanController;
 use App\Http\Controllers\V1\User\ServerController;
@@ -92,6 +93,9 @@ class UserRoute
             $router->get('/balance/log', [BillingController::class, 'balanceLog']);
             $router->post('/mail/test', [BillingController::class, 'mailTest'])
                 ->middleware('throttle:mail-test');
+            // 通知设置：按类别开关邮件（两条都要登记进 sufe-middleware-rs 的 pathname.rs）
+            $router->get('/notify/prefs', [NotificationController::class, 'prefs']);
+            $router->post('/notify/prefs/save', [NotificationController::class, 'save']);
             // Server
             $router->get('/server/fetch', [ServerController::class, 'fetch']);
             // Coupon

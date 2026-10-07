@@ -112,6 +112,9 @@ class ConfigSave extends FormRequest
         'email_encryption' => 'nullable|string|max:32',
         'email_from_address' => 'nullable|string|email:strict|max:255',
         'remind_mail_enable' => '',
+        // 流量提醒：预警阈值（百分比）与「流量已用完」开关，都按周期只发一封
+        'remind_traffic_percent' => 'nullable|integer|min:50|max:99',
+        'remind_traffic_exhausted_enable' => '',
         // 收据 / 续费账单邮件：开关、提前天数（0 或 1 = 只发到期前 24h 的最后提醒）、文案语言、开具方抬头、推荐套餐 id 列表
         'billing_receipt_enable' => '',
         'billing_invoice_enable' => '',
@@ -131,6 +134,9 @@ class ConfigSave extends FormRequest
         // 已续费 / 已失效的账单记录保留天数与邮件投递日志保留天数（0 = 永久）
         'billing_invoice_retention_days' => 'nullable|integer|min:0|max:3650',
         'mail_log_retention_days' => 'nullable|integer|min:0|max:3650',
+        'notify_optional_categories' => 'nullable|string|max:191|regex:/^[a-z_,]*$/',
+        'notify_footer_label' => 'nullable|string|max:64',
+        'notify_list_unsubscribe_enable' => '',
         // telegram
         'telegram_bot_enable' => 'boolean',
         'telegram_bot_token' => 'nullable|string|max:128',

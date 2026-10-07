@@ -8,6 +8,7 @@ use App\Models\SubscribeTemplate;
 use App\Services\Auth\GoogleLoginService;
 use App\Services\Billing\BillingDocumentService;
 use App\Services\Billing\BillingPayService;
+use App\Services\Notification\NotificationPreference;
 use App\Services\MailService;
 use App\Services\Commission\WithdrawalConfig;
 use App\Services\TelegramService;
@@ -209,6 +210,8 @@ class ConfigController extends Controller
                 'email_encryption' => admin_setting('email_encryption'),
                 'email_from_address' => admin_setting('email_from_address'),
                 'remind_mail_enable' => (bool) admin_setting('remind_mail_enable', false),
+                'remind_traffic_percent' => \App\Services\Billing\BillingDocumentService::trafficWarnPercent(),
+                'remind_traffic_exhausted_enable' => \App\Services\Billing\BillingDocumentService::trafficExhaustedEnabled(),
                 // 收据 / 续费账单（带 PDF）：付款开通后发收据；到期前 N 天发首张账单，到期前 24h 的提醒换成带账单的版本
                 'billing_receipt_enable' => (bool) (int) admin_setting('billing_receipt_enable', 1),
                 'billing_invoice_enable' => (bool) (int) admin_setting('billing_invoice_enable', 1),
@@ -229,6 +232,10 @@ class ConfigController extends Controller
                 // 已续费 / 已失效的账单记录保留天数，0 = 永久（收据始终保留，只存内容快照、不存 PDF 文件）
                 'billing_invoice_retention_days' => BillingDocumentService::invoiceRetentionDays(),
                 'mail_log_retention_days' => (int) admin_setting('mail_log_retention_days', 180),
+                // 通知偏好：哪些类别允许用户自己关掉、页脚链接文案、批量邮件要不要带 List-Unsubscribe 头
+                'notify_optional_categories' => implode(',', NotificationPreference::optionalCategories()),
+                'notify_footer_label' => (string) admin_setting('notify_footer_label', ''),
+                'notify_list_unsubscribe_enable' => NotificationPreference::listUnsubscribeEnabled(),
             ],
             'telegram' => [
                 'telegram_bot_enable' => (bool) admin_setting('telegram_bot_enable', 0),

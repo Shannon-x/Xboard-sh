@@ -7,6 +7,7 @@ use App\Http\Requests\Admin\UserGenerate;
 use App\Http\Requests\Admin\UserSendMail;
 use App\Http\Requests\Admin\UserUpdate;
 use App\Jobs\SendEmailJob;
+use App\Services\Notification\NotificationPreference;
 use App\Models\BalanceLog;
 use App\Models\Plan;
 use App\Models\TicketAttachment;
@@ -743,10 +744,16 @@ class UserController extends Controller
         $content = $request->input('content');
         $appName = admin_setting('app_name', 'XBoard');
         $appUrl = admin_setting('app_url');
+        // 群发的通知类别：默认「服务公告」；「营销与活动」会带 List-Unsubscribe 头；「必达」不看用户偏好（安全事件这类）
+        $category = (string) $request->input('category', NotificationPreference::ANNOUNCEMENT);
+        if (!in_array($category, [NotificationPreference::ANNOUNCEMENT, NotificationPreference::MARKETING, 'transactional'], true)) {
+            return $this->fail([422, 'category 不合法']);
+        }
+        $category = $category === 'transactional' ? null : $category;
 
         $chunkSize = 1000;
 
-        $builder->chunk($chunkSize, function ($users) use ($subject, $content, $appName, $appUrl) {
+        $builder->chunk($chunkSize, function ($users) use ($subject, $content, $appName, $appUrl, $category) {
             foreach ($users as $user) {
                 $vars = [
                     'app.name' => $appName,
@@ -772,6 +779,8 @@ class UserController extends Controller
 
                 dispatch(new SendEmailJob([
                     'email' => $user->email,
+                    'user_id' => $user->id,
+                    'category' => $category,
                     'subject' => $subject,
                     'template_name' => 'notify',
                     'template_value' => $templateValue

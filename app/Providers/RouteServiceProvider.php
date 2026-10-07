@@ -178,6 +178,14 @@ class RouteServiceProvider extends ServiceProvider
         RateLimiter::for('mail-test', function (Request $request) use ($byUserOrIp) {
             return Limit::perMinute(3)->by($byUserOrIp($request, 'mail_test'));
         });
+
+        // 免登录通知偏好页：凭据是 128 位随机 key，限流只防枚举；一键退订 / 保存收得更紧
+        RateLimiter::for('notify-pref', function (Request $request) {
+            return Limit::perMinute(30)->by('notify_pref:ip:' . $request->ip());
+        });
+        RateLimiter::for('notify-pref-action', function (Request $request) {
+            return Limit::perMinute(10)->by('notify_pref_action:ip:' . $request->ip());
+        });
     }
 
     /**

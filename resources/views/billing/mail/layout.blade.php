@@ -88,7 +88,7 @@
                                 <a href="{{ $app_url }}" style="color:#716a65;text-decoration:none;letter-spacing:1px;">{{ $app_name }}</a>
                             </div>
                             <div style="font-family:'Noto Sans SC',sans-serif;font-size:12px;color:#c5beb5;margin-top:2px;">
-                                {{ __('billing.footer.questions') }} <a href="{{ $settings_url }}" style="color:#a09890;text-decoration:underline;">{{ __('billing.footer.manage') }}</a>
+                                {{ __('billing.footer.questions') }} <a href="{{ $manage_url ?? $settings_url }}" style="color:#a09890;text-decoration:underline;">{{ $manage_label ?? __('billing.footer.manage') }}</a>
                             </div>
                         </td>
                     </tr>

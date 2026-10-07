@@ -282,6 +282,8 @@ class RenewService
         if ($email) {
             SendEmailJob::dispatch([
                 'email' => $user->email,
+                'user_id' => $user->id,
+                'category' => \App\Services\Notification\NotificationPreference::BILLING,
                 'subject' => $subject . ' - ' . $appName,
                 'template_name' => 'notify',
                 'template_value' => ['name' => $appName, 'url' => admin_setting('app_url'), 'content' => $content],

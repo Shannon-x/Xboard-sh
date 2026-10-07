@@ -2,6 +2,7 @@
 namespace App\Http\Routes\V2;
 
 use App\Http\Controllers\V2\Admin\ConfigController;
+use App\Http\Controllers\V2\Admin\NotificationController;
 use App\Http\Controllers\V2\Admin\PlanController;
 use App\Http\Controllers\V2\Admin\Server\GroupController;
 use App\Http\Controllers\V2\Admin\Server\RouteController;
@@ -189,6 +190,17 @@ class AdminRoute
                 $router->get('/stats', [MailController::class, 'stats']);
                 $router->any('/suppressed', [MailController::class, 'suppressed']);
                 $router->post('/unsuppress', [MailController::class, 'unsuppress']);
+            });
+
+            // Notify：通知偏好（退订统计、单用户偏好、代改、换凭据）
+            $router->group([
+                'prefix' => 'notify'
+            ], function ($router) {
+                $router->get('/stats', [NotificationController::class, 'stats']);
+                $router->any('/fetch', [NotificationController::class, 'fetch']);
+                $router->any('/log', [NotificationController::class, 'log']);
+                $router->post('/save', [NotificationController::class, 'save']);
+                $router->post('/rotate', [NotificationController::class, 'rotate']);
             });
 
             // Coupon

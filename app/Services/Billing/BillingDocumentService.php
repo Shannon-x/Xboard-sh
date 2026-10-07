@@ -84,6 +84,18 @@ class BillingDocumentService
         return max(0, min(3650, (int) admin_setting('billing_invoice_retention_days', 0)));
     }
 
+    /** 流量用量预警的阈值（百分比，50–99，默认 80）；同一周期只发一封 */
+    public static function trafficWarnPercent(): int
+    {
+        return max(50, min(99, (int) admin_setting('remind_traffic_percent', 80)));
+    }
+
+    /** 流量用完时要不要再发一封「流量已用完」（同一周期只发一封） */
+    public static function trafficExhaustedEnabled(): bool
+    {
+        return (bool) (int) admin_setting('remind_traffic_exhausted_enable', 1);
+    }
+
     public static function winbackEnabled(): bool
     {
         return (bool) (int) admin_setting('billing_winback_enable', 1);
@@ -536,6 +548,84 @@ class BillingDocumentService
             'balance_due' => 0,
         ];
         return $this->decorate($data);
+    }
+
+    // ---------------------------------------------------------------- 流量
+
+    public const TRAFFIC_WARN = 'warn';
+    public const TRAFFIC_EXHAUSTED = 'exhausted';
+
+    /**
+     * 流量提醒：warn = 用到阈值（默认 80%），exhausted = 用完。都不附 PDF。
+     * 正文给出已用 / 总量 / 剩余与下次重置日期；用完那封再带「也可以看看」的套餐，引导加购或升级。
+     */
+    public function traffic(User $user, string $stage): array
+    {
+        $exhausted = $stage === self::TRAFFIC_EXHAUSTED;
+        $total = max(0, (int) $user->transfer_enable);
+        $used = max(0, (int) $user->u + (int) $user->d);
+        $percent = $total > 0 ? (int) min(100, floor($used * 100 / $total)) : 100;
+        $remaining = max(0, $total - $used);
+        $plan = $user->plan_id ? Plan::find($user->plan_id) : null;
+        $resetAt = (int) ($user->next_reset_at ?? 0);
+        $resetDate = $resetAt > time() ? $this->date($resetAt) : null;
+        $appName = (string) admin_setting('app_name', 'XBoard');
+
+        if ($exhausted) {
+            $intro = $resetDate
+                ? __('billing.traffic.intro_exhausted_reset', ['date' => $resetDate])
+                : __('billing.traffic.intro_exhausted');
+        } else {
+            $intro = $resetDate
+                ? __('billing.traffic.intro_warn_reset', ['pct' => $percent, 'remaining' => $this->bytes($remaining), 'date' => $resetDate])
+                : __('billing.traffic.intro_warn', ['pct' => $percent, 'remaining' => $this->bytes($remaining)]);
+        }
+
+        $data = $this->base() + [
+            'kind' => 'traffic',
+            'stage' => $stage,
+            'doc_title' => __('billing.traffic.doc_title'),
+            'doc_title_en' => __('billing.traffic.doc_title_en'),
+            'doc_no' => $this->date(time()),
+            'stamp' => $exhausted ? __('billing.traffic.stamp_exhausted') : __('billing.traffic.stamp_warn'),
+            'stamp_soft' => !$exhausted,
+            'has_pdf' => false,
+            'plan_name' => (string) ($plan?->name ?? ''),
+            'percent' => $percent,
+            'used_fmt' => $this->bytes($used),
+            'quota_fmt' => $this->bytes($total),
+            'remaining_fmt' => $this->bytes($remaining),
+            'reset_date' => $resetDate,
+            'exhausted' => $exhausted,
+            'alternatives' => $exhausted ? $this->alternatives($user, $plan) : [],
+            'headline' => $exhausted ? __('billing.traffic.headline_exhausted') : __('billing.traffic.headline_warn', ['pct' => $percent]),
+            'intro' => $intro,
+            'cta_label' => $exhausted ? __('billing.traffic.cta_exhausted') : __('billing.traffic.cta_warn'),
+            'cta_url' => $exhausted ? $this->url('/plans') : $this->url('/traffic'),
+            'subject' => $exhausted
+                ? __('billing.traffic.subject_exhausted', ['app' => $appName])
+                : __('billing.traffic.subject_warn', ['pct' => $percent, 'app' => $appName]),
+            'bill_to' => ['email' => (string) $user->email, 'id' => (int) $user->id],
+            'meta' => [],
+            'items' => [],
+            'totals' => [],
+            'payments' => [],
+            'notes' => [],
+            'total' => 0,
+            'balance_due' => 0,
+        ];
+        return $this->decorate($data);
+    }
+
+    /** 1.5 GB / 820 MB 这样的流量字符串 */
+    public function bytes(int $bytes): string
+    {
+        $gb = 1073741824;
+        if ($bytes >= $gb) {
+            $v = $bytes / $gb;
+            return ($v >= 100 ? number_format($v, 0) : rtrim(rtrim(number_format($v, 2, '.', ''), '0'), '.')) . ' GB';
+        }
+        return number_format($bytes / 1048576, 0) . ' MB';
     }
 
     /** 后台 billing_winback_coupon 指定的优惠券：存在、在有效期内、还有余量才带进邮件。 */

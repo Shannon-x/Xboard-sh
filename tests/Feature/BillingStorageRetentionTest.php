@@ -21,6 +21,7 @@ use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
@@ -58,6 +59,10 @@ class BillingStorageRetentionTest extends TestCase
         parent::setUp();
         Storage::fake('local');
         Http::preventStrayRequests();
+        // Setting 与订阅模板缓存都写死 Cache::store('redis')，而 CI 的 tests / mysql-upgrade 都没起 Redis：
+        // 把 redis 缓存桩成内存驱动，/config/fetch 读回才不会 500（也顺带避免设置缓存在用例间串台）
+        config(['cache.stores.redis' => ['driver' => 'array']]);
+        Cache::forgetDriver('redis');
         $group = new ServerGroup();
         $group->name = '基础';
         $group->save();

@@ -125,16 +125,7 @@ class ConfigSave extends FormRequest
         'billing_winback_days' => ['nullable', 'string', 'max:32', 'regex:/^\s*(\d+\s*(,\s*\d+\s*)*)?$/'],
         'billing_winback_coupon' => 'nullable|string|max:64',
         'mail_digest_enable' => '',
-        // 归档存储（本地 / S3 兼容）与保留期（天，0 = 永久）—— 默认值集中在 BillingStorageConfig
-        'billing_storage_driver' => 'nullable|in:local,s3',
-        'billing_s3_endpoint' => 'nullable|url|max:255',
-        'billing_s3_region' => 'nullable|string|max:64',
-        'billing_s3_bucket' => 'nullable|string|max:128',
-        'billing_s3_access_key' => 'nullable|string|max:255',
-        'billing_s3_secret_key' => 'nullable|string|max:255',
-        'billing_s3_path_style' => 'boolean',
-        'billing_s3_prefix' => 'nullable|string|max:128|regex:/^[\w\-\/.]*$/',
-        'billing_receipt_retention_days' => 'nullable|integer|min:0|max:3650',
+        // 已续费 / 已失效的账单记录保留天数与邮件投递日志保留天数（0 = 永久）
         'billing_invoice_retention_days' => 'nullable|integer|min:0|max:3650',
         'mail_log_retention_days' => 'nullable|integer|min:0|max:3650',
         // telegram
@@ -268,8 +259,6 @@ class ConfigSave extends FormRequest
             'ticket_attachment_s3_endpoint.url' => 'S3 Endpoint 格式不正确，必须携带 http(s)://',
             'ticket_attachment_s3_public_url.url' => 'S3 公开访问地址格式不正确，必须携带 http(s)://',
             'ticket_attachment_s3_prefix.regex' => 'S3 存储前缀只能包含字母数字、-_./',
-            'billing_s3_endpoint.url' => 'S3 Endpoint 格式不正确，必须携带 http(s)://',
-            'billing_s3_prefix.regex' => 'S3 存储前缀只能包含字母数字、-_./',
             'commission_withdraw_chains.*.name.required_with' => '提现链的名称不能为空',
             'commission_withdraw_chains.*.preset.in' => '地址格式预设只能是 tron / evm / solana / ton / aptos / none',
             'commission_withdraw_chains.*.fee.numeric' => '通道费必须是数字（以 USDT 计）',

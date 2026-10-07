@@ -159,8 +159,9 @@ class RouteServiceProvider extends ServiceProvider
             return Limit::perMinute(240)->by('ticket_attachment_download:ip:' . $request->ip());
         });
 
+        // 收据 / 账单每次下载都按快照现生成 PDF（约 0.1 秒 CPU），比工单附件收得紧一些
         RateLimiter::for('billing-document-download', function (Request $request) {
-            return Limit::perMinute(120)->by('billing_document_download:ip:' . $request->ip());
+            return Limit::perMinute(30)->by('billing_document_download:ip:' . $request->ip());
         });
 
         // 邮箱投递自测：控制器里还有 10 分钟一次的业务限制，这里只防脚本刷

@@ -134,7 +134,8 @@ class FinancePanelTest extends TestCase
         $this->assertNotNull($doc->sent_at);
         $this->assertSame(1, (int) $doc->send_count);
         $this->assertMatchesRegularExpression('/^[a-f0-9]{32}$/', $doc->access_key);
-        Storage::disk('local')->assertExists($doc->path);
+        $this->assertSame($doc->doc_no, $doc->payload['doc_no'], '记下了开具时的内容快照');
+        $this->assertSame(0, count(Storage::disk('local')->allFiles()), '不落 PDF 文件');
         $this->assertCount(1, $this->sent());
         $this->assertStringContainsString('/billing', $this->sent()->first()->getOriginalMessage()->getHtmlBody(), '邮件里提示可在面板重新下载');
 
@@ -159,18 +160,19 @@ class FinancePanelTest extends TestCase
         $this->assertCount(0, $this->getJson('/api/v1/user/billing/documents')->json('data'));
     }
 
-    public function test_missing_archive_file_is_rebuilt_from_the_order(): void
+    public function test_a_record_without_snapshot_is_rebuilt_from_the_order_once(): void
     {
         $user = $this->user();
         $order = $this->order($user);
         (new OrderService($order))->open();
         $doc = BillingDocument::where('order_id', $order->id)->firstOrFail();
-        Storage::disk('local')->delete($doc->path);
+        BillingDocument::where('id', $doc->id)->update(['payload' => null, 'size' => 0]);   // 升级前开的老记录
 
         $resp = $this->get("/api/v1/guest/billing/document/{$doc->id}/{$doc->access_key}")->assertStatus(200);
         $this->assertStringStartsWith('%PDF', $resp->getContent());
-        Storage::disk('local')->assertExists($doc->path);
-        $this->assertSame(strlen($resp->getContent()), (int) $doc->fresh()->size);
+        $fresh = $doc->fresh();
+        $this->assertSame($doc->doc_no, $fresh->payload['doc_no'], '重建后补存快照，之后固定下来');
+        $this->assertGreaterThan(0, (int) $fresh->size);
     }
 
     public function test_invoice_is_archived_once_per_expiry_and_the_final_stage_refreshes_it(): void
@@ -305,7 +307,7 @@ class FinancePanelTest extends TestCase
         $doc = BillingDocument::where('user_id', $user->id)->firstOrFail();
         $this->assertNull($doc->sent_at);
         $this->assertSame(0, (int) $doc->send_count);
-        Storage::disk('local')->assertExists($doc->path);
+        $this->assertNotEmpty($doc->payload, '没送达也记下了，面板里能下载');
 
         Sanctum::actingAs($user);
         $me = $this->getJson('/api/v1/user/info')->assertStatus(200)->json('data');
@@ -358,7 +360,7 @@ class FinancePanelTest extends TestCase
             'error' => '254 4.7.1 Recipient address suppressed', 'status' => 0, 'category' => DeliveryMonitor::SUPPRESSED]);
         MailLog::create(['email' => $admin->email, 'user_id' => $admin->id, 'subject' => '通知', 'template_name' => 'notify', 'error' => null, 'status' => 1]);
         BillingDocument::create(['user_id' => $victim->id, 'kind' => BillingDocument::KIND_RECEIPT, 'doc_no' => 'RC-TEST-1', 'amount' => 100,
-            'access_key' => bin2hex(random_bytes(16)), 'path' => 'billing/documents/x.pdf', 'size' => 1, 'locale' => 'zh-CN', 'send_count' => 0]);
+            'access_key' => bin2hex(random_bytes(16)), 'payload' => ['doc_no' => 'RC-TEST-1'], 'size' => 1, 'locale' => 'zh-CN', 'send_count' => 0]);
 
         $this->artisan('mail:delivery-digest')->assertExitCode(0);
         Bus::assertDispatched(\App\Jobs\SendTelegramJob::class, function (\App\Jobs\SendTelegramJob $job) {
@@ -545,7 +547,7 @@ class FinancePanelTest extends TestCase
         $user = $this->user(['expired_at' => time() - 3600]);
         $expiry = (int) $user->expired_at;
         BillingDocument::create(['user_id' => $user->id, 'kind' => BillingDocument::KIND_INVOICE, 'stage' => 'final', 'expired_at' => $expiry,
-            'doc_no' => 'INV-TEST-1', 'amount' => 2000, 'access_key' => bin2hex(random_bytes(16)), 'path' => 'billing/documents/inv.pdf', 'size' => 1, 'locale' => 'zh-CN']);
+            'doc_no' => 'INV-TEST-1', 'amount' => 2000, 'access_key' => bin2hex(random_bytes(16)), 'payload' => ['doc_no' => 'INV-TEST-1'], 'size' => 1, 'locale' => 'zh-CN']);
 
         $job = $this->runJob(SendBillingMailJob::KIND_EXPIRED, $user->id, '1', $expiry);
         $this->assertSame(SendBillingMailJob::RESULT_EMAIL, $job->result);

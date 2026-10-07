@@ -6,7 +6,8 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
- * 归档的收据 / 续费账单。
+ * 开出的收据 / 续费账单。不存 PDF 文件：payload 是开具那一刻的内容快照，下载 / 重发时按它现生成 PDF，
+ * 所以事后改了邮箱、套餐名、站点信息，用户拿到的仍是当初那份。
  *
  * @property int $id
  * @property int $user_id
@@ -17,9 +18,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int|null $expired_at    账单对应的到期时间戳
  * @property int $amount             收据 = 本单消耗金额，账单 = 应付金额（分）
  * @property string $access_key      下载链接里的随机凭据
- * @property string $path            文件路径 / 对象 key（相对 disk）
- * @property string $disk            文件在哪：local | s3（按写入时的配置记录，切换存储后旧文件仍按此读）
- * @property int $size               文件大小；0 = 文件已按保留期清理，下载时按订单重建
+ * @property array|null $payload     内容快照（BillingDocumentService 产出的渲染数据，不含 logo 图片）
+ * @property int $size               快照字节数（后台统计占用用）
  * @property string $locale
  * @property int|null $sent_at       最近一次成功投递时间
  * @property int $send_count
@@ -35,9 +35,6 @@ class BillingDocument extends Model
     public const CHANNEL_EMAIL = 'email';
     public const CHANNEL_TELEGRAM = 'telegram';
 
-    public const DISK_LOCAL = 'local';
-    public const DISK_S3 = 's3';
-
     /** 账单过期多久仍未续费就视为作废（面板里不再标「待付款」） */
     public const VOID_AFTER_DAYS = 30;
 
@@ -45,6 +42,8 @@ class BillingDocument extends Model
     protected $dateFormat = 'U';
     protected $guarded = ['id'];
     protected $casts = [
+        // 中文不转义成 \uXXXX：同样内容少占一半多空间
+        'payload' => 'json:unicode',
         'created_at' => 'timestamp',
         'updated_at' => 'timestamp',
     ];

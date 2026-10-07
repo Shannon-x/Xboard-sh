@@ -20,12 +20,13 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * 收据 / 续费账单 / 提现结果 / 到期后通知邮件：payload 只带 id，到 worker 里才组装数据、渲染 PDF。
- * PDF 是二进制，塞进 payload 会让 json_encode 失败；重试时按当时的订单 / 用户状态重新生成也更稳。
+ * 收据 / 续费账单 / 提现结果 / 到期后通知邮件：payload 只带 id，到 worker 里才组装数据、渲染 PDF
+ * （PDF 是二进制，塞进 payload 会让 json_encode 失败）。
  *
- * 顺序是「先归档，再投递」：收据和账单的 PDF 先落盘记入 v2_billing_document，用户随时能从面板重新下载、
- * 后台能重发；之后才尝试邮件。邮件退信（地址被抑制 / 不存在）时转 Telegram 发同一份文件，
- * 两条路都走不通就只留在面板里（后台「待送达文件」能看到）。临时失败和 SMTP 配置问题才重试。
+ * 顺序是「先记录，再投递」：收据和账单先把内容快照记入 v2_billing_document（不存 PDF 文件，下载时按快照现生成），
+ * 用户随时能从面板重新下载、后台能重发；之后才尝试邮件。收据开过一次就固定，重发 / 重试都照快照发。
+ * 邮件退信（地址被抑制 / 不存在）时转 Telegram 发同一份文件，两条路都走不通就只留在面板里
+ * （后台「待送达文件」能看到）。临时失败和 SMTP 配置问题才重试。
  */
 class SendBillingMailJob implements ShouldQueue
 {
@@ -118,13 +119,21 @@ class SendBillingMailJob implements ShouldQueue
         if ($order->receipt_sent_at && !$this->force) {
             return null;
         }
-        $data = $docs->receipt($order);
+        $doc = BillingDocument::where('order_id', $order->id)->first();
+        if ($doc) {
+            // 已经开过（后台重发 / 队列重试）：照开具时的快照原样再发，不按订单现状重开一张
+            $data = $archive->data($doc, $docs);
+        } else {
+            $data = $docs->receipt($order);
+            if ($data !== null) {
+                $doc = $archive->storeReceipt($order, $data);   // 先记下：邮件发不出去用户也能在面板下载
+            }
+        }
         if ($data === null) {
             return null;   // 0 元单 / 用户没邮箱：没有收据可开
         }
         $user = $order->user;
-        $pdf = $docs->pdf($data);
-        $doc = $archive->storeReceipt($order, $data, $pdf);   // 先归档：邮件发不出去用户也能在面板下载
+        $pdf = BillingDocumentService::withLocale(fn () => $docs->pdf($data), $doc->locale ?: null);
         $result = $this->notify($user, $data, 'billing.mail.receipt', $pdf, $doc, $docs, $archive);
         if ($result === self::RESULT_EMAIL || $result === self::RESULT_TELEGRAM) {
             DB::table('v2_order')->where('id', $order->id)->update(['receipt_sent_at' => time()]);
@@ -152,7 +161,7 @@ class SendBillingMailJob implements ShouldQueue
         $doc = null;
         if ($data['has_pdf']) {
             $pdf = $docs->pdf($data);
-            $doc = $archive->storeInvoice($user, $stage, $data, $pdf);
+            $doc = $archive->storeInvoice($user, $stage, $data);
         }
         return $this->notify($user, $data, 'billing.mail.invoice', $pdf, $doc, $docs, $archive);
     }
@@ -209,7 +218,8 @@ class SendBillingMailJob implements ShouldQueue
      */
     private function notify(User $user, array $data, string $view, ?string $pdf, ?BillingDocument $doc, BillingDocumentService $docs, ?BillingArchive $archive): string
     {
-        $email = (string) ($data['bill_to']['email'] ?? $user->email);
+        // 收件人永远是用户现在的邮箱：重发旧收据时快照里的「账单寄往」可能是改之前的地址
+        $email = (string) ($user->email ?: ($data['bill_to']['email'] ?? ''));
         $attachments = $pdf !== null
             ? [['name' => $docs->attachmentName($data), 'data' => $pdf, 'mime' => 'application/pdf']]
             : [];

@@ -7,8 +7,8 @@ use Illuminate\Support\Facades\Schema;
 /**
  * 财务面板补全：收据 / 账单归档、余额流水、邮件投递闭环、到期后的生命周期邮件。
  *
- * v2_billing_document  归档的收据 / 续费账单 PDF（文件在 storage/app/billing/documents/<user_id>/ 或 S3 兼容对象存储，
- *                      disk 列记录文件在哪）。用户端可重新下载、后台可重发；access_key 是下载链接里的随机凭据（同工单附件）。
+ * v2_billing_document  开出的收据 / 续费账单：payload 存开具那一刻的内容快照（渲染用数据，约 2 KB），
+ *                      下载 / 重发时按快照现生成 PDF，不落文件。access_key 是下载链接里的随机凭据（同工单附件）。
  * v2_balance_log       余额流水：user.balance 每变动一次记一行（余额支付、取消退回、折抵退回、礼品卡、佣金划转、后台调整）。
  * v2_mail_log          +user_id / status / category：投递结果分类（suppressed / bounce / temporary / config），
  *                      后台能按用户、按结果查，日报按分类汇总。
@@ -32,8 +32,7 @@ return new class extends Migration {
                 $table->integer('expired_at')->nullable();
                 $table->integer('amount')->default(0);
                 $table->string('access_key', 32);
-                $table->string('path', 191);
-                $table->string('disk', 16)->default('local');
+                $table->mediumText('payload')->nullable();
                 $table->integer('size')->default(0);
                 $table->string('locale', 8)->default('zh-CN');
                 $table->integer('sent_at')->nullable();

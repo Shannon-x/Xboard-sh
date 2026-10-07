@@ -5,31 +5,17 @@ namespace App\Services\Billing;
 use App\Models\BillingDocument;
 use App\Models\Order;
 use App\Models\User;
-use App\Services\Billing\Storage\DocumentStore;
-use App\Services\Billing\Storage\DocumentStoreFactory;
-use Illuminate\Support\Facades\Log;
 
 /**
- * 收据 / 账单归档：PDF 写到当前配置的存储（本地 storage/app/billing/documents/<user_id>/<doc_no>.pdf，
- * 或 S3 兼容对象存储的 <prefix>/<user_id>/<doc_no>.pdf），表里记一行（path + disk 指向文件在哪）；
- * 用户端按 access_key 下载，后台可重发。邮件退信、附件被剥、用户想再要一份 —— 都从这里拿。
+ * 收据 / 账单的开具记录。不存 PDF 文件：每份记一行，payload 是开具那一刻的内容快照
+ * （BillingDocumentService 产出的渲染数据，约 2 KB），下载、重发、Telegram 兜底时按快照现生成 PDF。
  *
- * 文件不在了（迁移、volume 没挂、按保留期清理掉了）时收据按订单重新渲染（订单字段不会变），
- * 账单只在它仍是当前到期日时重渲染；再拿不到就 404。保留期清理见 billing:prune-documents。
+ * 这样事后改了邮箱、套餐名、站点信息或用户续了费，用户拿到的仍是当初那份；只有版式、logo 和站内链接的域名
+ * 跟着站点现状走。没有快照的老记录（升级前开的）按原始数据重建一次并补存快照。
  */
 final class BillingArchive
 {
-    private ?BillingStorageConfig $config = null;
-
-    /** 当前配置的存储；传 $driver 则按库里记录的 disk 取（读 / 删旧文件用） */
-    public function store(?string $driver = null): DocumentStore
-    {
-        // 实例不是单例（每个任务 / 请求各自解析一份），配置在实例内记住即可，清理任务跑几千份不必每份都读一遍设置
-        $this->config ??= BillingStorageConfig::fromSettings();
-        return DocumentStoreFactory::make($this->config, $driver);
-    }
-
-    public function storeReceipt(Order $order, array $data, string $pdf): BillingDocument
+    public function storeReceipt(Order $order, array $data): BillingDocument
     {
         $doc = BillingDocument::where('order_id', $order->id)->first() ?: new BillingDocument();
         return $this->fill($doc, [
@@ -39,11 +25,14 @@ final class BillingArchive
             'stage' => null,
             'expired_at' => null,
             'amount' => (int) $data['total'],
-        ], $data, $pdf);
+        ], $data);
     }
 
-    /** 同一个到期日只留一份账单：24 小时档覆盖 7 天档的文件（金额按当时规格重算，编号不变）。 */
-    public function storeInvoice(User $user, string $stage, array $data, string $pdf): BillingDocument
+    /**
+     * 同一个到期日只留一份账单：24 小时档覆盖 7 天档的快照（金额按当时规格重算，编号不变）。
+     * 账单在付款前本来就会变，付清或失效后就不再更新。
+     */
+    public function storeInvoice(User $user, string $stage, array $data): BillingDocument
     {
         $expiry = (int) $user->expired_at;
         $doc = BillingDocument::where('user_id', $user->id)
@@ -57,7 +46,7 @@ final class BillingArchive
             'stage' => $stage,
             'expired_at' => $expiry,
             'amount' => (int) $data['balance_due'],
-        ], $data, $pdf);
+        ], $data);
     }
 
     public function markSent(BillingDocument $doc, string $channel): void
@@ -68,65 +57,35 @@ final class BillingArchive
         $doc->save();
     }
 
-    /** PDF 内容；文件不在了就按原始数据重渲染并补回存储，重渲染也不行返回 null。 */
+    /** 按快照现生成 PDF；快照和重建都拿不到时返回 null（下载接口回 404）。 */
     public function contents(BillingDocument $doc, BillingDocumentService $docs): ?string
     {
-        $pdf = $this->read($doc);
-        if ($pdf !== null) {
-            return $pdf;
-        }
-        $pdf = BillingDocumentService::withLocale(function () use ($doc, $docs) {
-            $data = $this->rebuildData($doc, $docs);
-            return $data === null ? null : $docs->pdf($data);
-        });
-        if ($pdf === null) {
+        $data = $this->data($doc, $docs);
+        if ($data === null) {
             return null;
         }
-        $this->write($doc, $pdf);
+        return BillingDocumentService::withLocale(fn () => $docs->pdf($data), $doc->locale ?: null);
+    }
+
+    /**
+     * 这份单据的渲染数据：有快照就用快照；没有（升级前开的老记录）按原始数据重建一次并补存，
+     * 之后就固定下来。账单重建只在它仍是当前到期日时可行。
+     */
+    public function data(BillingDocument $doc, BillingDocumentService $docs): ?array
+    {
+        if (is_array($doc->payload) && $doc->payload !== []) {
+            return $this->present($doc->payload);
+        }
+        $data = BillingDocumentService::withLocale(fn () => $this->rebuildData($doc, $docs), $doc->locale ?: null);
+        if ($data === null) {
+            return null;
+        }
+        $this->snapshot($doc, $data);
         $doc->save();
-        return $pdf;
+        return $data;
     }
 
-    /**
-     * 按记录里的位置读文件。已被清理（size = 0）或不在了返回 null；存储报错也当不在，
-     * 由调用方重建 —— 下载接口不该因为对象存储抖一下就 500。
-     */
-    public function read(BillingDocument $doc): ?string
-    {
-        if (!$doc->path || (int) $doc->size <= 0) {
-            return null;
-        }
-        try {
-            return $this->store($doc->disk ?: BillingStorageConfig::DRIVER_LOCAL)->get($doc->path);
-        } catch (\Throwable $e) {
-            Log::warning('[billing] 读取归档文件失败', [
-                'id' => $doc->id, 'disk' => $doc->disk, 'path' => $doc->path, 'error' => $e->getMessage(),
-            ]);
-            return null;
-        }
-    }
-
-    /**
-     * 按记录里的位置删文件（不存在视为成功）。失败只记日志并返回 false，
-     * 让调用方保留记录下一轮再试；否则库里干净了、对象却永远留在存储上。
-     */
-    public function deleteFile(BillingDocument $doc): bool
-    {
-        if (!$doc->path) {
-            return true;
-        }
-        try {
-            $this->store($doc->disk ?: BillingStorageConfig::DRIVER_LOCAL)->delete($doc->path);
-            return true;
-        } catch (\Throwable $e) {
-            Log::warning('[billing] 删除归档文件失败', [
-                'id' => $doc->id, 'disk' => $doc->disk, 'path' => $doc->path, 'error' => $e->getMessage(),
-            ]);
-            return false;
-        }
-    }
-
-    /** 重发 / 重渲染用的原始数据：收据永远能重建，账单只在仍是当前到期日且还没到期时能。 */
+    /** 按订单 / 用户现状重建渲染数据：收据只要订单在就能重建，账单只在仍是当前到期日且还没到期时能。 */
     public function rebuildData(BillingDocument $doc, BillingDocumentService $docs): ?array
     {
         if ($doc->kind === BillingDocument::KIND_RECEIPT) {
@@ -142,43 +101,41 @@ final class BillingArchive
     }
 
     /**
-     * 把 PDF 写到当前配置的存储并更新记录的 path / disk / size（不保存记录，由调用方 save）。
-     *
-     * 对象存储写不进去时退回本地盘：归档失败不能拖住邮件；文件在哪由 disk 列说了算，
-     * 之后 billing:migrate-storage 可以再搬过去。位置变了（换了驱动 / 前缀）就顺手删掉旧文件。
+     * 快照内容原样用，只有两样跟着站点现状走：logo（不进快照），和站内链接的域名 ——
+     * 站点换过域名后，重发的旧收据里「查看账户」之类的链接仍要能点开。
      */
-    private function write(BillingDocument $doc, string $pdf): void
+    private function present(array $data): array
     {
-        $store = $this->store();
-        $key = $store->keyFor((int) $doc->user_id, (string) $doc->doc_no);
-        try {
-            $store->put($key, $pdf);
-        } catch (\Throwable $e) {
-            if ($store->driver() === BillingStorageConfig::DRIVER_LOCAL) {
-                throw $e;
-            }
-            Log::warning('[billing] 对象存储写入失败，本次改存本地', ['doc_no' => $doc->doc_no, 'error' => $e->getMessage()]);
-            $store = $this->store(BillingStorageConfig::DRIVER_LOCAL);
-            $key = $store->keyFor((int) $doc->user_id, (string) $doc->doc_no);
-            $store->put($key, $pdf);
+        $data['logo_url'] = BrandLogo::url();
+        $data['logo_size'] = BrandLogo::mailSize();
+        $old = rtrim((string) ($data['app_url'] ?? ''), '/');
+        $new = rtrim((string) admin_setting('app_url', ''), '/');
+        if ($old !== '' && $new !== '' && $old !== $new) {
+            array_walk_recursive($data, function (&$value) use ($old, $new) {
+                if (is_string($value) && ($value === $old || str_starts_with($value, $old . '/') || str_starts_with($value, $old . '?'))) {
+                    $value = $new . substr($value, strlen($old));
+                }
+            });
         }
-        $moved = $doc->path && ($doc->path !== $key || ($doc->disk ?: BillingStorageConfig::DRIVER_LOCAL) !== $store->driver());
-        if ($moved && (int) $doc->size > 0) {
-            $this->deleteFile($doc);
-        }
-        $doc->path = $key;
-        $doc->disk = $store->driver();
-        $doc->size = strlen($pdf);
+        return $data;
     }
 
-    private function fill(BillingDocument $doc, array $attrs, array $data, string $pdf): BillingDocument
+    /** 记下快照（不保存记录，由调用方 save）。logo 不进快照：PDF 里嵌的图几十 KB，且跟着站点走。 */
+    private function snapshot(BillingDocument $doc, array $data): void
+    {
+        unset($data['logo_data'], $data['logo_url'], $data['logo_size']);
+        $doc->payload = $data;
+        $doc->size = strlen(json_encode($data, JSON_UNESCAPED_UNICODE) ?: '');   // 与 json:unicode 转换同样的编码，字节数和库里一致
+    }
+
+    private function fill(BillingDocument $doc, array $attrs, array $data): BillingDocument
     {
         $doc->fill($attrs + [
             'doc_no' => (string) $data['doc_no'],
             'access_key' => $doc->access_key ?: bin2hex(random_bytes(16)),
             'locale' => (string) ($data['locale'] ?? 'zh-CN'),
         ]);
-        $this->write($doc, $pdf);
+        $this->snapshot($doc, $data);
         $doc->save();
         return $doc;
     }

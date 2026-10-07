@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\ObjectStorage\S3SignatureV4;
+use App\Services\TicketAttachment\Storage\S3SignatureV4;
 use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 

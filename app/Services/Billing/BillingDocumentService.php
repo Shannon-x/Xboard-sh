@@ -53,6 +53,12 @@ class BillingDocumentService
         return (bool) (int) admin_setting('billing_expired_enable', 1);
     }
 
+    /** 已续费 / 已失效的账单记录保留多少天（按到期日算），0 = 永久；收据始终保留。 */
+    public static function invoiceRetentionDays(): int
+    {
+        return max(0, min(3650, (int) admin_setting('billing_invoice_retention_days', 0)));
+    }
+
     public static function winbackEnabled(): bool
     {
         return (bool) (int) admin_setting('billing_winback_enable', 1);
@@ -74,11 +80,14 @@ class BillingDocumentService
         return in_array($locale, self::LOCALES, true) ? $locale : 'zh-CN';
     }
 
-    /** 在账单语言下执行，结束后恢复（队列 worker 常驻，不能把 locale 留给下一个任务）。 */
-    public static function withLocale(callable $fn)
+    /**
+     * 在账单语言下执行，结束后恢复（队列 worker 常驻，不能把 locale 留给下一个任务）。
+     * 传 $locale 则用它（按快照重新生成时用开具时的语言，表头标签才和快照里的文案对得上）。
+     */
+    public static function withLocale(callable $fn, ?string $locale = null)
     {
         $previous = App::getLocale();
-        App::setLocale(self::locale());
+        App::setLocale($locale !== null && in_array($locale, self::LOCALES, true) ? $locale : self::locale());
         try {
             return $fn();
         } finally {

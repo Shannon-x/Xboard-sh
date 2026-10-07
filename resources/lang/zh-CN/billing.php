@@ -187,4 +187,27 @@ return [
         'note' => '也可以随时在用户中心下载这份文件：',
         'link' => '账单与收据',
     ],
+    'download' => [
+        'expired_title' => '下载链接已过期',
+        'expired_body' => '为了安全，收据和账单的下载链接一小时后失效。请回到用户中心的「账单与收据」重新点下载。',
+        'back' => '打开账单与收据',
+    ],
+    'auto_renew' => [
+        'failed_subject' => '自动续费未执行',
+        'failed_short' => '自动续费没有执行：账户余额还差 :amount，这次没有扣款。',
+        'failed_short_pay' => '现在就可以在线续费：:url',
+        'failed_short_topup' => '也可以兑换礼品卡或把邀请佣金转入余额：在 :expiry 前补足，系统会在一小时内自动续上，服务不中断。',
+        'failed_short_grace' => '到期后、:deadline 前补足也会自动续上，但新周期从续上那一刻算起，中间会停用一段。',
+        'failed_reason' => '自动续费没有执行：:reason。',
+        'failed_reason_next' => '想继续使用，可以换一个套餐：:url ，有疑问可以提交工单。',
+        'reason' => [
+            'no_plan' => '当前没有订阅',
+            'lifetime' => '不限时套餐不需要续费',
+            'plan_missing' => '原来的套餐已经下架',
+            'no_period' => '套餐当前没有可购买的周期',
+            'not_purchasable' => '当前配置暂时不能续费（:detail）',
+        ],
+        'success_subject' => '已自动续费',
+        'success' => '已自动续费：:plan · :period · :amount，已从余额扣除。新到期时间：:date。订单号 :trade_no。',
+    ],
 ];

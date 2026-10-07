@@ -51,9 +51,10 @@ class BillingController extends Controller
         $users = User::whereIn('id', $items->pluck('user_id')->unique()->all())
             ->get(['id', 'email', 'expired_at', 'mail_suppressed_at', 'telegram_id'])->keyBy('id');
         $orders = Order::whereIn('id', $items->pluck('order_id')->filter()->all())->pluck('trade_no', 'id');
+        $expires = time() + BillingDocument::ADMIN_LINK_TTL;
 
         return response([
-            'data' => $items->map(function (BillingDocument $d) use ($users, $orders) {
+            'data' => $items->map(function (BillingDocument $d) use ($users, $orders, $expires) {
                 $user = $users[$d->user_id] ?? null;
                 return [
                     'id' => (int) $d->id,
@@ -72,7 +73,7 @@ class BillingController extends Controller
                     'sent_at' => $d->sent_at ? (int) $d->sent_at : null,
                     'send_count' => (int) $d->send_count,
                     'channel' => $d->channel,
-                    'download_path' => $d->downloadPath(),
+                    'download_path' => $d->downloadPath($expires),
                     'created_at' => (int) $d->created_at,
                 ];
             })->values(),

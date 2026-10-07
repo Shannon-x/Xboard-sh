@@ -8,16 +8,16 @@
 
 | 列 | 说明 |
 |---|---|
-| `kind` / `doc_no` / `stage` | `receipt` / `invoice`；编号同邮件；账单档位 `first` / `final` |
+| `kind` / `doc_no` / `stage` | `receipt` / `invoice`；编号同邮件，形如 `RC-20261007-7KQ2M9XA`（日期 + 8 位码，码是 app key 对「哪张订单 / 哪位用户哪个到期日」的 HMAC，同一份单据每次算出来一样，又看不出站点的订单量和用户数）；账单档位 `first` / `final` |
 | `order_id` / `expired_at` | 收据对应订单（唯一）；账单对应到期时间戳（同一到期日只留一份，24 小时档覆盖 7 天档的快照，编号与链接不变） |
 | `amount` | 收据 = 实付金额，账单 = 应付金额（分） |
-| `access_key` | 下载链接里的 128 位随机凭据 |
+| `access_key` | 128 位随机密钥，只用来签下载链接，本身不出现在链接里 |
 | `payload` / `size` / `locale` | 内容快照（JSON，中文不转义，不含 logo）与它的字节数；开具时的语言，重新生成时表头标签用同一种语言 |
 | `sent_at` / `send_count` / `channel` | 最近一次成功投递的时间、累计次数、渠道（`email` / `telegram`）；`sent_at` 为空 = 从未送达，后台统计里的「待送达文件」 |
 
 - 为什么存快照而不是只记订单号、下载时按订单重建：按订单现状重建会漂移 —— 收据会印出用户现在的邮箱和到期日、套餐改名后的新名字和规格（只有自定义套餐的订单带 `plan_snapshot`）、当前的支付方式名和站点信息；账单在续费或过期后根本重建不出来。快照把开具那一刻的内容固定下来，只有版式、logo 和站内链接的域名跟着站点现状走（换过域名后，旧收据里的链接仍能点开）。
 - 账单的内容固定，状态不固定：下载已续费 / 已失效的旧账单时，章改成「已续费」/「已失效」，付款提示换成一句说明，也不再带开具时的套餐推荐（价格可能早已变了），金额与明细照开具时，快照本身不改。
-- 下载：`GET /api/v1/guest/billing/document/{id}/{access_key}`，免登录、凭 key 校验（`hash_equals`），返回 `application/pdf` + `Content-Disposition: attachment`。每次都现生成，每 IP 每分钟限 30 次。没有快照的记录（升级前开的、或被手工清空的）：收据按订单重建一次并补存快照；账单只在它仍是当前到期日且未到期时能重建，否则 404。
+- 下载：`GET /api/v1/guest/billing/document/{id}/{key}`，key 是 8 位十六进制的过期时间加 32 位签名（`access_key` 对「id.过期时间」的 HMAC），免登录、先验签再看过期（`hash_equals`），返回 `application/pdf` + `Content-Disposition: attachment`；过期返回 410 和一页说明（带回「账单与收据」的链接）。用户端列表给的链接 1 小时有效（`download_expires_at`，主题在过期前自动换新），后台列表给的 12 小时。每次都现生成，每 IP 每分钟限 30 次。没有快照的记录（升级前开的、或被手工清空的）：收据按订单重建一次并补存快照；账单只在它仍是当前到期日且未到期时能重建，否则 404。
 - 用户端列表：`GET /api/v1/user/billing/documents`，最近 200 份，带状态：收据恒 `paid`；账单 `open`（待付）/ `settled`（此后续费了）/ `void`（到期超过 30 天仍未续费）。
 - 后台：`/admin/billing/document/fetch`（按用户 id / 邮箱 / 类型 / 订单筛选，分页，带整体统计 `summary`）与 `/admin/billing/document/resend`（收据照快照原样再发，收件人是用户**现在**的邮箱；账单只在仍是当前到期日时允许重发，按当前规格更新后再发）。重发走同一条投递链路，用户被标记暂停投递时照样转 Telegram / 留面板。
 - 邮件正文底部多一行「也可以随时在面板「账单与收据」重新下载」，指向 `app_url/billing`。

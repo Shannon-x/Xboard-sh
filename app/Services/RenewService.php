@@ -9,6 +9,7 @@ use App\Models\Plan;
 use App\Models\User;
 use App\Services\Billing\BillingDocumentService;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Lang;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -161,12 +162,12 @@ class RenewService
 
         $spec = $this->resolveSpec($user);
         if (!$spec['available']) {
-            $this->notifyFailure($user, $spec['message'], null);
+            $this->notifyFailure($user, $spec, null);
             return ['status' => 'unavailable', 'reason' => $spec['reason']];
         }
         $shortfall = $spec['amount'] - (int) ($user->balance ?? 0);
         if ($shortfall > 0) {
-            $this->notifyFailure($user, null, $shortfall);
+            $this->notifyFailure($user, $spec, $shortfall);
             return ['status' => 'insufficient', 'shortfall' => $shortfall];
         }
         if ($dryRun) return ['status' => 'would_renew', 'amount' => $spec['amount']];
@@ -185,8 +186,10 @@ class RenewService
             });
         } catch (\Throwable $e) {
             if ($e->getMessage() === 'balance_short') {
-                $this->notifyFailure($user, null, 1);
-                return ['status' => 'insufficient', 'shortfall' => 1];
+                // 报价之后余额被别处花掉了：按此刻的余额重算差额（至少 1 分）
+                $shortfall = max(1, (int) $spec['amount'] - (int) (User::where('id', $user->id)->value('balance') ?? 0));
+                $this->notifyFailure($user, $spec, $shortfall);
+                return ['status' => 'insufficient', 'shortfall' => $shortfall];
             }
             Log::error('auto_renew.create_failed', ['user_id' => $user->id, 'error' => $e->getMessage()]);
             return ['status' => 'error', 'reason' => $e->getMessage()];
@@ -214,24 +217,56 @@ class RenewService
         ];
     }
 
-    private function notifyFailure(User $user, ?string $reasonText, ?int $shortfall): void
+    /**
+     * 没扣成的通知（同一到期日只发一次）。站点没有充值入口，所以不叫用户「去充值」：
+     * 先给在线续费的链接，再说余额还能从礼品卡、佣金转入补；到期后才补上的会续，但周期从续上那一刻算，
+     * 中间停用一段 —— 这一点提前说清楚。文案跟收据 / 账单同一个语言设置。
+     */
+    private function notifyFailure(User $user, array $spec, ?int $shortfall): void
     {
         $expiry = (int) $user->expired_at;
         if ((int) ($user->auto_renew_notified_at ?? 0) === $expiry) return;   // 同一到期日只提醒一次
         User::withoutEvents(fn () => User::where('id', $user->id)->update(['auto_renew_notified_at' => $expiry]));
-        $content = $shortfall !== null
-            ? sprintf('自动续费未执行：余额不足，还差 ¥%.2f。请在 %s 前充值，充值后系统会自动续费。', $shortfall / 100, date('Y-m-d H:i', $expiry))
-            : '自动续费未执行：' . $reasonText . '。请手动续费或联系客服。';
-        $this->send($user, '自动续费未执行', $content);
+        [$subject, $content] = BillingDocumentService::withLocale(function () use ($spec, $shortfall, $expiry) {
+            $plans = rtrim((string) admin_setting('app_url', ''), '/') . '/plans';
+            $url = $plans . '?mode=renew';
+            if ($shortfall !== null) {
+                $lines = [
+                    __('billing.auto_renew.failed_short', ['amount' => app(BillingDocumentService::class)->money($shortfall)]),
+                    __('billing.auto_renew.failed_short_pay', ['url' => $url]),
+                    __('billing.auto_renew.failed_short_topup', ['expiry' => date('Y-m-d H:i', $expiry)]),
+                ];
+                if (self::graceHours() > 0) {
+                    $lines[] = __('billing.auto_renew.failed_short_grace', ['deadline' => date('Y-m-d H:i', $expiry + self::graceHours() * 3600)]);
+                }
+            } else {
+                $key = 'billing.auto_renew.reason.' . ($spec['reason'] ?? '');
+                $reason = Lang::has($key) ? __($key, ['detail' => (string) ($spec['message'] ?? '')]) : (string) ($spec['message'] ?? '');
+                // 原套餐续不了（下架 / 没有可买周期 / 当前配置买不了）：给套餐列表，让用户换一个
+                $lines = [
+                    __('billing.auto_renew.failed_reason', ['reason' => $reason]),
+                    __('billing.auto_renew.failed_reason_next', ['url' => $plans]),
+                ];
+            }
+            return [__('billing.auto_renew.failed_subject'), implode("\n", $lines)];
+        });
+        $this->send($user, $subject, $content);
     }
 
     private function notifySuccess(User $user, Order $order, array $spec): void
     {
-        $content = sprintf('已自动续费：%s · %s · ¥%.2f，已从余额扣除。新到期时间：%s。订单号 %s。',
-            $spec['plan_name'], $spec['period_name'], $spec['amount'] / 100,
-            $user->expired_at ? date('Y-m-d H:i', (int) $user->expired_at) : '—', $order->trade_no);
+        [$subject, $content] = BillingDocumentService::withLocale(fn () => [
+            __('billing.auto_renew.success_subject'),
+            __('billing.auto_renew.success', [
+                'plan' => $spec['plan_name'],
+                'period' => Lang::has('billing.period.' . $spec['period']) ? __('billing.period.' . $spec['period']) : $spec['period_name'],
+                'amount' => app(BillingDocumentService::class)->money((int) $spec['amount']),
+                'date' => $user->expired_at ? date('Y-m-d H:i', (int) $user->expired_at) : '—',
+                'trade_no' => $order->trade_no,
+            ]),
+        ]);
         // 开了收据功能时，订单开通会发带 PDF 的收据（注明自动续费扣款），这封纯文字通知就只走 Telegram
-        $this->send($user, '已自动续费', $content, email: !BillingDocumentService::receiptEnabled());
+        $this->send($user, $subject, $content, email: !BillingDocumentService::receiptEnabled());
     }
 
     private function send(User $user, string $subject, string $content, bool $email = true): void

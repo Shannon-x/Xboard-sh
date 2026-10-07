@@ -6,8 +6,8 @@
 
 | 时机 | 邮件 | 附件 | 触发点 |
 |---|---|---|---|
-| 订单开通（`OrderService::open()` 完成，含自动续费单） | 收据：付款成功、服务已开通 | `RC-<付款日期>-<订单id>.pdf` | `SendBillingMailJob::dispatchReceipt()`，事务提交后派发 |
-| 到期前 `billing_invoice_days` 天（默认 7） | 首张续费账单：按上次配置的续费金额、付款截止、其他套餐 | `INV-<到期日期>-<用户id>.pdf` | 每日 `send:remindMail` 扫描 |
+| 订单开通（`OrderService::open()` 完成，含自动续费单） | 收据：付款成功、服务已开通 | `RC-<付款日期>-<8 位码>.pdf` | `SendBillingMailJob::dispatchReceipt()`，事务提交后派发 |
+| 到期前 `billing_invoice_days` 天（默认 7） | 首张续费账单：按上次配置的续费金额、付款截止、其他套餐 | `INV-<到期日期>-<8 位码>.pdf` | 每日 `send:remindMail` 扫描 |
 | 到期前 24 小时 | 最后提醒：同一张账单，标题换成「24 小时内到期」 | 同上 | 原到期提醒的位置，替换旧 `remindExpire` 模板 |
 | 管理员标记提现已打款 / 驳回 | 提现结果：金额、实付 USDT、链、地址、交易哈希（打款）或原因与退回金额（驳回） | 无 | `CommissionWithdrawalService::notifyUser()` → `SendBillingMailJob::dispatchWithdrawal()` |
 
@@ -17,6 +17,7 @@
 - 一笔订单只发一次收据（`v2_order.receipt_sent_at`）；同一个到期日的首张账单 / 最后提醒各只发一次（`v2_user.invoice_notified_at` / `invoice_final_notified_at` 记的是到期时间戳，续费后自然失效）。
 - 任务执行时如果用户已经续费（`expired_at` 变了），账单作废不发。
 - 开了自动续费且余额足够：首张账单照发（标「自动续费」、不催付款）；24 小时档不发，因为一小时内自动续费就会扣款并发收据。原来「已自动续费」的纯文字邮件不再发，只保留 Telegram。
+- 自动续费没扣成（余额不够或套餐不能续）：同一到期日发一次纯文字通知（邮件 + Telegram），语言跟 `billing_locale`。余额不够时不说「去充值」（站点没有充值入口）：先给 `/plans?mode=renew` 在线续费链接，再说可以兑换礼品卡或转入佣金，到期前补足一小时内自动续上；宽限期（`auto_renew_grace_hours`，默认 72）内补足也会续，但新周期从续上那一刻算起，中间停用一段。套餐不能续（下架、没有可买周期、当前配置买不了）时说明原因，链接给 `/plans` 让用户换一个套餐。
 - 套餐停售 / 不允许续费：邮件只引导换套餐、列出其他套餐，不附 PDF。
 - 「也可以看看这些套餐」默认取在售套餐里月均价最接近当前套餐的 3 个；后台 `billing_recommend_plan_ids` 可以指定（逗号分隔套餐 id，按给定顺序）。
 - 尊重用户的「到期提醒」开关（`remind_expire`）与站点 `remind_mail_enable`。

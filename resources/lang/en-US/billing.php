@@ -186,4 +186,27 @@ return [
         'note' => 'You can also download this document any time from your account:',
         'link' => 'Invoices & receipts',
     ],
+    'download' => [
+        'expired_title' => 'This download link has expired',
+        'expired_body' => 'For your security, receipt and bill download links stop working after one hour. Go back to Billing & receipts in your account and click download again.',
+        'back' => 'Open Billing & receipts',
+    ],
+    'auto_renew' => [
+        'failed_subject' => 'Auto-renewal did not run',
+        'failed_short' => 'Auto-renewal did not run: your balance is :amount short, so nothing was charged.',
+        'failed_short_pay' => 'You can renew online now: :url',
+        'failed_short_topup' => 'Or redeem a gift card or move referral commission into your balance. Top up before :expiry and we will renew within an hour with no interruption.',
+        'failed_short_grace' => 'Topping up after expiry but before :deadline still renews, but the new period starts from that moment and service pauses in between.',
+        'failed_reason' => 'Auto-renewal did not run: :reason.',
+        'failed_reason_next' => 'To keep using the service, pick a plan here: :url . If anything is unclear, open a ticket.',
+        'reason' => [
+            'no_plan' => 'you have no active subscription',
+            'lifetime' => 'lifetime plans do not need renewing',
+            'plan_missing' => 'your plan is no longer offered',
+            'no_period' => 'your plan has no billing period on sale right now',
+            'not_purchasable' => 'your current setup cannot be renewed right now (:detail)',
+        ],
+        'success_subject' => 'Auto-renewed',
+        'success' => 'Auto-renewed: :plan · :period · :amount, paid from your balance. New expiry: :date. Order :trade_no.',
+    ],
 ];

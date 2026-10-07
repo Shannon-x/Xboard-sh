@@ -30,6 +30,31 @@ class BillingDocumentService
 
     public const LOCALES = ['zh-CN', 'zh-TW', 'en-US'];
 
+    /** Crockford base32：去掉 I、L、O、U，口头报编号时不会把 1 和 I、0 和 O 弄混 */
+    private const NUMBER_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+    /**
+     * 对外编号：前缀 + 日期 + 8 位码，如 RC-20261007-7KQ2M9XA。
+     *
+     * 8 位码是 app key 对单据身份（哪张订单的收据 / 哪位用户哪个到期日的账单）做的 HMAC，
+     * 不是自增号：别人拿到一张收据看不出站点有多少订单、多少用户。同一份单据每次算出来都一样，
+     * 所以 24 小时档的账单沿用 7 天档的编号，不用先查库占号。40 位空间，同一天里撞号的概率可以忽略。
+     */
+    public static function documentNumber(string $prefix, int $date, string $identity): string
+    {
+        $hash = hash_hmac('sha256', $identity, (string) config('app.key'), true);
+        $bits = 0;
+        foreach (str_split(substr($hash, 0, 5)) as $byte) {
+            $bits = ($bits << 8) | ord($byte);
+        }
+        $code = '';
+        for ($i = 0; $i < 8; $i++) {
+            $code = self::NUMBER_ALPHABET[$bits & 31] . $code;
+            $bits >>= 5;
+        }
+        return sprintf('%s-%s-%s', $prefix, date('Ymd', $date), $code);
+    }
+
     public static function receiptEnabled(): bool
     {
         return (bool) (int) admin_setting('billing_receipt_enable', 1);
@@ -131,7 +156,7 @@ class BillingDocumentService
             'doc_title_en' => __('billing.receipt.doc_title_en'),
             'stamp' => __('billing.receipt.stamp'),
             'stamp_soft' => false,
-            'doc_no' => sprintf('RC-%s-%06d', date('Ymd', $paidAt), $order->id),
+            'doc_no' => self::documentNumber('RC', $paidAt, 'receipt:' . $order->id),
             'trade_no' => (string) $order->trade_no,
             'issued_at' => $this->date(time()),
             'paid_at' => $this->dateTime($paidAt),
@@ -228,7 +253,7 @@ class BillingDocumentService
             'has_pdf' => (bool) $spec['available'],
             'archive_note' => (bool) $spec['available'],
             'auto_covered' => $autoCovered,
-            'doc_no' => sprintf('INV-%s-%06d', date('Ymd', $expiredAt), $user->id),
+            'doc_no' => self::documentNumber('INV', $expiredAt, 'invoice:' . $user->id . ':' . $expiredAt),
             'issued_at' => $this->date(time()),
             'due_at' => $this->dateTime($expiredAt),
             'due_date' => $this->date($expiredAt),

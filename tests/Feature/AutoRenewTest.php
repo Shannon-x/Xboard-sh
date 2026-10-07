@@ -12,6 +12,7 @@ use App\Services\RenewService;
 use App\Utils\Helper;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -31,6 +32,11 @@ class AutoRenewTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // 站点设置走 Cache::store('redis')：桩成内存驱动并丢掉启动时建好的 Setting 实例，
+        // 本机开着 Redis、缓存里留着开发库的站点设置时，通知里的链接也不会变成开发库的 app_url
+        config(['cache.stores.redis' => ['driver' => 'array']]);
+        Cache::forgetDriver('redis');
+        app()->forgetScopedInstances();
         Bus::fake([SendEmailJob::class, SendBillingMailJob::class]);   // 只拦邮件；OrderHandleJob::dispatchSync 照常执行
         $this->base = $this->group('基础');
         $this->premium = $this->group('10x 专线');
@@ -285,6 +291,7 @@ class AutoRenewTest extends TestCase
 
     public function test_insufficient_balance_never_deducts_and_notifies_once_per_expiry(): void
     {
+        config(['v2board.app_url' => 'https://www.example.test/']);
         $plan = $this->plan();
         $user = $this->user($plan, ['auto_renew' => 1, 'balance' => 300]);
         $service = new RenewService();
@@ -294,11 +301,42 @@ class AutoRenewTest extends TestCase
         $this->assertSame(300, (int) $user->fresh()->balance, '一分不扣');
         $this->assertSame(0, Order::count(), '不留待付单');
         Bus::assertDispatchedTimes(SendEmailJob::class, 1);
+        // 站点没有充值入口：不叫用户「去充值」，给在线续费链接和礼品卡 / 佣金两条路，并说清到期后才续上的代价
+        Bus::assertDispatched(SendEmailJob::class, function (SendEmailJob $job) {
+            $params = (fn () => $this->params)->call($job);
+            $content = $params['template_value']['content'];
+            $this->assertSame('自动续费未执行 - ' . admin_setting('app_name', 'XBoard'), $params['subject']);
+            $this->assertStringNotContainsString('充值', $content);
+            $this->assertStringContainsString('还差 ¥7.00', $content);
+            $this->assertStringContainsString('https://www.example.test/plans?mode=renew', $content);
+            $this->assertStringContainsString('礼品卡', $content);
+            $this->assertStringContainsString('新周期从续上那一刻算起', $content);
+            return true;
+        });
 
         // 续上之后到期日变了：下一个周期余额又不够，会再提醒一次
         $user->update(['expired_at' => time() + 40 * 86400]);
         $this->assertSame('insufficient', $service->attemptAutoRenew($user->fresh())['status']);
         Bus::assertDispatchedTimes(SendEmailJob::class, 2);
+    }
+
+    public function test_failure_notice_follows_the_billing_language_and_explains_unrenewable_plans(): void
+    {
+        config(['v2board.billing_locale' => 'en-US', 'v2board.app_url' => 'https://www.example.test']);
+        $plan = $this->plan(['renew' => false]);
+        $user = $this->user($plan, ['auto_renew' => 1, 'balance' => 5000]);
+
+        $this->assertSame('unavailable', (new RenewService())->attemptAutoRenew($user)['status']);
+        Bus::assertDispatched(SendEmailJob::class, function (SendEmailJob $job) {
+            $params = (fn () => $this->params)->call($job);
+            $this->assertStringStartsWith('Auto-renewal did not run', $params['subject']);
+            $this->assertStringContainsString('Auto-renewal did not run: your current setup cannot be renewed right now', $params['template_value']['content']);
+            // 原套餐续不了：给套餐列表让用户换一个，而不是进不去的续费页
+            $this->assertStringContainsString('pick a plan here: https://www.example.test/plans .', $params['template_value']['content']);
+            $this->assertStringNotContainsString('mode=renew', $params['template_value']['content']);
+            return true;
+        });
+        $this->assertSame('zh-CN', app()->getLocale(), '发完恢复原语言，不污染队列里的下一个任务');
     }
 
     public function test_skips_when_disabled_pending_order_or_site_switch_off(): void

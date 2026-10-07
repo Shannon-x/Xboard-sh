@@ -23,6 +23,8 @@ class BillingController extends Controller
         $user = User::find($request->user()->id);
         $docs = BillingDocument::where('user_id', $user->id)->orderBy('id', 'desc')->limit(200)->get();
         $tradeNos = Order::whereIn('id', $docs->pluck('order_id')->filter()->all())->pluck('trade_no', 'id');
+        // 下载链接一小时后失效；面板据 download_expires_at 在过期前重新拉一次列表
+        $expires = time() + BillingDocument::LINK_TTL;
         return $this->success($docs->map(fn (BillingDocument $d) => [
             'id' => (int) $d->id,
             'kind' => $d->kind,
@@ -35,7 +37,8 @@ class BillingController extends Controller
             'channel' => $d->channel,
             'order_trade_no' => $d->order_id ? ($tradeNos[$d->order_id] ?? null) : null,
             'expired_at' => $d->expired_at ? (int) $d->expired_at : null,
-            'download_path' => $d->downloadPath(),
+            'download_path' => $d->downloadPath($expires),
+            'download_expires_at' => $expires,
         ])->values());
     }
 

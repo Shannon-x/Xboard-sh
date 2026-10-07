@@ -139,13 +139,16 @@ class FinancePanelTest extends TestCase
         $this->assertCount(1, $this->sent());
         $this->assertStringContainsString('/billing', $this->sent()->first()->getOriginalMessage()->getHtmlBody(), '邮件里提示可在面板重新下载');
 
-        $resp = $this->get("/api/v1/guest/billing/document/{$doc->id}/{$doc->access_key}")->assertStatus(200);
+        $this->assertMatchesRegularExpression('/^(RC)-\d{8}-[0-9A-HJKMNP-TV-Z]{8}$/', $doc->doc_no, '编号是日期 + 8 位码，不是订单 ID');
+
+        $resp = $this->get($doc->downloadPath(time() + 60))->assertStatus(200);
         $resp->assertHeader('Content-Type', 'application/pdf');
         $resp->assertHeader('X-Content-Type-Options', 'nosniff');
         $this->assertStringContainsString($doc->doc_no . '.pdf', (string) $resp->headers->get('Content-Disposition'));
         $this->assertStringStartsWith('%PDF', $resp->getContent());
-        $this->get("/api/v1/guest/billing/document/{$doc->id}/" . str_repeat('0', 32))->assertStatus(404);
-        $this->get('/api/v1/guest/billing/document/999999/' . $doc->access_key)->assertStatus(404);
+        $this->get("/api/v1/guest/billing/document/{$doc->id}/" . str_repeat('0', 40))->assertStatus(404);
+        $this->get("/api/v1/guest/billing/document/{$doc->id}/{$doc->access_key}")->assertStatus(404);   // 旧的永久 key 形态不再能下载
+        $this->get(str_replace("/{$doc->id}/", '/999999/', $doc->downloadPath(time() + 60)))->assertStatus(404);
 
         Sanctum::actingAs($user);
         $list = $this->getJson('/api/v1/user/billing/documents')->assertStatus(200)->json('data');
@@ -153,7 +156,10 @@ class FinancePanelTest extends TestCase
         $this->assertSame('paid', $list[0]['status']);
         $this->assertSame($order->trade_no, $list[0]['order_trade_no']);
         $this->assertSame(BillingDocument::CHANNEL_EMAIL, $list[0]['channel']);
-        $this->assertSame("/api/v1/guest/billing/document/{$doc->id}/{$doc->access_key}", $list[0]['download_path']);
+        $this->assertStringStartsWith("/api/v1/guest/billing/document/{$doc->id}/", $list[0]['download_path']);
+        $this->assertStringNotContainsString($doc->access_key, $list[0]['download_path'], '链接里只有签名，没有密钥本身');
+        $this->assertEqualsWithDelta(time() + BillingDocument::LINK_TTL, $list[0]['download_expires_at'], 5);
+        $this->get($list[0]['download_path'])->assertStatus(200);
 
         // 别人的文档不出现在我的列表里
         Sanctum::actingAs($this->user());
@@ -168,7 +174,7 @@ class FinancePanelTest extends TestCase
         $doc = BillingDocument::where('order_id', $order->id)->firstOrFail();
         BillingDocument::where('id', $doc->id)->update(['payload' => null, 'size' => 0]);   // 升级前开的老记录
 
-        $resp = $this->get("/api/v1/guest/billing/document/{$doc->id}/{$doc->access_key}")->assertStatus(200);
+        $resp = $this->get($doc->downloadPath(time() + 60))->assertStatus(200);
         $this->assertStringStartsWith('%PDF', $resp->getContent());
         $fresh = $doc->fresh();
         $this->assertSame($doc->doc_no, $fresh->payload['doc_no'], '重建后补存快照，之后固定下来');

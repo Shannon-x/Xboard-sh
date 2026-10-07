@@ -30,9 +30,9 @@ class GuestRoute
             $router->get('/ticket/attachment/{id}/{key}', [TicketAttachmentController::class, 'download'])
                 ->where(['id' => '[0-9]+', 'key' => '[a-f0-9]{32}'])
                 ->middleware('throttle:ticket-attachment-download');
-            // 收据 / 账单 PDF 下载：同上，凭据是 URL 里的随机 access_key
+            // 收据 / 账单 PDF 下载：凭据是 URL 里带过期时间的签名（8 位过期时间 + 32 位签名）
             $router->get('/billing/document/{id}/{key}', [BillingDocumentController::class, 'download'])
-                ->where(['id' => '[0-9]+', 'key' => '[a-f0-9]{32}'])
+                ->where(['id' => '[0-9]+', 'key' => '[a-f0-9]{40}'])
                 ->middleware('throttle:billing-document-download');
         });
     }

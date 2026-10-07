@@ -186,4 +186,27 @@ return [
         'note' => '也可以隨時在使用者中心下載這份文件：',
         'link' => '帳單與收據',
     ],
+    'download' => [
+        'expired_title' => '下載連結已過期',
+        'expired_body' => '為了安全，收據和帳單的下載連結一小時後失效。請回到用戶中心的「帳單與收據」重新點擊下載。',
+        'back' => '打開帳單與收據',
+    ],
+    'auto_renew' => [
+        'failed_subject' => '自動續費未執行',
+        'failed_short' => '自動續費沒有執行：帳戶餘額還差 :amount，這次沒有扣款。',
+        'failed_short_pay' => '現在就可以線上續費：:url',
+        'failed_short_topup' => '也可以兌換禮品卡或把邀請佣金轉入餘額：在 :expiry 前補足，系統會在一小時內自動續上，服務不中斷。',
+        'failed_short_grace' => '到期後、:deadline 前補足也會自動續上，但新週期從續上那一刻算起，中間會停用一段。',
+        'failed_reason' => '自動續費沒有執行：:reason。',
+        'failed_reason_next' => '想繼續使用，可以換一個方案：:url ，有疑問可以提交工單。',
+        'reason' => [
+            'no_plan' => '目前沒有訂閱',
+            'lifetime' => '不限時套餐不需要續費',
+            'plan_missing' => '原來的套餐已經下架',
+            'no_period' => '套餐目前沒有可購買的週期',
+            'not_purchasable' => '目前的配置暫時不能續費（:detail）',
+        ],
+        'success_subject' => '已自動續費',
+        'success' => '已自動續費：:plan · :period · :amount，已從餘額扣除。新到期時間：:date。訂單號 :trade_no。',
+    ],
 ];

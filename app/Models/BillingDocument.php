@@ -13,11 +13,11 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int $user_id
  * @property int|null $order_id      收据对应的订单
  * @property string $kind            receipt | invoice
- * @property string $doc_no          RC-20261006-000123 / INV-20261105-000045
+ * @property string $doc_no          RC-20261007-7KQ2M9XA / INV-20261105-K3D8W1QZ（见 BillingDocumentService::documentNumber）
  * @property string|null $stage      账单：first（到期前 N 天）| final（到期前 24 小时）
  * @property int|null $expired_at    账单对应的到期时间戳
  * @property int $amount             收据 = 本单消耗金额，账单 = 应付金额（分）
- * @property string $access_key      下载链接里的随机凭据
+ * @property string $access_key      签下载链接用的随机密钥（不直接出现在链接里）
  * @property array|null $payload     内容快照（BillingDocumentService 产出的渲染数据，不含 logo 图片）
  * @property int $size               快照字节数（后台统计占用用）
  * @property string $locale
@@ -37,6 +37,10 @@ class BillingDocument extends Model
 
     /** 账单过期多久仍未续费就视为作废（面板里不再标「待付款」） */
     public const VOID_AFTER_DAYS = 30;
+
+    /** 下载链接有效期：用户端 1 小时（页面开着会提前换新），后台 12 小时 */
+    public const LINK_TTL = 3600;
+    public const ADMIN_LINK_TTL = 43200;
 
     protected $table = 'v2_billing_document';
     protected $dateFormat = 'U';
@@ -58,10 +62,19 @@ class BillingDocument extends Model
         return $this->belongsTo(Order::class, 'order_id');
     }
 
-    /** 用户端下载路径（相对后端根）。同工单附件：<a href> 带不上 Bearer，凭据就是 URL 里的随机 key。 */
-    public function downloadPath(): string
+    /**
+     * 下载路径（相对后端根）。<a href> 带不上 Bearer，凭据在 URL 里：8 位十六进制的过期时间 +
+     * 用这份单据的 access_key 对「id.过期时间」做的签名。链接到期就失效，外泄（截图、共享电脑的
+     * 历史记录）也只在这一小段时间里有用；面板列表每次拉取都发新的，用户感觉不到。
+     */
+    public function downloadPath(int $expires): string
     {
-        return "/api/v1/guest/billing/document/{$this->id}/{$this->access_key}";
+        return sprintf('/api/v1/guest/billing/document/%d/%08x%s', $this->id, $expires, $this->linkSignature($expires));
+    }
+
+    public function linkSignature(int $expires): string
+    {
+        return substr(hash_hmac('sha256', $this->id . '.' . $expires, (string) $this->access_key), 0, 32);
     }
 
     /** 面板里展示的状态：收据恒为 paid；账单看用户现在的到期时间，续过费就是 settled，拖太久就是 void。 */

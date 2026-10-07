@@ -94,7 +94,7 @@ class BillingSnapshotTest extends TestCase
 
     private function download(BillingDocument $doc)
     {
-        return $this->get("/api/v1/guest/billing/document/{$doc->id}/{$doc->access_key}");
+        return $this->get($doc->downloadPath(time() + 60));
     }
 
     /** 把 PDF 渲染换成「渲染时的语言 + 渲染数据」的明文，直接断言 PDF 里会印出什么 */
@@ -232,6 +232,39 @@ class BillingSnapshotTest extends TestCase
         // 没有快照的老账单（升级前开的）续费后重建不出来：404
         BillingDocument::where('id', $invoice->id)->update(['payload' => null, 'size' => 0]);
         $this->download($invoice)->assertStatus(404);
+    }
+
+    public function test_download_links_expire_and_cannot_be_forged(): void
+    {
+        $doc = $this->receipt($this->user());
+        $this->fakePdf();
+
+        $this->download($doc)->assertStatus(200);
+
+        // 过期：410 + 一页说明和回「账单与收据」的入口（链接在新标签页打开，不能只给一段 JSON）
+        config(['v2board.app_url' => 'https://panel.example.test/']);
+        $expired = $this->get($doc->downloadPath(time() - 1))->assertStatus(410);
+        $this->assertStringContainsString('text/html', (string) $expired->headers->get('Content-Type'));
+        $this->assertStringContainsString('下载链接已过期', $expired->getContent());
+        $this->assertStringContainsString('href="https://panel.example.test/billing"', $expired->getContent());
+        // 没配站点地址就不给链接（相对路径会落到 API 域名上）
+        config(['v2board.app_url' => '']);
+        $this->assertStringNotContainsString('<a ', $this->get($doc->downloadPath(time() - 1))->assertStatus(410)->getContent());
+
+        // 把过期时间往后改：签名对不上，404（不透露链接是否存在）
+        $path = $doc->downloadPath(time() - 1);
+        $key = substr($path, strrpos($path, '/') + 1);
+        $forged = substr($path, 0, strrpos($path, '/') + 1) . sprintf('%08x', time() + 3600) . substr($key, 8);
+        $this->get($forged)->assertStatus(404);
+        // 别的单据的签名不能拿来下这一份
+        $other = $this->receipt($this->user());
+        $this->get(str_replace("/{$other->id}/", "/{$doc->id}/", $other->downloadPath(time() + 60)))->assertStatus(404);
+
+        // 后台列表给的链接有效期更长
+        Sanctum::actingAs($this->user(['is_admin' => 1]));
+        $row = collect($this->postJson($this->adminPath('/billing/document/fetch'))->assertStatus(200)->json('data'))->firstWhere('id', $doc->id);
+        $expires = hexdec(substr($row['download_path'], strrpos($row['download_path'], '/') + 1, 8));
+        $this->assertEqualsWithDelta(time() + BillingDocument::ADMIN_LINK_TTL, $expires, 5);
     }
 
     public function test_downloads_are_rate_limited_per_ip(): void

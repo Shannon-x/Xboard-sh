@@ -158,6 +158,26 @@ class RouteServiceProvider extends ServiceProvider
         RateLimiter::for('ticket-attachment-download', function (Request $request) {
             return Limit::perMinute(240)->by('ticket_attachment_download:ip:' . $request->ip());
         });
+
+        // 收据 / 账单每次下载都按快照现生成 PDF（约 0.1 秒 CPU），比工单附件收得紧一些
+        RateLimiter::for('billing-document-download', function (Request $request) {
+            return Limit::perMinute(30)->by('billing_document_download:ip:' . $request->ip());
+        });
+
+        // 账单免登录付款：凭据是 128 位签名，限流只防枚举扫描；付款页 4 秒轮询一次状态，远到不了每分钟 60 次
+        RateLimiter::for('billing-pay', function (Request $request) {
+            return Limit::perMinute(60)->by('billing_pay:ip:' . $request->ip());
+        });
+
+        // 下单 / 取消要碰支付网关和余额，收得紧一些
+        RateLimiter::for('billing-pay-action', function (Request $request) {
+            return Limit::perMinute(10)->by('billing_pay_action:ip:' . $request->ip());
+        });
+
+        // 邮箱投递自测：控制器里还有 10 分钟一次的业务限制，这里只防脚本刷
+        RateLimiter::for('mail-test', function (Request $request) use ($byUserOrIp) {
+            return Limit::perMinute(3)->by($byUserOrIp($request, 'mail_test'));
+        });
     }
 
     /**

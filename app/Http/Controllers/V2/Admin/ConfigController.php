@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ConfigSave;
 use App\Models\SubscribeTemplate;
 use App\Services\Auth\GoogleLoginService;
+use App\Services\Billing\BillingDocumentService;
+use App\Services\Billing\BillingPayService;
 use App\Services\MailService;
 use App\Services\Commission\WithdrawalConfig;
 use App\Services\TelegramService;
@@ -42,7 +44,6 @@ class ConfigController extends Controller
             'bucket' => $config->driver === AttachmentConfig::DRIVER_S3 ? $config->s3['bucket'] : null,
         ]);
     }
-
 
     public function getEmailTemplate()
     {
@@ -212,10 +213,22 @@ class ConfigController extends Controller
                 'billing_receipt_enable' => (bool) (int) admin_setting('billing_receipt_enable', 1),
                 'billing_invoice_enable' => (bool) (int) admin_setting('billing_invoice_enable', 1),
                 'billing_invoice_days' => (int) admin_setting('billing_invoice_days', 7),
+                // 账单邮件里的免登录付款链接：开关、到期后仍能付的天数
+                'billing_pay_link_enable' => BillingPayService::enabled(),
+                'billing_pay_link_days' => BillingPayService::graceDays(),
                 'billing_locale' => (string) admin_setting('billing_locale', 'zh-CN'),
                 'billing_issuer' => (string) admin_setting('billing_issuer', ''),
                 'billing_logo' => (string) admin_setting('billing_logo', ''),
                 'billing_recommend_plan_ids' => (string) admin_setting('billing_recommend_plan_ids', ''),
+                'billing_expired_enable' => (bool) (int) admin_setting('billing_expired_enable', 1),
+                'billing_winback_enable' => (bool) (int) admin_setting('billing_winback_enable', 1),
+                'billing_winback_days' => (string) admin_setting('billing_winback_days', '7,30'),
+                'billing_winback_coupon' => (string) admin_setting('billing_winback_coupon', ''),
+                'mail_digest_enable' => (bool) (int) admin_setting('mail_digest_enable', 1),
+                // 归档存储位置（本地 / S3 兼容）与保留期；投递日志的保留期也在这里
+                // 已续费 / 已失效的账单记录保留天数，0 = 永久（收据始终保留，只存内容快照、不存 PDF 文件）
+                'billing_invoice_retention_days' => BillingDocumentService::invoiceRetentionDays(),
+                'mail_log_retention_days' => (int) admin_setting('mail_log_retention_days', 180),
             ],
             'telegram' => [
                 'telegram_bot_enable' => (bool) admin_setting('telegram_bot_enable', 0),

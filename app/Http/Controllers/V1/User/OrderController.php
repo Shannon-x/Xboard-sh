@@ -6,17 +6,18 @@ use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\User\OrderSave;
 use App\Http\Resources\OrderResource;
+use App\Models\BalanceLog;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\Plan;
 use App\Models\User;
+use App\Services\CheckoutService;
 use App\Services\CouponService;
 use App\Services\OrderService;
-use App\Services\PaymentService;
 use App\Services\PlanService;
+use App\Services\BalanceLedger;
 use App\Services\UserService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class OrderController extends Controller
 {
@@ -103,13 +104,15 @@ class OrderController extends Controller
         $remainingBalance = $user->balance - $order->total_amount;
 
         if ($remainingBalance > 0) {
-            if (!$userService->addBalance($order->user_id, -$order->total_amount)) {
+            if (!$userService->addBalance($order->user_id, -$order->total_amount, BalanceLog::TYPE_ORDER_PAY,
+                BalanceLedger::orderCtx($order, '余额支付'))) {
                 throw new ApiException(__('Insufficient balance'));
             }
             $order->balance_amount = $order->total_amount;
             $order->total_amount = 0;
         } else {
-            if (!$userService->addBalance($order->user_id, -$user->balance)) {
+            if (!$userService->addBalance($order->user_id, -$user->balance, BalanceLog::TYPE_ORDER_PAY,
+                BalanceLedger::orderCtx($order, '余额抵扣部分金额'))) {
                 throw new ApiException(__('Insufficient balance'));
             }
             $order->balance_amount = $user->balance;
@@ -117,83 +120,24 @@ class OrderController extends Controller
         }
     }
 
-    public function checkout(Request $request)
+    public function checkout(Request $request, CheckoutService $checkoutService)
     {
         $request->validate([
             'trade_no' => 'required|string',
             'method' => 'nullable|integer',
         ]);
-        $tradeNo = (string) $request->input('trade_no');
         $method = $request->input('method');
         $payment = $method !== null ? Payment::find((int) $method) : null;
-
-        $order = DB::transaction(function () use ($request, $tradeNo, $payment) {
-            $locked = Order::where('trade_no', $tradeNo)
-                ->where('user_id', $request->user()->id)
-                ->lockForUpdate()
-                ->first();
-            if (!$locked || (int) $locked->status !== Order::STATUS_PENDING) {
-                throw new ApiException(__('Order does not exist or has been paid'));
-            }
-
-            if ((int) $locked->total_amount < 0) {
-                throw new ApiException('订单金额异常，请重新下单');
-            }
-            if ((int) $locked->total_amount === 0) {
-                return $locked;
-            }
-            if (!$payment || !$payment->enable) {
-                throw new ApiException(__('Payment method is not available'));
-            }
-            if ($locked->plan_snapshot && in_array(strtolower((string) $payment->payment), ['stripesubscription', 'paypalsubscription'], true)) {
-                throw new ApiException('自选套餐请使用单次支付方式');
-            }
-
-            // 首次 checkout 后支付配置不可变。否则旧通道收款链接和新的 payment_id/
-            // handling_amount 会脱钩，回调时无法可靠绑定金额与商户。
-            if ($locked->payment_id !== null && (int) $locked->payment_id !== (int) $payment->id) {
-                throw new ApiException('订单已绑定其他支付方式，请取消订单后重新下单');
-            }
-
-            if ($locked->payment_id === null) {
-                $fixedFee = max(0, (int) ($payment->handling_fee_fixed ?? 0));
-                $percentFee = max(0, min(100, (float) ($payment->handling_fee_percent ?? 0)));
-                $handlingAmount = (int) round(((int) $locked->total_amount * ($percentFee / 100)) + $fixedFee);
-                $locked->handling_amount = $handlingAmount > 0 ? $handlingAmount : null;
-                $locked->payment_id = $payment->id;
-                if (!$locked->save()) {
-                    throw new ApiException(__('Request failed, please try again later'));
-                }
-            }
-
-            if ((int) $locked->total_amount + (int) ($locked->handling_amount ?? 0) <= 0) {
-                throw new ApiException('订单应付金额异常，请重新下单');
-            }
-
-            return $locked;
-        });
-
-        // 只有恰好为 0 的合法优惠/余额全额抵扣订单才能进入免费流程；负数已在锁内拒绝。
-        if ((int) $order->total_amount === 0) {
-            $orderService = new OrderService($order);
-            if (!$orderService->paid($order->trade_no))
-                return $this->fail([400, '支付失败']);
-            return response([
-                'type' => -1,
-                'data' => true
-            ]);
+        $order = Order::where('trade_no', (string) $request->input('trade_no'))
+            ->where('user_id', $request->user()->id)
+            ->first();
+        if (!$order) {
+            throw new ApiException(__('Order does not exist or has been paid'));
         }
-        $paymentService = new PaymentService($payment->payment, $payment->id);
-        $result = $paymentService->pay([
-            'trade_no' => $tradeNo,
-            'total_amount' => (int) $order->total_amount + (int) ($order->handling_amount ?? 0),
-            'user_id' => $order->user_id,
-            'stripe_token' => $request->input('token')
-        ]);
-        return response([
-            'type' => $result['type'],
-            'data' => $result['data']
-        ]);
+        // 绑定支付方式、算手续费、0 元开通或向网关要收款地址都在 CheckoutService，账单的免登录付款与此共用
+        return response($checkoutService->checkout($order, $payment, [
+            'stripe_token' => $request->input('token'),
+        ]));
     }
 
     public function check(Request $request)

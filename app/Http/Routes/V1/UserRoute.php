@@ -3,6 +3,7 @@ namespace App\Http\Routes\V1;
 
 use App\Http\Controllers\V1\User\CommController;
 use App\Http\Controllers\V1\User\AdvanceCycleController;
+use App\Http\Controllers\V1\User\BillingController;
 use App\Http\Controllers\V1\User\CouponController;
 use App\Http\Controllers\V1\User\GiftCardController;
 use App\Http\Controllers\V1\User\InviteController;
@@ -86,6 +87,11 @@ class UserRoute
                 ->middleware('throttle:withdraw-apply');
             $router->post('/withdraw/cancel', [WithdrawController::class, 'cancel']);
             $router->post('/withdraw/saved/clear', [WithdrawController::class, 'clearSaved']);
+            // Billing：收据 / 账单归档、余额流水、邮箱投递自测
+            $router->get('/billing/documents', [BillingController::class, 'documents']);
+            $router->get('/balance/log', [BillingController::class, 'balanceLog']);
+            $router->post('/mail/test', [BillingController::class, 'mailTest'])
+                ->middleware('throttle:mail-test');
             // Server
             $router->get('/server/fetch', [ServerController::class, 'fetch']);
             // Coupon

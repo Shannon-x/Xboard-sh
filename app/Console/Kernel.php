@@ -48,6 +48,8 @@ class Kernel extends ConsoleKernel
 
         // 工单附件：按后台配置的保留期清理，另回收未随消息发出 / 工单已删的孤儿文件
         $schedule->command('ticket:clean-attachments')->dailyAt('3:20')->onOneServer()->withoutOverlapping(120);
+        // 收据 / 账单归档：收据 PDF 过保留期只删文件（可重建），已结清 / 失效的旧账单连记录删，防止归档无限膨胀
+        $schedule->command('billing:prune-documents')->dailyAt('3:40')->onOneServer()->withoutOverlapping(120);
         // Redis TTL expiration does not execute PHP, so reconcile the DB display snapshot.
         $schedule->command('device:reconcile-online-counts')
             ->everyMinute()
@@ -55,6 +57,8 @@ class Kernel extends ConsoleKernel
             ->withoutOverlapping(5);
         // send
         $schedule->command('send:remindMail', ['--force'])->dailyAt('11:30')->onOneServer();
+        // 邮件投递日报：昨天的退信、新标记为暂停投递的用户、未投递的收据 / 账单；没有失败不发
+        $schedule->command('mail:delivery-digest')->dailyAt('9:00')->onOneServer();
         // horizon metrics
         $schedule->command('horizon:snapshot')->everyFiveMinutes()->onOneServer();
         // backup Timing

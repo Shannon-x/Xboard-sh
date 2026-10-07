@@ -4,11 +4,13 @@ namespace Tests\Feature;
 
 use App\Jobs\SendBillingMailJob;
 use App\Jobs\SendEmailJob;
+use App\Models\BillingDocument;
 use App\Models\CommissionWithdrawal;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\ServerGroup;
 use App\Models\User;
+use App\Services\Billing\BillingArchive;
 use App\Services\Billing\BillingDocumentService;
 use App\Services\Billing\BrandLogo;
 use App\Services\MailService;
@@ -71,7 +73,7 @@ class BillingDocumentsTest extends TestCase
 
     private function runJob(string $kind, int $id, ?string $stage = null, ?int $expiry = null): void
     {
-        (new SendBillingMailJob($kind, $id, $stage, $expiry))->handle(app(BillingDocumentService::class));
+        (new SendBillingMailJob($kind, $id, $stage, $expiry))->handle(app(BillingDocumentService::class), app(BillingArchive::class));
     }
 
     // ───────────────────────── 收据 ─────────────────────────
@@ -164,7 +166,10 @@ class BillingDocumentsTest extends TestCase
         $this->assertStringContainsString('静态家宽拼车', $message->getSubject());
         $html = $message->getHtmlBody();
         $this->assertStringContainsString('¥18.00', $html, '月付 ¥20 扣 10% 专属折扣');
-        $this->assertStringContainsString('/plans?mode=renew', $html);
+        // 按钮是这张账单的免登录付款页（BillingPayLinkTest 管细节），不再是要先登录的套餐页
+        $doc = BillingDocument::where('user_id', $user->id)->where('kind', BillingDocument::KIND_INVOICE)->firstOrFail();
+        $this->assertStringContainsString('/pay/' . $doc->payToken(), $html);
+        $this->assertStringNotContainsString('/plans?mode=renew', $html);
         $this->assertCount(1, $message->getAttachments());
         $this->assertStringStartsWith('%PDF', $message->getAttachments()[0]->getBody());
 

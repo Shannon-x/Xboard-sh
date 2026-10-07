@@ -116,10 +116,21 @@ class ConfigSave extends FormRequest
         'billing_receipt_enable' => '',
         'billing_invoice_enable' => '',
         'billing_invoice_days' => 'nullable|integer|min:0|max:30',
+        // 账单邮件里的免登录付款链接：开关与到期后仍可付款的天数（0 = 到期即失效）
+        'billing_pay_link_enable' => '',
+        'billing_pay_link_days' => 'nullable|integer|min:0|max:30',
         'billing_locale' => 'nullable|in:zh-CN,zh-TW,en-US',
         'billing_issuer' => 'nullable|string|max:255',
         'billing_logo' => ['nullable', 'string', 'max:500', 'regex:#^(https?://\S+|/\S*)$#'],
         'billing_recommend_plan_ids' => ['nullable', 'string', 'max:255', 'regex:/^\s*(\d+\s*(,\s*\d+\s*)*)?$/'],
+        'billing_expired_enable' => '',
+        'billing_winback_enable' => '',
+        'billing_winback_days' => ['nullable', 'string', 'max:32', 'regex:/^\s*(\d+\s*(,\s*\d+\s*)*)?$/'],
+        'billing_winback_coupon' => 'nullable|string|max:64',
+        'mail_digest_enable' => '',
+        // 已续费 / 已失效的账单记录保留天数与邮件投递日志保留天数（0 = 永久）
+        'billing_invoice_retention_days' => 'nullable|integer|min:0|max:3650',
+        'mail_log_retention_days' => 'nullable|integer|min:0|max:3650',
         // telegram
         'telegram_bot_enable' => 'boolean',
         'telegram_bot_token' => 'nullable|string|max:128',

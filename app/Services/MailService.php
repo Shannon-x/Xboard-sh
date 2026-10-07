@@ -4,9 +4,9 @@ namespace App\Services;
 
 use App\Jobs\SendBillingMailJob;
 use App\Jobs\SendEmailJob;
-use App\Models\MailLog;
 use App\Models\User;
 use App\Services\Billing\BillingDocumentService;
+use App\Services\Mail\DeliveryMonitor;
 use App\Utils\CacheKey;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Config;
@@ -66,12 +66,15 @@ class MailService
             'expire_emails' => 0,
             'invoice_emails' => 0,
             'traffic_emails' => 0,
+            'expired_emails' => 0,
+            'winback_emails' => 0,
             'errors' => 0,
             'skipped' => 0,
         ];
 
         User::select('id', 'email', 'expired_at', 'transfer_enable', 'u', 'd', 'remind_expire', 'remind_traffic',
-            'plan_id', 'invoice_notified_at', 'invoice_final_notified_at')
+            'plan_id', 'invoice_notified_at', 'invoice_final_notified_at', 'lifecycle_stage', 'lifecycle_expiry',
+            'mail_suppressed_at', 'auto_renew', 'balance')
             ->where(function ($query) {
                 $query->where('remind_expire', true)
                     ->orWhere('remind_traffic', true);
@@ -117,8 +120,15 @@ class MailService
                     $emailsSent++;
                 }
 
-                // 检查并发送流量提醒
-                if ($user->remind_traffic && $this->shouldSendTrafficRemind($user)) {
+                // 到期之后：当天的「服务已暂停」，之后按配置的天数发挽回邮件；同一到期日每档只发一次
+                if ($user->remind_expire && ($stage = $this->lifecycleStageDue($user)) !== null && $this->markLifecycle($user, $stage)) {
+                    SendBillingMailJob::dispatchLifecycle($user, $stage);
+                    $statistics[$stage === 1 ? 'expired_emails' : 'winback_emails']++;
+                    $emailsSent++;
+                }
+
+                // 检查并发送流量提醒（老模板直接发邮件，退信标记的用户跳过）
+                if ($user->remind_traffic && $user->mail_suppressed_at === null && $this->shouldSendTrafficRemind($user)) {
                     $this->remindTraffic($user);
                     $statistics['traffic_emails']++;
                     $emailsSent++;
@@ -214,6 +224,64 @@ class MailService
         return (int) ($user->invoice_notified_at ?? 0) !== $expiredAt;
     }
 
+    /**
+     * 到期后该发哪一档：1 = 到期 2 天内的「服务已暂停」，2+ = billing_winback_days 里第 N 档挽回（各留 2 天窗口，
+     * 扫描一天跑一次，漏跑一天也补得上）。lifecycle_* 记的是到期时间戳：续费后 expired_at 变了，序列自然重头开始。
+     */
+    private function lifecycleStageDue(User $user): ?int
+    {
+        if (!$user->plan_id || !$user->expired_at) {
+            return null;
+        }
+        $expiredAt = (int) $user->expired_at;
+        $now = time();
+        if ($expiredAt > $now) {
+            return null;
+        }
+        $elapsedDays = ($now - $expiredAt) / 86400;
+        $current = (int) $user->lifecycle_expiry === $expiredAt ? (int) $user->lifecycle_stage : 0;
+        if ($current < 1 && $elapsedDays <= 2 && BillingDocumentService::expiredEnabled() && !$this->autoRenewPending($user)) {
+            return 1;
+        }
+        if (BillingDocumentService::winbackEnabled()) {
+            foreach (BillingDocumentService::winbackDays() as $i => $days) {
+                $stage = $i + 2;
+                if ($current < $stage && $elapsedDays >= $days && $elapsedDays < $days + 2) {
+                    return $stage;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 自动续费还在宽限期内且余额够：每小时跑的 renew:auto 马上会续上，这时发「已暂停」只是噪音。 */
+    private function autoRenewPending(User $user): bool
+    {
+        if (!$user->auto_renew || !RenewService::siteEnabled()) {
+            return false;
+        }
+        if (time() - (int) $user->expired_at > RenewService::graceHours() * 3600) {
+            return false;
+        }
+        $full = User::find($user->id);
+        if (!$full) {
+            return false;
+        }
+        $spec = app(RenewService::class)->resolveSpec($full);
+        return $spec['available'] && (int) ($full->balance ?? 0) >= (int) $spec['amount'];
+    }
+
+    private function markLifecycle(User $user, int $stage): bool
+    {
+        $expiredAt = (int) $user->expired_at;
+        $changed = User::where('id', $user->id)
+            ->where(fn ($q) => $q->whereNull('lifecycle_expiry')
+                ->orWhere('lifecycle_expiry', '!=', $expiredAt)
+                ->orWhere('lifecycle_stage', '<', $stage))
+            ->update(['lifecycle_expiry' => $expiredAt, 'lifecycle_stage' => $stage]);
+        return $changed > 0;
+    }
+
     private function sendInvoiceFirst(User $user): void
     {
         if ($this->markInvoiceNotified($user, 'invoice_notified_at')) {
@@ -250,8 +318,12 @@ class MailService
             return true;
         }
 
+        if ($user->mail_suppressed_at !== null) {
+            return false;   // 老模板直接发邮件：退信标记的用户不再往 SMTP 塞
+        }
         SendEmailJob::dispatch([
             'email' => $user->email,
+            'user_id' => $user->id,
             'subject' => __('The service in :app_name is about to expire', [
                 'app_name' => admin_setting('app_name', 'XBoard')
             ]),
@@ -317,16 +389,18 @@ class MailService
         }
 
         $view = 'mail.' . admin_setting('email_template', 'default') . '.' . $params['template_name'];
-        return self::deliver($email, $subject, $view, is_array($templateValue) ? $templateValue : []);
+        $userId = isset($params['user_id']) ? (int) $params['user_id'] : null;
+        return self::deliver($email, $subject, $view, is_array($templateValue) ? $templateValue : [], [], $userId);
     }
 
     /**
      * 实际发信：套上后台 SMTP 配置 → Mail::send → 记 v2_mail_log。sendEmail() 与收据 / 账单任务共用。
      *
      * @param array $attachments 每项 ['name' => 文件名, 'data' => 二进制内容, 'mime' => MIME]
-     * @return array{email: string, subject: string, template_name: string, error: string|null}
+     * @param int|null $userId 收件用户 id；不传按 email 反查。投递结果会记到该用户头上（退信标记，见 DeliveryMonitor）
+     * @return array{email: string, subject: string, template_name: string, error: string|null, category: string}
      */
-    public static function deliver(string $email, string $subject, string $view, array $data, array $attachments = []): array
+    public static function deliver(string $email, string $subject, string $view, array $data, array $attachments = [], ?int $userId = null): array
     {
         if (admin_setting('email_host')) {
             Config::set('mail.host', admin_setting('email_host', config('mail.host')));
@@ -349,17 +423,14 @@ class MailService
             Log::error($e);
             $error = $e->getMessage();
         }
-        $log = [
+        // 记 v2_mail_log 并维护用户的退信标记。故意不记 config('mail')：那会把 SMTP 密码明文落库。
+        $category = DeliveryMonitor::record($email, $subject, $view, $error, $userId);
+        return [
             'email' => $email,
             'subject' => $subject,
             'template_name' => $view,
             'error' => $error,
-            // 故意不写 'config' => config('mail')：
-            // ① v2_mail_log 表 schema 没有 config 列，Eloquent 会静默丢弃这个 key —— 没有真实写入；
-            // ② 任何后续加列或开 strict mode 都会立即让 SMTP 密码以明文落库，是个潜伏地雷；
-            // ③ 真要排查可以临时开 mail debug log，而不是把生产凭据持久化在业务表。
+            'category' => $category,
         ];
-        MailLog::create($log);
-        return $log;
     }
 }

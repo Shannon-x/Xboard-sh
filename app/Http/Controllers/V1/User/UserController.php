@@ -6,10 +6,12 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\User\UserChangePassword;
 use App\Http\Requests\User\UserTransfer;
 use App\Http\Requests\User\UserUpdate;
+use App\Models\BalanceLog;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\Ticket;
 use App\Models\User;
+use App\Services\BalanceLedger;
 use App\Services\Auth\LoginService;
 use App\Services\AuthService;
 use App\Services\Plugin\HookManager;
@@ -134,6 +136,8 @@ class UserController extends Controller
                 'banned',
                 'remind_expire',
                 'remind_traffic',
+                'mail_suppressed_at',
+                'mail_suppressed_reason',
                 'auto_renew',
                 'expired_at',
                 'balance',
@@ -270,6 +274,9 @@ class UserController extends Controller
                 if (!$user->save()) {
                     throw new \Exception(__('Transfer failed'));
                 }
+                BalanceLedger::record($user, BalanceLog::TYPE_COMMISSION_TRANSFER, (int) $amount, [
+                    'ref_type' => 'commission', 'remark' => '佣金划转到余额',
+                ]);
             });
         } catch (\Exception $e) {
             return $this->fail([400, $e->getMessage()]);

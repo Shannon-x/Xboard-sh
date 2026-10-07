@@ -2,7 +2,9 @@
 
 namespace App\Services\Billing;
 
+use App\Models\BillingDocument;
 use App\Models\CommissionWithdrawal;
+use App\Models\Coupon;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\User;
@@ -28,6 +30,31 @@ class BillingDocumentService
 
     public const LOCALES = ['zh-CN', 'zh-TW', 'en-US'];
 
+    /** Crockford base32：去掉 I、L、O、U，口头报编号时不会把 1 和 I、0 和 O 弄混 */
+    private const NUMBER_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+    /**
+     * 对外编号：前缀 + 日期 + 8 位码，如 RC-20261007-7KQ2M9XA。
+     *
+     * 8 位码是 app key 对单据身份（哪张订单的收据 / 哪位用户哪个到期日的账单）做的 HMAC，
+     * 不是自增号：别人拿到一张收据看不出站点有多少订单、多少用户。同一份单据每次算出来都一样，
+     * 所以 24 小时档的账单沿用 7 天档的编号，不用先查库占号。40 位空间，同一天里撞号的概率可以忽略。
+     */
+    public static function documentNumber(string $prefix, int $date, string $identity): string
+    {
+        $hash = hash_hmac('sha256', $identity, (string) config('app.key'), true);
+        $bits = 0;
+        foreach (str_split(substr($hash, 0, 5)) as $byte) {
+            $bits = ($bits << 8) | ord($byte);
+        }
+        $code = '';
+        for ($i = 0; $i < 8; $i++) {
+            $code = self::NUMBER_ALPHABET[$bits & 31] . $code;
+            $bits >>= 5;
+        }
+        return sprintf('%s-%s-%s', $prefix, date('Ymd', $date), $code);
+    }
+
     public static function receiptEnabled(): bool
     {
         return (bool) (int) admin_setting('billing_receipt_enable', 1);
@@ -45,6 +72,32 @@ class BillingDocumentService
         return (bool) (int) admin_setting('billing_invoice_enable', 1);
     }
 
+    /** 到期当天的「服务已暂停」通知 */
+    public static function expiredEnabled(): bool
+    {
+        return (bool) (int) admin_setting('billing_expired_enable', 1);
+    }
+
+    /** 已续费 / 已失效的账单记录保留多少天（按到期日算），0 = 永久；收据始终保留。 */
+    public static function invoiceRetentionDays(): int
+    {
+        return max(0, min(3650, (int) admin_setting('billing_invoice_retention_days', 0)));
+    }
+
+    public static function winbackEnabled(): bool
+    {
+        return (bool) (int) admin_setting('billing_winback_enable', 1);
+    }
+
+    /** 到期后第几天发挽回邮件：升序、去重、1–365 天，最多 3 档（对应 lifecycle_stage 2–4）。 */
+    public static function winbackDays(): array
+    {
+        $days = array_map('intval', explode(',', (string) admin_setting('billing_winback_days', '7,30')));
+        $days = array_values(array_unique(array_filter($days, fn ($d) => $d >= 1 && $d <= 365)));
+        sort($days);
+        return array_slice($days, 0, 3);
+    }
+
     /** 用户表没有语言字段，收据 / 账单按站点统一语言出；默认跟 app.locale（zh-CN）。 */
     public static function locale(): string
     {
@@ -52,11 +105,14 @@ class BillingDocumentService
         return in_array($locale, self::LOCALES, true) ? $locale : 'zh-CN';
     }
 
-    /** 在账单语言下执行，结束后恢复（队列 worker 常驻，不能把 locale 留给下一个任务）。 */
-    public static function withLocale(callable $fn)
+    /**
+     * 在账单语言下执行，结束后恢复（队列 worker 常驻，不能把 locale 留给下一个任务）。
+     * 传 $locale 则用它（按快照重新生成时用开具时的语言，表头标签才和快照里的文案对得上）。
+     */
+    public static function withLocale(callable $fn, ?string $locale = null)
     {
         $previous = App::getLocale();
-        App::setLocale(self::locale());
+        App::setLocale($locale !== null && in_array($locale, self::LOCALES, true) ? $locale : self::locale());
         try {
             return $fn();
         } finally {
@@ -100,7 +156,7 @@ class BillingDocumentService
             'doc_title_en' => __('billing.receipt.doc_title_en'),
             'stamp' => __('billing.receipt.stamp'),
             'stamp_soft' => false,
-            'doc_no' => sprintf('RC-%s-%06d', date('Ymd', $paidAt), $order->id),
+            'doc_no' => self::documentNumber('RC', $paidAt, 'receipt:' . $order->id),
             'trade_no' => (string) $order->trade_no,
             'issued_at' => $this->date(time()),
             'paid_at' => $this->dateTime($paidAt),
@@ -126,6 +182,7 @@ class BillingDocumentService
             'cta_label' => __('billing.receipt.cta'),
             'cta_url' => $this->url('/dashboard'),
             'has_pdf' => true,
+            'archive_note' => true,
             'alternatives' => [],
         ];
         $data['subject'] = __('billing.receipt.subject', ['no' => $data['doc_no'], 'app' => $data['app_name']]);
@@ -194,12 +251,14 @@ class BillingDocumentService
             'stamp' => $autoCovered ? __('billing.invoice.stamp_auto') : __('billing.invoice.stamp_unpaid'),
             'stamp_soft' => $autoCovered,
             'has_pdf' => (bool) $spec['available'],
+            'archive_note' => (bool) $spec['available'],
             'auto_covered' => $autoCovered,
-            'doc_no' => sprintf('INV-%s-%06d', date('Ymd', $expiredAt), $user->id),
+            'doc_no' => self::documentNumber('INV', $expiredAt, 'invoice:' . $user->id . ':' . $expiredAt),
             'issued_at' => $this->date(time()),
             'due_at' => $this->dateTime($expiredAt),
             'due_date' => $this->date($expiredAt),
             'days' => $days,
+            'plan_id' => (int) ($spec['plan_id'] ?? $user->plan_id),   // 免登录付款前核对：账单开出后换了套餐就不能照付
             'plan_name' => $planName,
             'bill_to' => ['email' => $user->email, 'id' => (int) $user->id],
             'alternatives' => $this->alternatives($user, $plan),
@@ -381,6 +440,154 @@ class BillingDocumentService
         return $this->decorate($data);
     }
 
+    // ---------------------------------------------------------------- 到期后
+
+    /** 到期当天：服务已暂停，附按原配置续费的金额与入口；套餐不可续时只引导换套餐。不附 PDF，这期的账单已归档。 */
+    public function expired(User $user): array
+    {
+        $spec = app(RenewService::class)->resolveSpec($user);
+        $expiredAt = (int) $user->expired_at;
+        $plan = Plan::find($spec['plan_id'] ?? $user->plan_id);
+        $planName = (string) ($spec['plan_name'] ?? ($plan?->name ?? ''));
+        $available = (bool) $spec['available'];
+        $expiredDate = $this->dateTime($expiredAt);
+        $invoice = BillingDocument::where('user_id', $user->id)
+            ->where('kind', BillingDocument::KIND_INVOICE)->where('expired_at', $expiredAt)->first();
+        $hasInvoice = $invoice !== null;
+        // 这期的账单还在宽限期内：按钮直接去免登录付款页，不用先登录
+        $payUrl = $available && $invoice && BillingPayService::linkable($invoice) ? BillingPayService::url($invoice) : null;
+
+        $data = $this->base() + [
+            'kind' => 'expired',
+            'doc_title' => __('billing.expired.doc_title'),
+            'doc_title_en' => __('billing.expired.doc_title_en'),
+            'doc_no' => $this->date($expiredAt),
+            'stamp' => __('billing.expired.stamp'),
+            'stamp_soft' => false,
+            'has_pdf' => false,
+            'plan_name' => $planName,
+            'expired_date' => $expiredDate,
+            'available' => $available,
+            'period' => $available ? $this->periodName($spec['period']) : null,
+            'details' => $available
+                ? $this->specLines($spec['summary']['transfer_enable'], $spec['summary']['device_limit'], $spec['summary']['speed_limit'], $spec['summary']['addon_names'])
+                : [],
+            'invoice_url' => $hasInvoice ? $this->url('/billing') : null,
+            'alternatives' => $this->alternatives($user, $plan),
+            'headline' => __('billing.expired.headline'),
+            'intro' => $available
+                ? __('billing.expired.intro', ['plan' => $planName, 'date' => $expiredDate])
+                : __('billing.expired.intro_unavailable', ['plan' => $planName, 'date' => $expiredDate, 'reason' => $spec['message']]),
+            'cta_label' => $available ? __('billing.expired.cta') : __('billing.invoice.cta_browse'),
+            'cta_url' => $available ? ($payUrl ?? $this->url('/plans?mode=renew')) : $this->url('/plans'),
+            'pay_url' => $payUrl,
+            'pay_note' => $payUrl ? self::payNote() : null,
+            'subject' => __('billing.expired.subject', ['plan' => $planName, 'app' => (string) admin_setting('app_name', 'XBoard')]),
+            'bill_to' => ['email' => (string) $user->email, 'id' => (int) $user->id],
+            'meta' => [],
+            'items' => [],
+            'totals' => [],
+            'payments' => [],
+            'notes' => [],
+            'total' => $available ? (int) $spec['amount'] : 0,
+            'balance_due' => $available ? (int) $spec['amount'] : 0,
+        ];
+        return $this->decorate($data);
+    }
+
+    /** 到期后第 N 天的挽回邮件：后台配了仍有效的优惠券就带上，套餐推荐按原套餐价位挑。不附 PDF。 */
+    public function winback(User $user, int $stage): array
+    {
+        $expiredAt = (int) $user->expired_at;
+        $days = max(1, (int) floor((time() - $expiredAt) / 86400));
+        $plan = $user->plan_id ? Plan::find($user->plan_id) : null;
+        $coupon = $this->winbackCoupon();
+        $appName = (string) admin_setting('app_name', 'XBoard');
+
+        $data = $this->base() + [
+            'kind' => 'winback',
+            'stage' => $stage,
+            'doc_title' => __('billing.winback.doc_title'),
+            'doc_title_en' => __('billing.winback.doc_title_en'),
+            'doc_no' => '',
+            'stamp' => $coupon ? __('billing.winback.stamp_coupon') : null,
+            'stamp_soft' => false,
+            'has_pdf' => false,
+            'days' => $days,
+            'plan_name' => (string) ($plan?->name ?? ''),
+            'coupon' => $coupon,
+            'alternatives' => $this->alternatives($user, $plan),
+            'headline' => $coupon ? __('billing.winback.headline_coupon') : __('billing.winback.headline'),
+            'intro' => $coupon
+                ? __('billing.winback.intro_coupon', ['days' => $days, 'desc' => $coupon['desc']])
+                : __('billing.winback.intro', ['days' => $days]),
+            'cta_label' => $coupon ? __('billing.winback.cta_coupon') : __('billing.winback.cta'),
+            'cta_url' => $coupon ? $this->url('/plans?coupon=' . rawurlencode($coupon['code'])) : $this->url('/plans'),
+            'subject' => $coupon
+                ? __('billing.winback.subject_coupon', ['desc' => $coupon['desc'], 'app' => $appName])
+                : __('billing.winback.subject', ['app' => $appName]),
+            'bill_to' => ['email' => (string) $user->email, 'id' => (int) $user->id],
+            'meta' => [],
+            'items' => [],
+            'totals' => [],
+            'payments' => [],
+            'notes' => [],
+            'total' => 0,
+            'balance_due' => 0,
+        ];
+        return $this->decorate($data);
+    }
+
+    /** 后台 billing_winback_coupon 指定的优惠券：存在、在有效期内、还有余量才带进邮件。 */
+    public function winbackCoupon(): ?array
+    {
+        $code = trim((string) admin_setting('billing_winback_coupon', ''));
+        if ($code === '') return null;
+        $coupon = Coupon::where('code', $code)->first();
+        if (!$coupon) return null;
+        $now = time();
+        if (($coupon->started_at && (int) $coupon->started_at > $now) || ($coupon->ended_at && (int) $coupon->ended_at < $now)) return null;
+        if ($coupon->limit_use !== null && (int) $coupon->limit_use <= 0) return null;
+        $desc = (int) $coupon->type === 1
+            ? __('billing.winback.coupon_amount', ['amount' => $this->money((int) $coupon->value)])
+            : __('billing.winback.coupon_percent', ['pct' => (int) $coupon->value]);
+        return [
+            'code' => (string) $coupon->code,
+            'name' => (string) $coupon->name,
+            'desc' => $desc,
+            'until' => $coupon->ended_at ? $this->date((int) $coupon->ended_at) : null,
+        ];
+    }
+
+    /** 邮箱投递自测邮件（退信后用户在面板点「重新测试」）。 */
+    public function testMail(User $user): array
+    {
+        return $this->decorate($this->base() + [
+            'kind' => 'test',
+            'doc_title' => __('billing.mail_test.headline'),
+            'doc_title_en' => 'TEST',
+            'doc_no' => '',
+            'stamp' => null,
+            'stamp_soft' => false,
+            'has_pdf' => false,
+            'headline' => __('billing.mail_test.headline'),
+            'intro' => __('billing.mail_test.intro'),
+            'note' => __('billing.mail_test.note'),
+            'cta_label' => __('billing.mail_test.cta'),
+            'cta_url' => $this->url('/dashboard'),
+            'subject' => __('billing.mail_test.subject', ['app' => (string) admin_setting('app_name', 'XBoard')]),
+            'bill_to' => ['email' => (string) $user->email, 'id' => (int) $user->id],
+            'alternatives' => [],
+            'meta' => [],
+            'items' => [],
+            'totals' => [],
+            'payments' => [],
+            'notes' => [],
+            'total' => 0,
+            'balance_due' => 0,
+        ]);
+    }
+
     // ---------------------------------------------------------------- 渲染
 
     public function pdf(array $data): string
@@ -432,6 +639,7 @@ class BillingDocumentService
             'settings_url' => $this->url('/settings'),
             'logo_url' => BrandLogo::url(),
             'logo_size' => BrandLogo::mailSize(),
+            'archive_url' => $this->url('/billing'),
         ];
     }
 
@@ -492,6 +700,13 @@ class BillingDocumentService
     private function dateTime(int $ts): string
     {
         return date('Y-m-d H:i', $ts);
+    }
+
+    /** 免登录付款按钮下面那句：不用登录、只能付这一张、到期后还能用几天 */
+    public static function payNote(): string
+    {
+        $days = BillingPayService::graceDays();
+        return $days > 0 ? __('billing.invoice.pay_note', ['days' => $days]) : __('billing.invoice.pay_note_strict');
     }
 
     /** 链接一律基于后台 app_url（用户端前端地址），不读 .env 的 APP_URL。 */

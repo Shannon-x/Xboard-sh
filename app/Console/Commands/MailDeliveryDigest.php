@@ -72,7 +72,8 @@ class MailDeliveryDigest extends Command
                 'template_value' => [
                     'name' => $appName,
                     'url' => admin_setting('app_url'),
-                    'content' => nl2br(e($text)),
+                    // notify 模板自己会 nl2br(e())，这里传纯文本；先转义会让 <br /> 原样显示在邮件里
+                    'content' => $text,
                 ],
             ]);
         }

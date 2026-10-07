@@ -232,4 +232,39 @@ class TrafficReminderTest extends TestCase
         $this->assertSame(2, (int) $full->fresh()->traffic_notified_level);
         $this->assertSame(0, $this->scan()['traffic_emails']);
     }
+
+    public function test_expired_or_planless_users_get_no_traffic_mail(): void
+    {
+        Bus::fake([SendBillingMailJob::class, SendEmailJob::class]);
+        // 生产上有一批早已过期、流量停在 100% 的老用户：用量提醒只对套餐有效的人有意义
+        $expiredFull = $this->user(['u' => 100 * self::GB, 'expired_at' => time() - 40 * 86400]);
+        $expiredWarn = $this->user(['u' => 85 * self::GB, 'expired_at' => time() - 3 * 86400]);
+        $noPlan = $this->user(['u' => 100 * self::GB, 'plan_id' => null, 'expired_at' => null]);
+        $lifetime = $this->user(['u' => 100 * self::GB, 'expired_at' => null]);
+
+        $this->assertSame(1, $this->scan()['traffic_emails']);
+        $this->assertSame(0, (int) $expiredFull->fresh()->traffic_notified_level);
+        $this->assertSame(0, (int) $expiredWarn->fresh()->traffic_notified_level);
+        $this->assertSame(0, (int) $noPlan->fresh()->traffic_notified_level);
+        $this->assertSame(2, (int) $lifetime->fresh()->traffic_notified_level, '长期套餐（expired_at 为空）照常提醒');
+
+        $jobs = $this->trafficJobs();
+        $this->assertCount(1, $jobs);
+        $this->assertSame((int) $lifetime->id, $jobs[0]->id);
+
+        // 续费后恢复有效：同一周期照常补发
+        $expiredWarn->update(['expired_at' => time() + 30 * 86400]);
+        $this->assertSame(1, $this->scan()['traffic_emails']);
+        $this->assertSame(1, (int) $expiredWarn->fresh()->traffic_notified_level);
+    }
+
+    public function test_job_skips_users_whose_plan_expired_after_dispatch(): void
+    {
+        $user = $this->user(['u' => 100 * self::GB]);
+        $user->update(['expired_at' => time() - 60]);
+        $job = new SendBillingMailJob(SendBillingMailJob::KIND_TRAFFIC, (int) $user->id, BillingDocumentService::TRAFFIC_EXHAUSTED);
+        $job->handle(app(BillingDocumentService::class), app(BillingArchive::class));
+        $this->assertSame(SendBillingMailJob::RESULT_SKIPPED, $job->result);
+        $this->assertCount(0, app('mailer')->getSymfonyTransport()->messages()->all());
+    }
 }

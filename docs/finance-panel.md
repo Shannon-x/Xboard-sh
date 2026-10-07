@@ -47,12 +47,14 @@
 | `temporary` | 其余（4xx、超时、空响应） | 不同时段累计 3 次才标记（一小时内的临时失败只算一次，同一封信的队列重试不会把人标上） |
 | `config` | SMTP 认证失败、连不上、TLS / 证书 | 不算在用户头上，不标记 |
 
+早一版把每次队列重试都算一次临时失败，迁移 `2026_10_07_000002` 清掉了那时留下的 `temporary` 标记和计数，退信 / 抑制名单的标记保留。
+
 标记（`v2_user.mail_suppressed_at` / `mail_suppressed_reason` / `mail_failed_count` / `mail_failed_at`）只拦**系统主动发**的邮件：收据、账单、到期 / 流量提醒、到期后通知。用户自己点的验证码 / 登录链接照发，发成功就自动解除标记。
 
 投递顺序（`SendBillingMailJob::notify()`）：
 
-1. 没被标记 → 发邮件。成功记 `sent_at`；`temporary` / `config` 失败交给队列重试（`SendEmailJob` 同样只在这两类失败时重试，退信不再重试）；`suppressed` / `bounce` → 用户被标记，转第 2 步。
-2. 被标记 → 开了 Telegram Bot 且用户绑了 Telegram：有 PDF 就 `sendDocument`（caption 带主题、正文首段、入口链接），没有就 `sendMessage`；记 `channel=telegram`。
+1. 没被标记 → 发邮件。成功记 `sent_at`；`temporary` / `config` 失败交给队列重试（`SendEmailJob` 同样只在这两类失败时重试，退信不再重试），最后一次重试仍失败也转第 2 步，不让这封信随 MaxAttemptsExceeded 丢掉；`suppressed` / `bounce` → 用户被标记，转第 2 步。
+2. 被标记（或重试用完）→ 开了 Telegram Bot 且用户绑了 Telegram：有 PDF 就 `sendDocument`（caption 带主题、正文首段、入口链接），没有就 `sendMessage`；记 `channel=telegram`。
 3. 都走不通 → 只留在面板（`sent_at` 为空），日志 `[billing] 邮件未能送达且无 Telegram`。
 
 用户侧：`/api/v1/user/info` 多返回 `mail_suppressed_at` / `mail_suppressed_reason`，前端仪表盘据此显示提示；`POST /api/v1/user/mail/test` 发一封最短的测试邮件（10 分钟一次），成功即自动解除标记，失败返回分类与人话。

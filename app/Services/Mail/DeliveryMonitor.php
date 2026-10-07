@@ -115,6 +115,9 @@ final class DeliveryMonitor
             $data['mail_suppressed_at'] = $now;
             $data['mail_suppressed_reason'] = $category;
             Log::warning('[mail] 用户邮箱标记为暂停投递', ['user_id' => $user->id, 'email' => $user->email, 'reason' => $category, 'failed_count' => $count]);
+        } elseif (self::isHardFailure($category) && $user->mail_suppressed_reason === self::TEMPORARY) {
+            // 因临时失败被标记的地址后来退信了：原因改成退信，后台看得到真实原因，清临时标记时也不会把它放出来
+            $data['mail_suppressed_reason'] = $category;
         }
         User::where('id', $user->id)->update($data);
         $user->forceFill($data);

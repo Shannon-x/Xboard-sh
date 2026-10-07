@@ -47,13 +47,13 @@
 | `temporary` | 其余（4xx、超时、空响应） | 不同时段累计 3 次才标记（一小时内的临时失败只算一次，同一封信的队列重试不会把人标上） |
 | `config` | SMTP 认证失败、连不上、TLS / 证书 | 不算在用户头上，不标记 |
 
-早一版把每次队列重试都算一次临时失败，迁移 `2026_10_07_000002` 清掉了那时留下的 `temporary` 标记和计数，退信 / 抑制名单的标记保留。
+早一版把每次队列重试都算一次临时失败，迁移 `2026_10_07_000002` 清掉了那时留下的 `temporary` 标记和计数，退信 / 抑制名单的标记保留；先因临时失败被标记、之后又退信的地址改记成退信，同样保留（之后再出现这种情况，`DeliveryMonitor` 也会直接把原因改成退信）。
 
 标记（`v2_user.mail_suppressed_at` / `mail_suppressed_reason` / `mail_failed_count` / `mail_failed_at`）只拦**系统主动发**的邮件：收据、账单、到期 / 流量提醒、到期后通知。用户自己点的验证码 / 登录链接照发，发成功就自动解除标记。
 
 投递顺序（`SendBillingMailJob::notify()`）：
 
-1. 没被标记 → 发邮件。成功记 `sent_at`；`temporary` / `config` 失败交给队列重试（`SendEmailJob` 同样只在这两类失败时重试，退信不再重试），最后一次重试仍失败也转第 2 步，不让这封信随 MaxAttemptsExceeded 丢掉；`suppressed` / `bounce` → 用户被标记，转第 2 步。
+1. 没被标记 → 发邮件。成功记 `sent_at`；`temporary` / `config` 失败交给队列重试（`SendEmailJob` 同样只在这两类失败时重试，退信不再重试）。最后一次重试仍是 `temporary` 也转第 2 步，不让这封信随 MaxAttemptsExceeded 丢掉；`config` 是我们自己的 SMTP 出了问题，重试用完照常进 `failed_jobs`，修好 SMTP 后 `php artisan queue:retry all` 整批重跑（任务执行时会重新核对：收据看是否已发，账单和到期提醒看用户是否已续费）。SMTP 连接卡住超过任务的 60 秒超时时，任务被 worker 直接结束，同样留在 `failed_jobs`。`suppressed` / `bounce` → 用户被标记，转第 2 步。
 2. 被标记（或重试用完）→ 开了 Telegram Bot 且用户绑了 Telegram：有 PDF 就 `sendDocument`（caption 带主题、正文首段、入口链接），没有就 `sendMessage`；记 `channel=telegram`。
 3. 都走不通 → 只留在面板（`sent_at` 为空），日志 `[billing] 邮件未能送达且无 Telegram`。
 
@@ -122,6 +122,7 @@
 ## 升级
 
 1. 跑一次 `php artisan xboard:update`：迁移 `2026_10_06_000003_add_finance_ledger_and_mail_delivery` 建 `v2_billing_document` / `v2_balance_log`，给 `v2_mail_log` 加 `user_id` / `status` / `category`，给 `v2_user` 加 `mail_*` 与 `lifecycle_*` 列；可重复执行。
+   从带投递闭环的版本（2026-10-06 之后）升级到 `2026_10_07_000002` 时，先 `docker compose stop horizon` 再跑 `xboard:update`，然后 `up -d`：旧 horizon 在迁移后还在消费队列的话，会按旧规则把人重新标上。
 2. 收据 / 账单不落文件，不需要额外的持久卷或对象存储，数据都在数据库里，随数据库备份。
 3. 中间件 `sufe-middleware-rs` 需包含 `/api/v1/user/billing/documents`、`/api/v1/user/balance/log`、`/api/v1/user/mail/test` 三条路径与 `/api/v1/guest/billing/document` 资源前缀（老版本可先用 `EXTRA_OBFUSCATED_PATHS` / `EXTRA_ASSET_PREFIXES` 热修）。
 4. 前端主题 `sufe-my-theme` 对应版本带 `/billing` 页；老主题不受影响（新字段都是可选的）。

@@ -131,6 +131,9 @@ class ConfigSave extends FormRequest
         // 已续费 / 已失效的账单记录保留天数与邮件投递日志保留天数（0 = 永久）
         'billing_invoice_retention_days' => 'nullable|integer|min:0|max:3650',
         'mail_log_retention_days' => 'nullable|integer|min:0|max:3650',
+        'notify_optional_categories' => 'nullable|string|max:191|regex:/^[a-z_,]*$/',
+        'notify_footer_label' => 'nullable|string|max:64',
+        'notify_list_unsubscribe_enable' => '',
         // telegram
         'telegram_bot_enable' => 'boolean',
         'telegram_bot_token' => 'nullable|string|max:128',

@@ -250,6 +250,8 @@ class UserController extends Controller
         $user = $request->user();
         try {
             $user->update($updateData);
+            // 老前端走这条改到期 / 流量提醒：同步成偏好记录（来源 legacy），与新的通知设置页保持一致
+            \App\Services\Notification\NotificationPreference::syncLegacy($user, $updateData, \App\Models\UserNotificationPref::SOURCE_LEGACY, $request->ip());
         } catch (\Exception $e) {
             return $this->fail([400, __('Save failed')]);
         }

@@ -185,5 +185,6 @@
     "This invite code is already taken": "This invite code is already taken",
     "Please try again": "Please try again",
     "Invalid ticket category": "Invalid ticket category",
-    "Too many open feedback tickets": "You have too many open suggestions. Please wait until earlier ones are handled."
+    "Too many open feedback tickets": "You have too many open suggestions. Please wait until earlier ones are handled.",
+    "Invalid notification category": "Invalid notification category"
 }

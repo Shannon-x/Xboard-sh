@@ -10,6 +10,7 @@ use App\Services\Billing\BillingArchive;
 use App\Services\Billing\BillingDocumentService;
 use App\Services\Mail\DeliveryMonitor;
 use App\Services\MailService;
+use App\Services\Notification\NotificationPreference;
 use App\Services\TelegramService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -37,6 +38,15 @@ class SendBillingMailJob implements ShouldQueue
     public const KIND_WITHDRAWAL = 'withdrawal';
     public const KIND_EXPIRED = 'expired';     // 到期当天：服务已暂停
     public const KIND_WINBACK = 'winback';     // 到期后第 N 天：挽回
+
+    /** 各类邮件对应的通知类别：收据 / 提现结果是交易类（null，永远发），账单与到期当天归「账单」，挽回归「营销」 */
+    public const CATEGORY = [
+        self::KIND_RECEIPT => null,
+        self::KIND_WITHDRAWAL => null,
+        self::KIND_INVOICE => NotificationPreference::BILLING,
+        self::KIND_EXPIRED => NotificationPreference::BILLING,
+        self::KIND_WINBACK => NotificationPreference::MARKETING,
+    ];
 
     public const RESULT_EMAIL = 'email';
     public const RESULT_TELEGRAM = 'telegram';
@@ -200,11 +210,17 @@ class SendBillingMailJob implements ShouldQueue
         return $this->notify($user, $docs->winback($user, (int) $this->stage), 'billing.mail.winback', null, null, $docs, null);
     }
 
-    /** 到期后邮件的收件人：派发后续了费（expired_at 变了或又在未来）、封禁、关了提醒的都不发。 */
+    /**
+     * 到期后邮件的收件人：派发后续了费（expired_at 变了或又在未来）、封禁、关了这一类通知的都不发
+     * （「服务已暂停」跟账单类 remind_expire，挽回跟「营销与活动」）。
+     */
     private function lifecycleUser(): ?User
     {
         $user = User::find($this->id);
-        if (!$user || !$user->email || $user->banned || !$user->remind_expire || !$user->plan_id) {
+        if (!$user || !$user->email || $user->banned || !$user->plan_id) {
+            return null;
+        }
+        if (!NotificationPreference::allows($user, self::CATEGORY[$this->kind] ?? null)) {
             return null;
         }
         $expiredAt = (int) $user->expired_at;
@@ -225,8 +241,13 @@ class SendBillingMailJob implements ShouldQueue
         $attachments = $pdf !== null
             ? [['name' => $docs->attachmentName($data), 'data' => $pdf, 'mime' => 'application/pdf']]
             : [];
+        // 用户关掉了这一类通知：邮件、Telegram 都不发（后台重发 force 也尊重），文件照样留在面板
+        $category = self::CATEGORY[$this->kind] ?? null;
+        if (!NotificationPreference::allows($user, $category)) {
+            return self::RESULT_SKIPPED;
+        }
         if (!DeliveryMonitor::suppressed($user)) {
-            $log = MailService::deliver($email, (string) $data['subject'], $view, $data, $attachments, (int) $user->id);
+            $log = MailService::deliver($email, (string) $data['subject'], $view, $data, $attachments, (int) $user->id, $category);
             if (!$log['error']) {
                 if ($doc && $archive) {
                     $archive->markSent($doc, BillingDocument::CHANNEL_EMAIL);

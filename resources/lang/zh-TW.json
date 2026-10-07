@@ -185,5 +185,6 @@
     "This invite code is already taken": "該邀請碼已被佔用",
     "Please try again": "請重試",
     "Invalid ticket category": "工單分類無效",
-    "Too many open feedback tickets": "未關閉的建議與回饋已達上限，請等之前的處理完再提交"
+    "Too many open feedback tickets": "未關閉的建議與回饋已達上限，請等之前的處理完再提交",
+    "Invalid notification category": "通知類別不合法"
 }

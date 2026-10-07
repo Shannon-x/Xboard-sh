@@ -201,6 +201,8 @@ class TicketService
             }
             SendEmailJob::dispatch([
                 'email' => $user->email,
+                'user_id' => $user->id,
+                'category' => \App\Services\Notification\NotificationPreference::SUPPORT,
                 'subject' => '您在' . admin_setting('app_name', 'XBoard') . '的工单得到了回复',
                 'template_name' => 'notify',
                 'template_value' => [

@@ -60,7 +60,7 @@
                             </div>
                             <div style="font-family:'Noto Sans SC',sans-serif;font-size:12px;color:#c5beb5;margin-top:2px;">
                                 <span style="display:inline-block;width:0;max-width:0;overflow:hidden;color:#f5f3ef;font-size:1px;line-height:1px;mso-hide:all;">{{ substr(sha1(uniqid('', true)), 0, 12) }}</span>
-                                不希望收到此类邮件？<a href="{{ $url ?? '#' }}#/profile" style="color:#a09890;text-decoration:underline;">管理通知偏好</a>
+                                不希望收到此类邮件？<a href="{{ $manage_url ?? (($url ?? '#') . '#/profile') }}" style="color:#a09890;text-decoration:underline;">{{ $manage_label ?? '管理通知偏好' }}</a>
                             </div>
                         </td>
                     </tr>

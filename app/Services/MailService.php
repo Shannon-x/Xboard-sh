@@ -7,6 +7,7 @@ use App\Jobs\SendEmailJob;
 use App\Models\User;
 use App\Services\Billing\BillingDocumentService;
 use App\Services\Mail\DeliveryMonitor;
+use App\Services\Notification\NotificationPreference;
 use App\Utils\CacheKey;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Config;
@@ -120,8 +121,11 @@ class MailService
                     $emailsSent++;
                 }
 
-                // 到期之后：当天的「服务已暂停」，之后按配置的天数发挽回邮件；同一到期日每档只发一次
-                if ($user->remind_expire && ($stage = $this->lifecycleStageDue($user)) !== null && $this->markLifecycle($user, $stage)) {
+                // 到期之后：当天的「服务已暂停」（账单类，跟 remind_expire），之后按配置的天数发挽回邮件
+                // （营销类，看用户有没有关掉「营销与活动」）；同一到期日每档只发一次
+                if (($stage = $this->lifecycleStageDue($user)) !== null
+                    && ($stage === 1 ? (bool) $user->remind_expire : NotificationPreference::allows($user, NotificationPreference::MARKETING))
+                    && $this->markLifecycle($user, $stage)) {
                     SendBillingMailJob::dispatchLifecycle($user, $stage);
                     $statistics[$stage === 1 ? 'expired_emails' : 'winback_emails']++;
                     $emailsSent++;
@@ -196,6 +200,8 @@ class MailService
 
         SendEmailJob::dispatch([
             'email' => $user->email,
+            'user_id' => $user->id,
+            'category' => NotificationPreference::USAGE,
             'subject' => __('The traffic usage in :app_name has reached 80%', [
                 'app_name' => admin_setting('app_name', 'XBoard')
             ]),
@@ -324,6 +330,7 @@ class MailService
         SendEmailJob::dispatch([
             'email' => $user->email,
             'user_id' => $user->id,
+            'category' => NotificationPreference::BILLING,
             'subject' => __('The service in :app_name is about to expire', [
                 'app_name' => admin_setting('app_name', 'XBoard')
             ]),
@@ -359,6 +366,10 @@ class MailService
      *   - subject: 邮件主题
      *   - template_name: 邮件模板名称，例如 "welcome" 或 "password_reset"
      *   - template_value: 邮件模板变量，一个关联数组，包含模板中需要替换的变量和对应的值
+     *   - user_id: 收件用户 id（可选；不传按 email 反查）
+     *   - category: 通知类别（可选，见 NotificationPreference::CATEGORIES）。带类别的邮件在这里统一过一遍用户偏好：
+     *     用户关掉了这一类就不发（返回 skipped=true，不记日志），模板里多一个 manage_url 页脚链接，
+     *     批量类别再带 List-Unsubscribe 头。不带类别 = 交易类，永远发。
      * @return array 包含邮件发送结果的数组，包含以下字段：
      *   - email: 收件人邮箱地址
      *   - subject: 邮件主题
@@ -390,7 +401,15 @@ class MailService
 
         $view = 'mail.' . admin_setting('email_template', 'default') . '.' . $params['template_name'];
         $userId = isset($params['user_id']) ? (int) $params['user_id'] : null;
-        return self::deliver($email, $subject, $view, is_array($templateValue) ? $templateValue : [], [], $userId);
+        $category = isset($params['category']) ? (string) $params['category'] : null;
+        if (NotificationPreference::isCategory($category)) {
+            $user = $userId ? User::find($userId) : User::where('email', $email)->first();
+            if ($user && !NotificationPreference::allows($user, $category)) {
+                return ['email' => $email, 'subject' => $subject, 'template_name' => $view, 'error' => null, 'category' => 'skipped', 'skipped' => true];
+            }
+            $userId = $user?->id ?? $userId;
+        }
+        return self::deliver($email, $subject, $view, is_array($templateValue) ? $templateValue : [], [], $userId, $category);
     }
 
     /**
@@ -398,10 +417,30 @@ class MailService
      *
      * @param array $attachments 每项 ['name' => 文件名, 'data' => 二进制内容, 'mime' => MIME]
      * @param int|null $userId 收件用户 id；不传按 email 反查。投递结果会记到该用户头上（退信标记，见 DeliveryMonitor）
+     * @param string|null $category 通知类别（NotificationPreference::CATEGORIES）。偏好本身由调用方（sendEmail / SendBillingMailJob）
+     *   先判过；这里只负责类别带来的两样东西：模板变量 manage_url / manage_label（页脚那行「管理通知偏好」的免登录链接），
+     *   以及批量类别的 List-Unsubscribe / List-Unsubscribe-Post 头（RFC 8058 一键退订，Gmail / Yahoo 对批量发件人的要求）。
      * @return array{email: string, subject: string, template_name: string, error: string|null, category: string}
      */
-    public static function deliver(string $email, string $subject, string $view, array $data, array $attachments = [], ?int $userId = null): array
+    public static function deliver(string $email, string $subject, string $view, array $data, array $attachments = [], ?int $userId = null, ?string $category = null): array
     {
+        $headers = [];
+        if (NotificationPreference::isCategory($category)) {
+            $user = $userId ? User::find($userId) : User::where('email', $email)->first();
+            if ($user) {
+                $userId = (int) $user->id;
+                $data['manage_url'] = NotificationPreference::manageUrl($user);
+                $data['manage_label'] = NotificationPreference::footerLabel();
+                $data['manage_category'] = $category;
+                if (isset($data['settings_url'])) {
+                    $data['settings_url'] = $data['manage_url'];   // 收据 / 账单模板的页脚链接也换成免登录偏好页
+                }
+                if (in_array($category, NotificationPreference::BULK, true) && NotificationPreference::listUnsubscribeEnabled()) {
+                    $headers['List-Unsubscribe'] = '<' . NotificationPreference::unsubscribeUrl($user, $category) . '>';
+                    $headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
+                }
+            }
+        }
         if (admin_setting('email_host')) {
             Config::set('mail.host', admin_setting('email_host', config('mail.host')));
             Config::set('mail.port', admin_setting('email_port', config('mail.port')));
@@ -412,8 +451,11 @@ class MailService
             Config::set('mail.from.name', admin_setting('app_name', 'XBoard'));
         }
         try {
-            Mail::send($view, $data, function ($message) use ($email, $subject, $attachments) {
+            Mail::send($view, $data, function ($message) use ($email, $subject, $attachments, $headers) {
                 $message->to($email)->subject($subject);
+                foreach ($headers as $name => $value) {
+                    $message->getHeaders()->addTextHeader($name, $value);
+                }
                 foreach ($attachments as $attachment) {
                     $message->attachData($attachment['data'], $attachment['name'], ['mime' => $attachment['mime'] ?? 'application/octet-stream']);
                 }

@@ -43,6 +43,9 @@ class PaymentService
             if (strcasecmp((string) $paymentModel->payment, (string) $method) !== 0) {
                 throw new ApiException('payment method mismatch');
             }
+            // 统一成库里存的写法：后面按键名精确查插件，URL 里的 epay / Epay 查不到 EPay，
+            // 会掉到下面的兜底分支抛 Error 返回 500（2026-10-07 生产上被探测时出现过）
+            $this->method = (string) $paymentModel->payment;
             $payment = $paymentModel->makeVisible('config')->toArray();
         }
 
@@ -68,6 +71,10 @@ class PaymentService
             }
         }
 
+        // 没有启用的插件提供这个支付方式：明确拒绝，而不是 new 一个空类名抛 Error
+        if (!$this->class) {
+            throw new ApiException('payment method not available');
+        }
         $this->payment = new $this->class($this->config);
     }
 

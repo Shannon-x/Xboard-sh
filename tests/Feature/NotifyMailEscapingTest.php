@@ -6,7 +6,10 @@ use App\Models\User;
 use App\Services\MailService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
+use Symfony\Component\Mailer\Transport\Smtp\EsmtpTransport;
+use Symfony\Component\Mailer\Transport\Smtp\SmtpTransport;
 use Tests\TestCase;
 
 /**
@@ -94,5 +97,22 @@ class NotifyMailEscapingTest extends TestCase
         $this->assertStringContainsString('<br />', $html);
         $this->assertStringNotContainsString('&lt;br', $html, '日报正文里不能出现字面的 <br />');
         $this->assertStringNotContainsString('&amp;', $html);
+    }
+
+    public function test_reused_smtp_connection_is_pinged_after_a_short_idle(): void
+    {
+        // 队列进程复用 SMTP 连接：闲置超过阈值先 NOOP，OCI 断开的旧连接会被发现并重连，而不是撞上 421
+        $transport = new EsmtpTransport('127.0.0.1', 2525, false);
+        Mail::mailer()->setSymfonyTransport($transport);
+        MailService::keepSmtpConnectionFresh();
+        $threshold = (new \ReflectionProperty(SmtpTransport::class, 'pingThreshold'))->getValue($transport);
+        $this->assertSame(MailService::SMTP_PING_THRESHOLD, $threshold);
+        $this->assertLessThanOrEqual(10, $threshold);
+    }
+
+    public function test_keep_alive_is_a_no_op_for_non_smtp_transports(): void
+    {
+        MailService::keepSmtpConnectionFresh();   // 测试环境是 array transport
+        $this->assertNotInstanceOf(EsmtpTransport::class, Mail::mailer()->getSymfonyTransport());
     }
 }

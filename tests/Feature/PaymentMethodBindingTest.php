@@ -5,6 +5,9 @@ namespace Tests\Feature;
 use App\Exceptions\ApiException;
 use App\Models\Payment;
 use App\Services\PaymentService;
+use App\Services\Plugin\HookManager;
+use App\Services\Plugin\PluginManager;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -90,5 +93,68 @@ class PaymentMethodBindingTest extends TestCase
                 '合法的 method/uuid 组合被一致性校验误拒'
             );
         }
+    }
+
+    /** 假装启用了一个提供 EPay 的支付插件（测试环境默认不启用任何支付插件） */
+    private function fakeEpayPlugin(): object
+    {
+        $plugin = new class {
+            public array $config = [];
+            public function getPluginCode(): string { return 'epay_test'; }
+            public function setConfig(array $config): void { $this->config = $config; }
+            public function notify($params) { return false; }
+        };
+        HookManager::registerFilter('available_payment_methods', fn ($methods) => $methods + ['EPay' => ['plugin_code' => 'epay_test']]);
+        app()->instance(PluginManager::class, new class ($plugin) extends PluginManager {
+            public function __construct(private object $fake) {}
+            public function getEnabledPaymentPlugins(): array { return [$this->fake]; }
+        });
+        return $plugin;
+    }
+
+    public function test_case_insensitive_match_uses_the_stored_method_name(): void
+    {
+        // 网关把路径改成小写时，method 统一成库里的 EPay，按键名精确查插件才能查到
+        $payment = $this->makePayment('EPay', ['key' => 'epay-secret']);
+        $plugin = $this->fakeEpayPlugin();
+
+        foreach (['epay', 'Epay', 'EPAY'] as $method) {
+            $service = new PaymentService($method, null, $payment->uuid);
+            $this->assertSame('EPay', $service->method, $method);
+            $this->assertSame((int) $payment->id, (int) $plugin->config['id']);
+        }
+    }
+
+    public function test_method_without_an_enabled_plugin_is_rejected_cleanly(): void
+    {
+        // 以前会走到 new $this->class 抛 Error（Class name must be a valid object or a string）
+        $payment = $this->makePayment('EPay', ['key' => 'epay-secret']);
+
+        $this->expectException(ApiException::class);
+        $this->expectExceptionMessage('payment method not available');
+
+        new PaymentService('EPay', null, $payment->uuid);
+    }
+
+    public function test_notify_endpoint_answers_rejected_callbacks_with_422_and_logs_the_source(): void
+    {
+        $payment = $this->makePayment('EPay', ['key' => 'epay-secret']);
+        Log::spy();
+
+        // 方式不符、方式大小写不同但没有插件、uuid 不存在：都是 422 + 同一句 verify error，不再 500
+        $this->get("/api/v1/guest/payment/notify/Mgate/{$payment->uuid}", ['REMOTE_ADDR' => '194.36.145.128'])
+            ->assertStatus(422)->assertJsonPath('message', 'verify error');
+        $this->post("/api/v1/guest/payment/notify/Epay/{$payment->uuid}")
+            ->assertStatus(422)->assertJsonPath('message', 'verify error');
+        $this->get('/api/v1/guest/payment/notify/EPay/' . Str::random(8))
+            ->assertStatus(422)->assertJsonPath('message', 'verify error');
+
+        Log::shouldHaveReceived('warning')->withArgs(fn ($message, $context = []) => $message === '[payment] notify rejected'
+            && $context['reason'] === 'payment method mismatch' && $context['ip'] === '194.36.145.128' && $context['method'] === 'Mgate')->once();
+        Log::shouldHaveReceived('warning')->withArgs(fn ($message, $context = []) => $message === '[payment] notify rejected'
+            && $context['reason'] === 'payment method not available')->once();
+        Log::shouldHaveReceived('warning')->withArgs(fn ($message, $context = []) => $message === '[payment] notify rejected'
+            && $context['reason'] === 'payment not found')->once();
+        Log::shouldNotHaveReceived('error');
     }
 }

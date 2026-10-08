@@ -113,6 +113,8 @@ class AdminRoute
                 $router->post('/dumpCSV', [UserController::class, 'dumpCSV']);
                 $router->post('/sendMail', [UserController::class, 'sendMail']);
                 $router->post('/ban', [UserController::class, 'ban']);
+                // 邮箱验证：标记已验证 / 重发验证邮件 / 重新要求验证
+                $router->post('/emailVerify', [UserController::class, 'emailVerify']);
                 $router->post('/resetSecret', [UserController::class, 'resetSecret']);
                 // /setInviteUser 路由对应的 UserController::setInviteUser 方法从未实现，
                 // 访问会抛 BadMethodCallException → 500 + 栈泄露。直接删掉死路由。

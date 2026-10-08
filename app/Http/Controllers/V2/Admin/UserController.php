@@ -13,6 +13,7 @@ use App\Models\Plan;
 use App\Models\TicketAttachment;
 use App\Models\User;
 use App\Services\BalanceLedger;
+use App\Services\EmailVerification;
 use App\Services\AuthService;
 use App\Services\NodeSyncService;
 use App\Services\Plugin\HookManager;
@@ -103,6 +104,39 @@ class UserController extends Controller
         'invite_user' => ['email'],
         'group' => ['name'],
     ];
+
+    /**
+     * 邮箱验证：action = verify（标记已验证）| send（重发验证邮件，老用户顺带纳入）| reset（清掉已验证标记并重新起算宽限期）
+     */
+    public function emailVerify(Request $request)
+    {
+        $request->validate([
+            'id' => 'required|integer',
+            'action' => 'required|in:verify,send,reset',
+        ]);
+        $user = User::find($request->input('id'));
+        if (!$user) {
+            return $this->fail([400202, '用户不存在']);
+        }
+        switch ((string) $request->input('action')) {
+            case 'verify':
+                EmailVerification::markVerified($user, EmailVerification::SOURCE_ADMIN);
+                break;
+            case 'reset':
+                EmailVerification::reset($user);
+                break;
+            case 'send':
+                if (EmailVerification::isVerified($user)) {
+                    return $this->fail([400, '该用户的邮箱已经验证过']);
+                }
+                if ($user->email_verify_started_at === null) {
+                    EmailVerification::start($user, EmailVerification::SOURCE_ADMIN, false);
+                }
+                EmailVerification::send($user);
+                break;
+        }
+        return $this->success(EmailVerification::view($user->refresh()));
+    }
 
     public function resetSecret(Request $request)
     {

@@ -57,6 +57,8 @@ class Kernel extends ConsoleKernel
             ->withoutOverlapping(5);
         // send
         $schedule->command('send:remindMail', ['--force'])->dailyAt('11:30')->onOneServer();
+        // 邮箱验证的到期前提醒（宽限期只剩 N 天的用户）
+        $schedule->command('email-verify:remind')->dailyAt('11:35')->onOneServer();
         // 邮件投递日报：昨天的退信、新标记为暂停投递的用户、未投递的收据 / 账单；没有失败不发
         $schedule->command('mail:delivery-digest')->dailyAt('9:00')->onOneServer();
         // horizon metrics

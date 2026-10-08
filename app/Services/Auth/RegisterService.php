@@ -7,6 +7,7 @@ use App\Models\InviteCode;
 use App\Models\Plan;
 use App\Models\User;
 use App\Services\CaptchaService;
+use App\Services\EmailVerification;
 use App\Services\Plugin\HookManager;
 use App\Services\UserService;
 use App\Utils\CacheKey;
@@ -61,6 +62,11 @@ class RegisterService
             ) {
                 return [false, [400, __('Email suffix is not in the Whitelist')]];
             }
+        }
+
+        // 域名连收信服务器都没有的邮箱直接拒绝（DNS 查不到结果时放行，见 EmailVerification::domainAcceptsMail）
+        if (EmailVerification::mxCheckEnabled() && EmailVerification::domainAcceptsMail($email) === false) {
+            return [false, [400, __('This email domain cannot receive mail, please check the address')]];
         }
 
         // 检查Gmail限制
@@ -214,6 +220,11 @@ class RegisterService
         // 清除邮箱验证码
         if ((int) admin_setting('email_verify', 0)) {
             Cache::forget(CacheKey::get('EMAIL_VERIFY_CODE', $email));
+            // 注册时已经用验证码证明过邮箱，直接算已验证
+            EmailVerification::markVerified($user, EmailVerification::SOURCE_REGISTER);
+        } else {
+            // 软验证：注册流程不加步骤，事后发一封带一次性链接的邮件并开始计宽限期
+            EmailVerification::start($user, EmailVerification::SOURCE_REGISTER);
         }
 
         // 更新最近登录时间

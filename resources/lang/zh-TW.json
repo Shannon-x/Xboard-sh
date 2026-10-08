@@ -186,5 +186,16 @@
     "Please try again": "請重試",
     "Invalid ticket category": "工單分類無效",
     "Too many open feedback tickets": "未關閉的建議與回饋已達上限，請等之前的處理完再提交",
-    "Invalid notification category": "通知類別不合法"
+    "Invalid notification category": "通知類別不合法",
+    "Please verify your email address first": "請先驗證您的郵箱",
+    "Verification email was just sent, please try again later": "驗證郵件剛剛發出，請稍後再試",
+    "Too many verification emails today, please try again tomorrow": "今天發送的驗證郵件已達上限，請明天再試",
+    "Confirm your new email address for :name": "確認您在 :name 的新郵箱",
+    "Please verify your email address for :name": "請驗證您在 :name 的郵箱",
+    "Reminder: verify your email address for :name": "提醒：請驗證您在 :name 的郵箱",
+    "The new email address is the same as the current one": "新郵箱與目前郵箱相同",
+    "Invalid email address": "郵箱地址格式不正確",
+    "This email domain cannot receive mail, please check the address": "這個郵箱的網域無法收信，請檢查地址是否寫錯",
+    "Your email address is already verified": "您的郵箱已經驗證過了",
+    "Email verification is not enabled": "郵箱驗證未啟用"
 }

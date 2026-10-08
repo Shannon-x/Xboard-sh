@@ -137,6 +137,12 @@ class ConfigSave extends FormRequest
         'notify_optional_categories' => 'nullable|string|max:191|regex:/^[a-z_,]*$/',
         'notify_footer_label' => 'nullable|string|max:64',
         'notify_list_unsubscribe_enable' => '',
+        // 邮箱软验证：开关、宽限天数、限制方式、到期前提醒天数、注册时查 MX
+        'email_verify_nudge_enable' => '',
+        'email_verify_grace_days' => 'nullable|integer|min:1|max:90',
+        'email_verify_restrict_mode' => 'nullable|in:features,subscribe,none',
+        'email_verify_remind_days' => 'nullable|integer|min:0|max:30',
+        'email_verify_mx_check' => '',
         // telegram
         'telegram_bot_enable' => 'boolean',
         'telegram_bot_token' => 'nullable|string|max:128',

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\V1\User;
 
 use App\Http\Controllers\Controller;
+use App\Services\EmailVerification;
 use App\Http\Requests\User\UserChangePassword;
 use App\Http\Requests\User\UserTransfer;
 use App\Http\Requests\User\UserUpdate;
@@ -138,6 +139,10 @@ class UserController extends Controller
                 'remind_traffic',
                 'mail_suppressed_at',
                 'mail_suppressed_reason',
+                'email_verified_at',
+                'email_verify_started_at',
+                'email_verify_sent_at',
+                'email_verify_pending_email',
                 'auto_renew',
                 'expired_at',
                 'balance',
@@ -154,6 +159,9 @@ class UserController extends Controller
             return $this->fail([400, __('The user does not exist')]);
         }
         $user['avatar_url'] = 'https://cdn.v2ex.com/gravatar/' . md5($user->email) . '?s=64&d=identicon';
+        // 邮箱软验证状态（横幅、倒计时、限制态）；派生键，老前端不读
+        $user['email_verification'] = EmailVerification::view($user);
+        unset($user['email_verify_sent_at'], $user['email_verify_pending_email']);
         if (!$request->boolean('include_addon_groups') && $user->plan_options) {
             $user->plan_options = array_intersect_key($user->plan_options, \App\Services\PlanCustomizationService::LIMITS);
         }
@@ -261,6 +269,8 @@ class UserController extends Controller
 
     public function transfer(UserTransfer $request)
     {
+        // 佣金转余额与佣金提现同属「拿佣金」，邮箱软验证受限时一起挡（下单付款不受影响）
+        EmailVerification::assertAllowed(User::findOrFail($request->user()->id));
         $amount = $request->input('transfer_amount');
         try {
             DB::transaction(function () use ($request, $amount) {

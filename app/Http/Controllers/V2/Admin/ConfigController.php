@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\V2\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Services\EmailVerification;
 use App\Http\Requests\Admin\ConfigSave;
 use App\Models\SubscribeTemplate;
 use App\Services\Auth\GoogleLoginService;
@@ -236,6 +237,12 @@ class ConfigController extends Controller
                 'notify_optional_categories' => implode(',', NotificationPreference::optionalCategories()),
                 'notify_footer_label' => (string) admin_setting('notify_footer_label', ''),
                 'notify_list_unsubscribe_enable' => NotificationPreference::listUnsubscribeEnabled(),
+                // 邮箱软验证（注册 / 付款后发一次性链接，宽限期过后限制）
+                'email_verify_nudge_enable' => EmailVerification::enabled(),
+                'email_verify_grace_days' => EmailVerification::graceDays(),
+                'email_verify_restrict_mode' => EmailVerification::restrictMode(),
+                'email_verify_remind_days' => EmailVerification::remindDaysBefore(),
+                'email_verify_mx_check' => EmailVerification::mxCheckEnabled(),
             ],
             'telegram' => [
                 'telegram_bot_enable' => (bool) admin_setting('telegram_bot_enable', 0),

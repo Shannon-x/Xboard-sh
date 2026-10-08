@@ -32,6 +32,8 @@ class AutoRenewTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // 这个套件按封数数邮件；付款开通顺带发的邮箱验证邮件（EmailVerificationTest 单独测）在这里关掉
+        config(['v2board.email_verify_nudge_enable' => 0]);
         // 站点设置走 Cache::store('redis')：桩成内存驱动并丢掉启动时建好的 Setting 实例，
         // 本机开着 Redis、缓存里留着开发库的站点设置时，通知里的链接也不会变成开发库的 app_url
         config(['cache.stores.redis' => ['driver' => 'array']]);

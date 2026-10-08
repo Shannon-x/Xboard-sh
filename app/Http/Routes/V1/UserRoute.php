@@ -5,6 +5,7 @@ use App\Http\Controllers\V1\User\CommController;
 use App\Http\Controllers\V1\User\AdvanceCycleController;
 use App\Http\Controllers\V1\User\BillingController;
 use App\Http\Controllers\V1\User\CouponController;
+use App\Http\Controllers\V1\User\EmailVerifyController;
 use App\Http\Controllers\V1\User\GiftCardController;
 use App\Http\Controllers\V1\User\InviteController;
 use App\Http\Controllers\V1\User\KnowledgeController;
@@ -96,6 +97,12 @@ class UserRoute
             // 通知设置：按类别开关邮件（两条都要登记进 sufe-middleware-rs 的 pathname.rs）
             $router->get('/notify/prefs', [NotificationController::class, 'prefs']);
             $router->post('/notify/prefs/save', [NotificationController::class, 'save']);
+            // 邮箱验证：状态 / 重发验证邮件 / 申请换邮箱（登记进中间件路径表）
+            $router->get('/email-verify/status', [EmailVerifyController::class, 'status']);
+            $router->post('/email-verify/send', [EmailVerifyController::class, 'send'])
+                ->middleware('throttle:email-verify-send');
+            $router->post('/email-verify/change', [EmailVerifyController::class, 'change'])
+                ->middleware('throttle:email-verify-send');
             // Server
             $router->get('/server/fetch', [ServerController::class, 'fetch']);
             // Coupon

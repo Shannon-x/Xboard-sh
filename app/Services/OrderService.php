@@ -12,6 +12,7 @@ use App\Models\Plan;
 use App\Models\TrafficResetLog;
 use App\Models\User;
 use App\Services\Billing\BillingDocumentService;
+use App\Services\EmailVerification;
 use App\Services\Plugin\HookManager;
 use App\Support\PaymentGatewayBinding;
 use App\Support\PaymentMetrics;
@@ -266,6 +267,17 @@ class OrderService
         }
 
         HookManager::call('order.open.after', $order);
+
+        // 付款开通后把用户纳入邮箱软验证（已纳入 / 已验证的不重复）。afterCommit 同收据：事务回滚了就不发
+        if (EmailVerification::enabled()) {
+            $userId = (int) $order->user_id;
+            DB::afterCommit(function () use ($userId) {
+                $user = User::find($userId);
+                if ($user) {
+                    EmailVerification::start($user, EmailVerification::SOURCE_ORDER);
+                }
+            });
+        }
 
         // 付款开通后给用户发带 PDF 的收据。afterCommit：OrderHandleJob 把 open() 包在事务里，回滚了就不发
         if (BillingDocumentService::receiptEnabled()) {

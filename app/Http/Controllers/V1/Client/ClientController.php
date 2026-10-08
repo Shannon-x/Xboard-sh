@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Server;
 use App\Protocols\General;
 use App\Services\Plugin\HookManager;
+use App\Services\EmailVerification;
 use App\Services\ServerService;
 use App\Services\UserService;
 use App\Utils\Helper;
@@ -43,7 +44,7 @@ class ClientController extends Controller
         $user = $request->user();
         $userService = new UserService();
 
-        if (!$userService->isAvailable($user)) {
+        if (!$userService->isAvailable($user) || EmailVerification::blocksSubscribe($user)) {
             HookManager::call('client.subscribe.unavailable');
             return response('', 403, ['Content-Type' => 'text/plain']);
         }

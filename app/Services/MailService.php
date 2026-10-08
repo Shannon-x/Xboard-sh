@@ -11,9 +11,13 @@ use App\Services\Notification\NotificationPreference;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Symfony\Component\Mailer\Transport\Smtp\SmtpTransport;
 
 class MailService
 {
+    /** 发信前连接闲置超过这么多秒就先 NOOP 探活（见 keepSmtpConnectionFresh） */
+    public const SMTP_PING_THRESHOLD = 10;
+
     // Render {{key}} / {{key|default}} placeholders.
     private static function renderPlaceholders(string $template, array $vars): string
     {
@@ -424,6 +428,21 @@ class MailService
     }
 
     /**
+     * 队列进程（horizon）会一直复用同一条 SMTP 连接。Symfony 默认闲置超过 100 秒才先发 NOOP 探活，
+     * 而 OCI Email Delivery 闲置几十秒就会断开：这段时间里发的信会撞上服务器断开时留下的
+     * 「421 Timeout waiting for data from client」，要等 30 秒后的重试才发出去
+     * （2026-10-07 上线后 24 封失败里 23 封是付款收据，全部靠重试补发）。
+     * 探活阈值降到 10 秒：闲置稍久就先 NOOP，连接已断就重连，代价只是一次往返。
+     */
+    public static function keepSmtpConnectionFresh(): void
+    {
+        $transport = Mail::mailer()->getSymfonyTransport();
+        if ($transport instanceof SmtpTransport) {
+            $transport->setPingThreshold(self::SMTP_PING_THRESHOLD);
+        }
+    }
+
+    /**
      * 实际发信：套上后台 SMTP 配置 → Mail::send → 记 v2_mail_log。sendEmail() 与收据 / 账单任务共用。
      *
      * @param array $attachments 每项 ['name' => 文件名, 'data' => 二进制内容, 'mime' => MIME]
@@ -462,6 +481,7 @@ class MailService
             Config::set('mail.from.name', admin_setting('app_name', 'XBoard'));
         }
         try {
+            self::keepSmtpConnectionFresh();
             Mail::send($view, $data, function ($message) use ($email, $subject, $attachments, $headers) {
                 $message->to($email)->subject($subject);
                 foreach ($headers as $name => $value) {

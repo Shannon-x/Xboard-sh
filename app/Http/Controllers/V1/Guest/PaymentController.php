@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\V1\Guest;
 
+use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use App\Models\Payment;
@@ -25,6 +26,7 @@ class PaymentController extends Controller
             $verify = $paymentService->notify($request->input());
             if (!$verify) {
                 HookManager::call('payment.notify.failed', [$method, $uuid, $request]);
+                $this->logRejected('verify failed', $method, $uuid, $request);
                 return $this->fail([422, 'verify error']);
             }
             // 兼容历史插件：notify() 返回非数组真值（老版直接 return 'IPN OK' 之类字符串）时，
@@ -43,6 +45,11 @@ class PaymentController extends Controller
                 return $this->fail([400, 'handle error']);
             }
             return (isset($verify['custom_result']) ? $verify['custom_result'] : 'success');
+        } catch (ApiException $e) {
+            // 方式与 uuid 不符、uuid 不存在、网关停用、没有可用插件：这是对请求本身的拒绝，不是服务端故障。
+            // 回 422（与验签失败同一句话，不给探测者区分原因）并记下来源，便于发现有人在扫回调接口
+            $this->logRejected($e->getMessage(), $method, $uuid, $request);
+            return $this->fail([422, 'verify error']);
         } catch (\Throwable $e) {
             // \Throwable 而非 \Exception：插件里的 TypeError / class-not-found 等属 \Error，
             // 旧 catch(\Exception) 兜不住会直接 500 且逃逸。Log::error 本身也可能因日志通道
@@ -52,6 +59,21 @@ class PaymentController extends Controller
             } catch (\Throwable $ignored) {
             }
             return $this->fail([500, 'fail']);
+        }
+    }
+
+    /** 被拒的回调只记一条 warning（带来源 IP），不再按 error 打整段堆栈 */
+    private function logRejected(string $reason, $method, $uuid, Request $request): void
+    {
+        try {
+            Log::warning('[payment] notify rejected', [
+                'reason' => $reason,
+                'method' => (string) $method,
+                'uuid' => (string) $uuid,
+                'ip' => $request->ip(),
+                'http_method' => $request->method(),
+            ]);
+        } catch (\Throwable $ignored) {
         }
     }
 

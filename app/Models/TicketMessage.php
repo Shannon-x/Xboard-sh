@@ -50,10 +50,14 @@ class TicketMessage extends Model
 
     /**
      * 判断消息是否由工单发起人发送
+     *
+     * 工单行已不存在时（早年删用户只删工单、没清消息，库里留下了孤儿消息）ticket 为 null，
+     * 两个判断都返回 false：认不出是谁发的，但序列化不能因此抛错。
      */
     public function getIsFromUserAttribute(): bool
     {
-        return $this->ticket->user_id === $this->user_id;
+        $ticket = $this->ticket;
+        return $ticket !== null && $ticket->user_id === $this->user_id;
     }
 
     /**
@@ -61,6 +65,7 @@ class TicketMessage extends Model
      */
     public function getIsFromAdminAttribute(): bool
     {
-        return $this->ticket->user_id !== $this->user_id;
+        $ticket = $this->ticket;
+        return $ticket !== null && $ticket->user_id !== $this->user_id;
     }
 }

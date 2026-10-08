@@ -17,7 +17,7 @@ use Illuminate\Support\Facades\Hash;
 /**
  * 邮箱软验证：注册与购买流程一步不加，事后补验。
  *
- *   · 注册成功、或订单付款开通后（老用户下一次付款时才轮到），把用户纳入验证流程：记下 started_at，
+ *   · 注册成功、或订单付款开通后，把用户纳入验证流程：记下 started_at，
  *     往邮箱发一封带一次性链接的邮件（/verify-email/<凭据>，凭据 128 位随机，库里只存 SHA-256，7 天有效）。
  *   · 面板常驻横幅：剩余几天、重新发送（60 秒冷却、每天最多 5 封）、更换邮箱（新邮箱收到链接点开才真正换）。
  *   · 宽限期（email_verify_grace_days，默认 14 天）过后进入「限制状态」，限制什么由 email_verify_restrict_mode 定：
@@ -28,6 +28,7 @@ use Illuminate\Support\Facades\Hash;
  *     支付类工单也放行：付了钱没到账的人必须找得到客服。
  *   · 到期前 email_verify_remind_days 天（默认 3）再发一封提醒；退信地址（mail_suppressed_at）不再投递，面板上直接提示换邮箱。
  *   · 用验证码注册（email_verify 开着）和 Google 登录建的账号一进来就算已验证。
+ *   · 功能上线前注册的老用户由迁移直接记为已验证（来源 legacy），永远不用验证（shannon 2026-10-08）。
  *   · 注册时可选查域名 MX（email_verify_mx_check，默认开）：域名连收信服务器都没有的直接拒绝，DNS 查不到结果时放行。
  *
  * 验证邮件属于交易类通知（与验证码同级），不经过通知偏好闸门。
@@ -43,6 +44,8 @@ final class EmailVerification
     public const SOURCE_ORDER = 'order';
     public const SOURCE_ADMIN = 'admin';
     public const SOURCE_CHANGE = 'change';
+    /** 功能上线前注册的老用户，迁移时直接记为已验证 */
+    public const SOURCE_LEGACY = 'legacy';
 
     /** 一次性链接有效期（秒） */
     public const TOKEN_TTL = 7 * 86400;

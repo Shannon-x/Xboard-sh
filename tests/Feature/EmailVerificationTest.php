@@ -151,9 +151,43 @@ class EmailVerificationTest extends TestCase
         $this->postJson('/api/v1/passport/auth/register', ['email' => 'b@nomx.example', 'password' => 'secret-pass'])->assertOk();
     }
 
+    // ---------------------------------------------------------------- 上线前的老用户
+
+    public function test_users_registered_before_launch_never_have_to_verify(): void
+    {
+        $old = $this->user();
+        $enrolled = $this->user(['email_verify_started_at' => time() - 86400, 'email_verify_source' => 'register']);
+        $migration = require database_path('migrations/2026_10_08_000002_exempt_existing_users_from_email_verification.php');
+        $migration->up();
+
+        $old->refresh();
+        $this->assertNotNull($old->email_verified_at);
+        $this->assertSame('legacy', $old->email_verify_source);
+        // 已纳入流程的行不碰
+        $this->assertNull($enrolled->fresh()->email_verified_at);
+        $this->assertSame('register', $enrolled->fresh()->email_verify_source);
+
+        // 付款后不补验、不发信；面板没有横幅、不受限，也不会被「立即验证」拉进流程
+        (new OrderService($this->order($old)))->open();
+        $this->assertNull($old->fresh()->email_verify_started_at);
+        $this->assertCount(0, $this->sent());
+        Sanctum::actingAs($old);
+        $this->getJson('/api/v1/user/info')->assertOk()
+            ->assertJsonPath('data.email_verification.verified', true)
+            ->assertJsonPath('data.email_verification.pending', false)
+            ->assertJsonPath('data.email_verification.restricted', false);
+        $this->postJson('/api/v1/user/email-verify/send')->assertStatus(400);
+        $this->assertNull($old->fresh()->email_verify_started_at);
+        $this->assertCount(0, $this->sent());
+
+        $migration->down();
+        $this->assertNull($old->fresh()->email_verified_at);
+        $this->assertNull($old->fresh()->email_verify_source);
+    }
+
     // ---------------------------------------------------------------- 付款开通
 
-    public function test_opening_a_paid_order_enrolls_an_old_user_once(): void
+    public function test_opening_a_paid_order_enrolls_an_unenrolled_user_once(): void
     {
         $user = $this->user();
         $this->assertNull($user->email_verify_started_at);
@@ -179,7 +213,7 @@ class EmailVerificationTest extends TestCase
 
     // ---------------------------------------------------------------- 重发与换邮箱
 
-    public function test_resend_has_a_cooldown_and_enrolls_old_users(): void
+    public function test_resend_has_a_cooldown_and_enrolls_unenrolled_users(): void
     {
         $user = $this->user();
         Sanctum::actingAs($user);

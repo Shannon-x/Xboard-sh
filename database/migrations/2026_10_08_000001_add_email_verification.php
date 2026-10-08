@@ -9,8 +9,8 @@ use Illuminate\Support\Facades\Schema;
  *
  * v2_user 新增几列，全部可空，老代码不读不写：
  *   email_verified_at           验证通过的时间；非空 = 已验证
- *   email_verify_started_at     纳入验证流程的时间（注册 / 付款开通时），宽限期从这里起算；空 = 老用户，还没轮到
- *   email_verify_source         纳入来源 register / order / admin / change
+ *   email_verify_started_at     纳入验证流程的时间（注册 / 付款开通时），宽限期从这里起算；空 = 还没纳入
+ *   email_verify_source         纳入来源 register / order / admin / change；legacy = 上线前的老用户，直接记为已验证（见 000002）
  *   email_verify_token          一次性链接凭据的 SHA-256（库里不存明文，拿到库也拼不出链接）
  *   email_verify_token_expires_at
  *   email_verify_sent_at        最近一次发送验证邮件的时间（重发冷却）

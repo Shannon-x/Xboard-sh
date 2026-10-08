@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\EmailVerification;
 use App\Models\Server;
 use App\Models\ServerRoute;
 use App\Models\User;
@@ -135,6 +136,8 @@ class ServerService
                         ->orWhere('expired_at', NULL);
                 })
                 ->where('banned', 0);
+            // 邮箱软验证 subscribe 模式：宽限期过了还没验证的用户不下发给节点（其余模式这一行不加条件）
+            EmailVerification::scopeNotBlocked($query);
         };
         $columns = ['id', 'uuid', 'speed_limit', 'device_limit'];
 

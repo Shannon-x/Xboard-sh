@@ -4,6 +4,7 @@ namespace App\Http\Controllers\V1\User;
 
 use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
+use App\Services\EmailVerification;
 use App\Http\Requests\User\OrderSave;
 use App\Http\Resources\OrderResource;
 use App\Models\BalanceLog;
@@ -68,6 +69,9 @@ class OrderController extends Controller
 
         $user = User::findOrFail($request->user()->id);
         $userService = app(UserService::class);
+
+        // 邮箱软验证的宽限期已过：先验证再下单（前端收到 reason=email_unverified 弹验证面板）
+        EmailVerification::assertAllowed($user);
 
         if ($userService->isNotCompleteOrderByUserId($user->id)) {
             throw new ApiException(__('You have an unpaid or pending order, please try again later or cancel it'));

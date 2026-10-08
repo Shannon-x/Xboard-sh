@@ -9,6 +9,7 @@ use App\Http\Controllers\V1\Guest\TicketAttachmentController;
 use App\Http\Controllers\V1\Guest\BillingDocumentController;
 use App\Http\Controllers\V1\Guest\BillingPayController;
 use App\Http\Controllers\V1\Guest\NotificationController;
+use App\Http\Controllers\V1\Guest\EmailVerifyController;
 use Illuminate\Contracts\Routing\Registrar;
 
 class GuestRoute
@@ -50,6 +51,9 @@ class GuestRoute
             $router->post('/notify/fetch', [NotificationController::class, 'fetch'])
                 ->middleware('throttle:notify-pref');
             $router->post('/notify/update', [NotificationController::class, 'update'])
+                ->middleware('throttle:notify-pref-action');
+            // 邮箱验证链接（/verify-email/<凭据>）的落点：凭据在请求体里，走加密通道（登记进中间件路径表）
+            $router->post('/email-verify/confirm', [EmailVerifyController::class, 'confirm'])
                 ->middleware('throttle:notify-pref-action');
             // List-Unsubscribe 头的落点：邮件客户端直接 POST（一键退订）或 GET（跳偏好页）。
             // 明文到达，中间件把这条前缀当支付回调一样直通（route.rs 的内置透传规则）

@@ -186,5 +186,16 @@
     "Please try again": "Please try again",
     "Invalid ticket category": "Invalid ticket category",
     "Too many open feedback tickets": "You have too many open suggestions. Please wait until earlier ones are handled.",
-    "Invalid notification category": "Invalid notification category"
+    "Invalid notification category": "Invalid notification category",
+    "Please verify your email address first": "Please verify your email address first",
+    "Verification email was just sent, please try again later": "Verification email was just sent, please try again later",
+    "Too many verification emails today, please try again tomorrow": "Too many verification emails today, please try again tomorrow",
+    "Confirm your new email address for :name": "Confirm your new email address for :name",
+    "Please verify your email address for :name": "Please verify your email address for :name",
+    "Reminder: verify your email address for :name": "Reminder: verify your email address for :name",
+    "The new email address is the same as the current one": "The new email address is the same as the current one",
+    "Invalid email address": "Invalid email address",
+    "This email domain cannot receive mail, please check the address": "This email domain cannot receive mail, please check the address",
+    "Your email address is already verified": "Your email address is already verified",
+    "Email verification is not enabled": "Email verification is not enabled"
 }

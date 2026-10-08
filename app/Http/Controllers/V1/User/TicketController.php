@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\V1\User;
 
 use App\Http\Controllers\Controller;
+use App\Services\EmailVerification;
 use App\Http\Requests\User\TicketSave;
 use App\Http\Requests\User\TicketWithdraw;
 use App\Http\Resources\TicketResource;
@@ -45,6 +46,7 @@ class TicketController extends Controller
 
     public function save(TicketSave $request)
     {
+        EmailVerification::assertAllowed(User::findOrFail($request->user()->id));
         if ((int) admin_setting('ticket_active_subscription_required', 0) && !$this->canOpenTicket($request)) {
             return $this->fail([400, __('Please purchase a subscription, earn affiliate commission, or place an order before opening a ticket')]);
         }

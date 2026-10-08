@@ -4,6 +4,7 @@ namespace App\Services\Auth;
 
 use App\Models\User;
 use App\Services\Plugin\HookManager;
+use App\Services\EmailVerification;
 use App\Services\UserService;
 use App\Utils\CacheKey;
 use App\Utils\Dict;
@@ -226,6 +227,9 @@ class GoogleLoginService
 
         $user->last_login_at = time();
         $user->save();
+
+        // Google 已经证明过这个邮箱归本人
+        EmailVerification::markVerified($user, 'google');
 
         HookManager::call('user.register.after', $user);
 

@@ -49,6 +49,8 @@ class FinancePanelTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // 这个套件按封数数邮件；付款开通顺带发的邮箱验证邮件（EmailVerificationTest 单独测）在这里关掉
+        config(['v2board.email_verify_nudge_enable' => 0]);
         Storage::fake('local');
         Http::preventStrayRequests();
         $group = new ServerGroup();

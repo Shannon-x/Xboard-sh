@@ -40,6 +40,8 @@ class BillingSnapshotTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // 这个套件按封数数邮件；付款开通顺带发的邮箱验证邮件（EmailVerificationTest 单独测）在这里关掉
+        config(['v2board.email_verify_nudge_enable' => 0]);
         Storage::fake('local');
         Http::preventStrayRequests();
         // Setting 与订阅模板缓存都写死 Cache::store('redis')，而 CI 没起 Redis：桩成内存驱动，/config/fetch 才不会 500

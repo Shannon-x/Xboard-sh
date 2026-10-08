@@ -186,6 +186,11 @@ class RouteServiceProvider extends ServiceProvider
         RateLimiter::for('notify-pref-action', function (Request $request) {
             return Limit::perMinute(10)->by('notify_pref_action:ip:' . $request->ip());
         });
+        // 邮箱验证邮件的重发 / 换邮箱：服务层另有 60 秒冷却与每日 5 封的上限，这里只防刷
+        RateLimiter::for('email-verify-send', function (Request $request) {
+            $key = $request->user()?->id ? 'u:' . $request->user()->id : 'ip:' . $request->ip();
+            return Limit::perMinute(5)->by('email_verify_send:' . $key);
+        });
     }
 
     /**

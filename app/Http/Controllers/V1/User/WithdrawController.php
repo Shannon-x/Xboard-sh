@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\V1\User;
 
 use App\Http\Controllers\Controller;
+use App\Models\User;
+use App\Services\EmailVerification;
 use App\Http\Resources\CommissionWithdrawalResource;
 use App\Models\CommissionWithdrawal;
 use App\Services\CommissionWithdrawalService;
@@ -47,6 +49,7 @@ class WithdrawController extends Controller
 
     public function apply(Request $request)
     {
+        EmailVerification::assertAllowed(User::findOrFail($request->user()->id));
         $request->validate([
             'amount' => 'required|integer|min:1',
             'chain' => 'required|string|max:32',

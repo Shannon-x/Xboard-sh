@@ -46,7 +46,9 @@ class TicketController extends Controller
 
     public function save(TicketSave $request)
     {
-        EmailVerification::assertAllowed(User::findOrFail($request->user()->id));
+        // 邮箱软验证受限时只放行「支付与订单」类工单
+        $category = $request->input('category');
+        EmailVerification::assertTicketAllowed(User::findOrFail($request->user()->id), is_string($category) ? $category : null);
         if ((int) admin_setting('ticket_active_subscription_required', 0) && !$this->canOpenTicket($request)) {
             return $this->fail([400, __('Please purchase a subscription, earn affiliate commission, or place an order before opening a ticket')]);
         }
@@ -160,6 +162,8 @@ class TicketController extends Controller
 
     public function withdraw(TicketWithdraw $request)
     {
+        // 老前端的提现入口，与 /withdraw/apply 同一道邮箱软验证闸门
+        EmailVerification::assertAllowed(User::findOrFail($request->user()->id));
         if ((int) admin_setting('withdraw_close_enable', 0)) {
             return $this->fail([400, 'Unsupported withdraw']);
         }

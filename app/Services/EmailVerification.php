@@ -21,9 +21,11 @@ use Illuminate\Support\Facades\Hash;
  *     往邮箱发一封带一次性链接的邮件（/verify-email/<凭据>，凭据 128 位随机，库里只存 SHA-256，7 天有效）。
  *   · 面板常驻横幅：剩余几天、重新发送（60 秒冷却、每天最多 5 封）、更换邮箱（新邮箱收到链接点开才真正换）。
  *   · 宽限期（email_verify_grace_days，默认 14 天）过后进入「限制状态」，限制什么由 email_verify_restrict_mode 定：
- *       features   订阅照常，但新下单 / 续费、提交工单、申请提现前必须先验证（默认）
+ *       features   订阅照常，但新建工单（「支付与订单」类除外）、佣金提现、佣金转余额前必须先验证（默认）
  *       subscribe  在 features 之上再暂停订阅链接（客户端拉不到节点，节点侧也不再下发该用户）
  *       none       只提示不限制
+ *     任何模式下都**不拦下单、续费、付款**（shannon 2026-10-08：「不要影响我收钱」）。
+ *     支付类工单也放行：付了钱没到账的人必须找得到客服。
  *   · 到期前 email_verify_remind_days 天（默认 3）再发一封提醒；退信地址（mail_suppressed_at）不再投递，面板上直接提示换邮箱。
  *   · 用验证码注册（email_verify 开着）和 Google 登录建的账号一进来就算已验证。
  *   · 注册时可选查域名 MX（email_verify_mx_check，默认开）：域名连收信服务器都没有的直接拒绝，DNS 查不到结果时放行。
@@ -107,7 +109,7 @@ final class EmailVerification
         return time() >= self::dueAt($user);
     }
 
-    /** 新下单 / 工单 / 提现这些功能此刻是否被挡 */
+    /** 工单 / 佣金提现 / 佣金转余额这些功能此刻是否被挡（下单、续费、付款永远不挡） */
     public static function blocksFeatures(User $user): bool
     {
         return self::restricted($user);
@@ -125,6 +127,18 @@ final class EmailVerification
         if (self::blocksFeatures($user)) {
             throw new ApiException(__('Please verify your email address first'), 403, ['reason' => 'email_unverified']);
         }
+    }
+
+    /** 受限时仍可新建的工单分类：付款没到账、订单出问题的人必须找得到客服 */
+    public const TICKET_CATEGORIES_ALWAYS_ALLOWED = ['billing'];
+
+    /** 新建工单入口：支付类工单放行，其余同 assertAllowed */
+    public static function assertTicketAllowed(User $user, ?string $category): void
+    {
+        if ($category !== null && in_array($category, self::TICKET_CATEGORIES_ALWAYS_ALLOWED, true)) {
+            return;
+        }
+        self::assertAllowed($user);
     }
 
     /**

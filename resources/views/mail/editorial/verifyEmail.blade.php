@@ -11,9 +11,9 @@ if ($changing) {
 if ($changing) {
     $consequence = null;
 } elseif ($restrict_mode === 'subscribe') {
-    $consequence = '如果在 ' . $due_date . ' 之前没有验证，账户将进入限制状态：订阅链接暂停更新，新下单、续费、提交工单和申请提现也需要先验证邮箱。';
+    $consequence = '如果在 ' . $due_date . ' 之前没有验证，账户将进入限制状态：订阅链接暂停更新，提交工单（支付问题除外）、佣金提现和佣金转余额也需要先验证邮箱。购买和续费不受影响。';
 } elseif ($restrict_mode === 'features') {
-    $consequence = '如果在 ' . $due_date . ' 之前没有验证，账户将进入限制状态：新下单、续费、提交工单和申请提现前都需要先验证邮箱。订阅本身不受影响。';
+    $consequence = '如果在 ' . $due_date . ' 之前没有验证，账户将进入限制状态：提交工单（支付问题除外）、佣金提现和佣金转余额前需要先验证邮箱。订阅、购买和续费都不受影响。';
 } else {
     $consequence = '验证之后面板里的提示就会消失。';
 }

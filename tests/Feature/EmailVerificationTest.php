@@ -234,31 +234,42 @@ class EmailVerificationTest extends TestCase
 
     // ---------------------------------------------------------------- 限制
 
-    public function test_features_mode_blocks_orders_tickets_and_withdrawals_after_the_grace_period(): void
+    public function test_features_mode_blocks_tickets_and_commission_but_never_orders(): void
     {
-        $user = $this->user(['email_verify_started_at' => time() - 15 * 86400]);
+        $user = $this->user(['email_verify_started_at' => time() - 15 * 86400, 'commission_balance' => 5000]);
         Sanctum::actingAs($user);
         $this->getJson('/api/v1/user/info')->assertOk()
             ->assertJsonPath('data.email_verification.restricted', true)
             ->assertJsonPath('data.email_verification.days_left', 0)
             ->assertJsonPath('data.email_verification.restrict_mode', 'features');
 
-        $blocked = $this->postJson('/api/v1/user/order/save', ['plan_id' => $this->plan->id, 'period' => 'monthly']);
+        // 下单 / 续费永远不拦（shannon：不要影响收钱）
+        $this->postJson('/api/v1/user/order/save', ['plan_id' => $this->plan->id, 'period' => 'monthly'])->assertOk();
+
+        // 普通工单要先验证，支付类工单放行
+        $blocked = $this->postJson('/api/v1/user/ticket/save', ['subject' => '测试', 'level' => 0, 'message' => '内容']);
         $blocked->assertStatus(403)->assertJsonPath('message', '请先验证您的邮箱')->assertJsonPath('error.reason', 'email_unverified');
-        $this->postJson('/api/v1/user/ticket/save', ['subject' => '测试', 'level' => 0, 'message' => '内容'])->assertStatus(403);
+        $this->postJson('/api/v1/user/ticket/save', ['subject' => '测试', 'level' => 0, 'message' => '内容', 'category' => 'connection'])->assertStatus(403);
+        $this->postJson('/api/v1/user/ticket/save', ['subject' => '付款没到账', 'level' => 0, 'message' => '订单已付款', 'category' => 'billing'])->assertOk();
+
+        // 佣金提现（新旧两个入口）和佣金转余额都挡
         $this->postJson('/api/v1/user/withdraw/apply', ['amount' => 1, 'chain' => 'TRC20', 'address' => 'x'])->assertStatus(403);
+        $this->postJson('/api/v1/user/ticket/withdraw', ['withdraw_method' => 'USDT', 'withdraw_account' => 'x'])->assertStatus(403);
+        $this->postJson('/api/v1/user/transfer', ['transfer_amount' => 100])->assertStatus(403);
+        $this->assertSame(5000, (int) $user->refresh()->commission_balance);
         // 订阅照常
         $this->assertFalse(EmailVerification::blocksSubscribe($user));
 
         // 宽限期内不挡
         $inGrace = $this->user(['email_verify_started_at' => time() - 86400]);
         Sanctum::actingAs($inGrace);
-        $this->postJson('/api/v1/user/order/save', ['plan_id' => $this->plan->id, 'period' => 'monthly'])->assertOk();
+        $this->postJson('/api/v1/user/ticket/save', ['subject' => '测试', 'level' => 0, 'message' => '内容'])->assertOk();
 
         // 验证之后解除
         EmailVerification::markVerified($user);
         Sanctum::actingAs($user);
-        $this->postJson('/api/v1/user/order/save', ['plan_id' => $this->plan->id, 'period' => 'monthly'])->assertOk();
+        $this->postJson('/api/v1/user/transfer', ['transfer_amount' => 100])->assertOk();
+        $this->assertSame(4900, (int) $user->refresh()->commission_balance);
 
         // 后台关掉限制
         $other = $this->user(['email_verify_started_at' => time() - 15 * 86400]);

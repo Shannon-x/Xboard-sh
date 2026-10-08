@@ -269,6 +269,8 @@ class UserController extends Controller
 
     public function transfer(UserTransfer $request)
     {
+        // 佣金转余额与佣金提现同属「拿佣金」，邮箱软验证受限时一起挡（下单付款不受影响）
+        EmailVerification::assertAllowed(User::findOrFail($request->user()->id));
         $amount = $request->input('transfer_amount');
         try {
             DB::transaction(function () use ($request, $amount) {

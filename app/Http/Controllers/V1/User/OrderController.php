@@ -78,6 +78,10 @@ class OrderController extends Controller
 
         $planService->validatePurchase($user, $request->input('period'));
 
+        if (!$request->boolean('confirm_repeat')) {
+            OrderService::assertNotRecentRepeat($user, $plan, (string) $request->input('period'));
+        }
+
         $order = OrderService::createFromRequest(
             $user,
             $plan,

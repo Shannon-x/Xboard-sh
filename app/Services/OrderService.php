@@ -34,6 +34,13 @@ class OrderService
      */
     private const REOPEN_MAX_LATE_SECONDS = 86400;
 
+    /**
+     * 同一用户刚开通过同套餐同周期的订单后，多久之内再下同样的单需要客户显式确认（秒）。
+     * 余额足额时「下单即扣款、付款即开通」，页面数据没刷新的客户会以为没买成功再点一次；
+     * 每一次都是合法新订单（上一单已完成，isNotCompleteOrderByUserId 拦不住），余额被连扣。
+     */
+    public const REPEAT_CONFIRM_SECONDS = 600;
+
     const STR_TO_TIME = [
         Plan::PERIOD_MONTHLY => 1,
         Plan::PERIOD_QUARTERLY => 3,
@@ -311,6 +318,31 @@ class OrderService
         } else { // 新购
             $order->type = Order::TYPE_NEW_PURCHASE;
         }
+    }
+
+    /**
+     * 拦下「刚买过同一套餐同一周期」的再次下单，等客户确认后（confirm_repeat）再放行。
+     * 只看已付款的单（开通中 / 已完成 / 已折抵）：待支付的单已由 isNotCompleteOrderByUserId 拦住，
+     * 已取消的单没有扣到钱。错误体带 reason=repeat_order 和那一单的单号，主题据此弹确认框重提。
+     */
+    public static function assertNotRecentRepeat(User $user, Plan $plan, string $period): void
+    {
+        $recent = Order::where('user_id', $user->id)
+            ->where('plan_id', $plan->id)
+            ->where('period', PlanService::getPeriodKey($period))
+            ->whereIn('status', [Order::STATUS_PROCESSING, Order::STATUS_COMPLETED, Order::STATUS_DISCOUNTED])
+            ->where('created_at', '>=', time() - self::REPEAT_CONFIRM_SECONDS)
+            ->orderByDesc('id')
+            ->first();
+        if (!$recent) {
+            return;
+        }
+        $minutes = max(1, (int) ceil((time() - (int) $recent->created_at) / 60));
+        throw new ApiException(
+            "你在 {$minutes} 分钟内已成功购买过同一套餐（订单 {$recent->trade_no}），为防止重复扣款，这次下单已暂停。确认还要再买一次请再次提交。",
+            400,
+            ['reason' => 'repeat_order', 'trade_no' => (string) $recent->trade_no, 'created_at' => (int) $recent->created_at],
+        );
     }
 
     /**

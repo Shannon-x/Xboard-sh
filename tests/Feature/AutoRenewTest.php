@@ -85,10 +85,13 @@ class AutoRenewTest extends TestCase
 
     private function completedOrder(User $user, Plan $plan, string $period, int $type = Order::TYPE_NEW_PURCHASE): Order
     {
-        return Order::create([
+        $order = Order::create([
             'user_id' => $user->id, 'plan_id' => $plan->id, 'period' => $period, 'type' => $type,
             'trade_no' => Helper::generateOrderNo(), 'total_amount' => 1000, 'status' => Order::STATUS_COMPLETED,
         ]);
+        // 夹具是上个周期买的单；刚买过同套餐同周期再下单要客户确认（见 RepeatOrderGuardTest）
+        Order::where('id', $order->id)->update(['created_at' => time() - 86400]);
+        return $order->refresh();
     }
 
     // ───────────────────────── 续费规格 ─────────────────────────

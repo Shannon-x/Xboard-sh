@@ -240,6 +240,17 @@ class ClashMeta extends AbstractProtocol
             return $group['proxies'];
         });
         $config['proxy-groups'] = array_values($config['proxy-groups']);
+        // REJECT 只用作防空组占位：自动测速类组有真实成员时把它挪到末尾，
+        // 否则冷启动或整轮测速失败时会回落到 proxies[0]=REJECT，整组断流直到下一轮测速
+        foreach ($config['proxy-groups'] as $k => $group) {
+            if (!in_array($group['type'] ?? '', ['url-test', 'fallback', 'load-balance'], true)) {
+                continue;
+            }
+            $members = array_values(array_filter($group['proxies'], fn($p) => $p !== 'REJECT'));
+            if ($members && count($members) < count($group['proxies'])) {
+                $config['proxy-groups'][$k]['proxies'] = array_merge($members, ['REJECT']);
+            }
+        }
         $config = $this->buildRules($config);
 
         $yaml = Yaml::dump($config, 2, 4, Yaml::DUMP_EMPTY_ARRAY_AS_SEQUENCE);

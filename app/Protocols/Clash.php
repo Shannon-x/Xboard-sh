@@ -103,6 +103,42 @@ class Clash extends AbstractProtocol
                 $config['proxy-groups'][$k]['proxies'] = array_merge($members, ['REJECT']);
             }
         }
+        // 只剩 REJECT 的自动测速组(客户端不支持池内任何节点，如 3.1 以前的 Stash 不支持 REALITY)：
+        // 删掉该组并从引用它的组里摘掉，让上层 select 落到下一个选项。
+        // 被规则直接引用、或摘掉后会让引用方变空/默认项变成 DIRECT、REJECT 的组保持原样
+        $ruleTargets = [];
+        foreach ($config['rules'] ?? [] as $rule) {
+            foreach (array_map('trim', explode(',', (string) $rule)) as $part) {
+                $ruleTargets[$part] = true;
+            }
+        }
+        do {
+            $changed = false;
+            foreach (array_keys($config['proxy-groups']) as $k) {
+                $group = $config['proxy-groups'][$k] ?? null;
+                if (!$group || !in_array($group['type'] ?? '', ['url-test', 'fallback', 'load-balance'], true)
+                    || $group['proxies'] !== ['REJECT'] || isset($ruleTargets[$group['name']])) {
+                    continue;
+                }
+                $refs = [];
+                foreach ($config['proxy-groups'] as $j => $other) {
+                    if ($j !== $k && in_array($group['name'], $other['proxies'], true)) {
+                        $rest = array_values(array_diff($other['proxies'], [$group['name']]));
+                        // 引用方会变空，或默认项会从该组变成 DIRECT/REJECT(静默直连比连不上更糟)时不删
+                        if (!$rest || ($other['proxies'][0] === $group['name'] && in_array($rest[0], ['DIRECT', 'REJECT'], true))) {
+                            continue 2;
+                        }
+                        $refs[] = $j;
+                    }
+                }
+                foreach ($refs as $j) {
+                    $config['proxy-groups'][$j]['proxies'] = array_values(array_diff($config['proxy-groups'][$j]['proxies'], [$group['name']]));
+                }
+                unset($config['proxy-groups'][$k]);
+                $changed = true;
+            }
+        } while ($changed);
+        $config['proxy-groups'] = array_values($config['proxy-groups']);
 
         $config = $this->buildRules($config);
 

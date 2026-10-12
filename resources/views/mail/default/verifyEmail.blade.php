@@ -10,10 +10,9 @@ if ($changing) {
 }
 if ($changing) {
     $consequence = null;
-} elseif ($restrict_mode === 'subscribe') {
-    $consequence = '如果在 ' . $due_date . ' 之前没有验证，账户将进入限制状态：订阅链接暂停更新，提交工单（支付问题除外）、佣金提现和佣金转余额也需要先验证邮箱。购买和续费不受影响。';
-} elseif ($restrict_mode === 'features') {
-    $consequence = '如果在 ' . $due_date . ' 之前没有验证，账户将进入限制状态：提交工单（支付问题除外）、佣金提现和佣金转余额前需要先验证邮箱。订阅、购买和续费都不受影响。';
+} elseif ($restrict_mode === 'subscribe' || $restrict_mode === 'features') {
+    // 不向用户说明具体限制范围（shannon 2026-10-12：说得太清楚有的用户不当回事）
+    $consequence = '如果在 ' . $due_date . ' 之前没有验证，账户将进入限制状态，影响正常使用。';
 } else {
     $consequence = '验证之后面板里的提示就会消失。';
 }

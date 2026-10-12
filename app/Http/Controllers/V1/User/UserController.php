@@ -143,6 +143,9 @@ class UserController extends Controller
                 'email_verify_started_at',
                 'email_verify_sent_at',
                 'email_verify_pending_email',
+                'email_verify_token_expires_at',
+                'email_verify_code',
+                'email_verify_code_attempts',
                 'auto_renew',
                 'expired_at',
                 'balance',
@@ -161,7 +164,8 @@ class UserController extends Controller
         $user['avatar_url'] = 'https://cdn.v2ex.com/gravatar/' . md5($user->email) . '?s=64&d=identicon';
         // 邮箱软验证状态（横幅、倒计时、限制态）；派生键，老前端不读
         $user['email_verification'] = EmailVerification::view($user);
-        unset($user['email_verify_sent_at'], $user['email_verify_pending_email']);
+        // 验证码哈希 / 计次 / 有效期只给 view() 派生 code_sent 用，不下发
+        unset($user['email_verify_sent_at'], $user['email_verify_pending_email'], $user['email_verify_token_expires_at'], $user['email_verify_code'], $user['email_verify_code_attempts']);
         if (!$request->boolean('include_addon_groups') && $user->plan_options) {
             $user->plan_options = array_intersect_key($user->plan_options, \App\Services\PlanCustomizationService::LIMITS);
         }

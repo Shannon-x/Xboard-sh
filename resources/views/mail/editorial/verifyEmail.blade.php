@@ -10,14 +10,19 @@ if ($changing) {
 }
 if ($changing) {
     $consequence = null;
-} elseif ($restrict_mode === 'subscribe') {
-    $consequence = '如果在 ' . $due_date . ' 之前没有验证，账户将进入限制状态：订阅链接暂停更新，提交工单（支付问题除外）、佣金提现和佣金转余额也需要先验证邮箱。购买和续费不受影响。';
-} elseif ($restrict_mode === 'features') {
-    $consequence = '如果在 ' . $due_date . ' 之前没有验证，账户将进入限制状态：提交工单（支付问题除外）、佣金提现和佣金转余额前需要先验证邮箱。订阅、购买和续费都不受影响。';
+} elseif ($restrict_mode === 'subscribe' || $restrict_mode === 'features') {
+    // 不向用户说明具体限制范围（shannon 2026-10-12：说得太清楚有的用户不当回事）
+    $consequence = '如果在 ' . $due_date . ' 之前没有验证，账户将进入限制状态，影响正常使用。';
 } else {
     $consequence = '验证之后面板里的提示就会消失。';
 }
-$note = '链接 ' . $token_days . ' 天内有效、只能使用一次；邮件里的按钮打不开时，登录面板后可以重新发送。如果这不是您的操作，忽略这封邮件即可，账户不会有任何变化。';
+$code = isset($code) && $code !== null && $code !== '' ? (string) $code : null;
+$codeHint = $changing
+    ? '按钮打不开时，登录面板后在提示栏里输入上面的验证码，同样可以完成更换。'
+    : '按钮打不开时，登录面板后在页面顶部的提示栏里输入上面的验证码，同样可以完成验证。';
+$note = $code !== null
+    ? '链接和验证码 ' . $token_days . ' 天内有效，链接只能使用一次，验证码输错 5 次作废；都不行时，登录面板后可以重新发送。如果这不是您的操作，忽略这封邮件即可，账户不会有任何变化。'
+    : '链接 ' . $token_days . ' 天内有效、只能使用一次；邮件里的按钮打不开时，登录面板后可以重新发送。如果这不是您的操作，忽略这封邮件即可，账户不会有任何变化。';
 @endphp
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
@@ -64,6 +69,22 @@ $note = '链接 ' . $token_days . ' 天内有效、只能使用一次；邮件�
                             </table>
                         </td>
                     </tr>
+                    @if ($code !== null)
+                    <!-- Code -->
+                    <tr>
+                        <td style="padding:28px 44px 0 44px;">
+                            <div style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#716a65;line-height:1.75;margin-bottom:10px;">{{ $changing ? '或者在面板里输入这个验证码：' : '或者登录面板，在提示栏里输入这个验证码：' }}</div>
+                            <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                                <tr>
+                                    <td style="background-color:#f5f3ef;border-radius:4px;padding:20px;text-align:center;">
+                                        <div style="font-family:'SF Mono',SFMono-Regular,ui-monospace,Menlo,Consolas,monospace;font-size:32px;letter-spacing:10px;color:#2a2520;font-weight:600;">{{ $code }}</div>
+                                    </td>
+                                </tr>
+                            </table>
+                            <div style="font-family:'Noto Sans SC',sans-serif;font-size:12px;color:#a09890;line-height:1.7;margin-top:8px;">{{ $codeHint }}</div>
+                        </td>
+                    </tr>
+                    @endif
                     @if ($consequence)
                     <!-- Consequence -->
                     <tr>

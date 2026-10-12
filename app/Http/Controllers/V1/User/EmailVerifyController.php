@@ -8,7 +8,9 @@ use App\Services\EmailVerification;
 use Illuminate\Http\Request;
 
 /**
- * 面板里的邮箱验证：重发验证邮件、申请换邮箱。真正的「验证通过」在免登录的 Guest\EmailVerifyController::confirm。
+ * 面板里的邮箱验证：重发验证邮件、申请换邮箱、输入邮件里的 6 位验证码。
+ * 链接式的「验证通过」在免登录的 Guest\EmailVerifyController::confirm；验证码式的在这里的 confirmCode（必须登录，
+ * 验证码只对自己这个账号有效，猜别人的验证码无从下手）。
  */
 class EmailVerifyController extends Controller
 {
@@ -51,5 +53,21 @@ class EmailVerifyController extends Controller
         }
         $result = EmailVerification::requestChange($user, (string) $request->input('email'), (string) $request->input('password'));
         return $this->success(['sent' => $result['sent'], 'resend_after' => $result['resend_after']] + ['status' => EmailVerification::view($user)]);
+    }
+
+    /** body: { code }：邮件里的 6 位验证码。对上就算验证通过（换邮箱的同时把邮箱换过去），输错 5 次作废 */
+    public function confirmCode(Request $request)
+    {
+        $request->validate(['code' => 'required|string|max:16']);
+        $user = User::find($request->user()->id);
+        if (!EmailVerification::enabled()) {
+            return $this->fail([400, __('Email verification is not enabled')]);
+        }
+        $result = EmailVerification::confirmCode($user, (string) $request->input('code'));
+        return $this->success([
+            'changed' => $result['changed'],
+            'email' => (string) $result['user']->email,
+            'status' => EmailVerification::view($result['user']->refresh()),
+        ]);
     }
 }

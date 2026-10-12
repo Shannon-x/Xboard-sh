@@ -49,6 +49,8 @@ class OrderService
         Plan::PERIOD_TWO_YEARLY => 24,
         Plan::PERIOD_THREE_YEARLY => 36
     ];
+    // 折抵计值里「一个月」按 30 天算（当前周期另有 28 天下限，见 getRemainingCycleRatios）。
+    private const SURPLUS_MONTH_SECONDS = 30 * 86400;
     public $order;
     public $user;
 
@@ -516,17 +518,16 @@ class OrderService
 
     private function getSurplusValueByPeriod(User $user, Order $order): void
     {
-        $periodMonths = fn(Order $item): int => self::STR_TO_TIME[PlanService::getPeriodKey((string) $item->period)] ?? 0;
         $completed = Order::query()
             ->where('user_id', $user->id)
             ->whereNotIn('period', [Plan::PERIOD_RESET_TRAFFIC, Plan::PERIOD_ONETIME])
             ->where('status', Order::STATUS_COMPLETED)
             ->orderByDesc('id')
             ->get()
-            ->filter(fn(Order $item) => $periodMonths($item) > 0);
+            ->filter(fn(Order $item) => self::periodMonths($item) > 0);
 
         $orders = $completed->filter(
-            fn(Order $item) => Carbon::createFromTimestamp($item->created_at)->addMonths($periodMonths($item))->timestamp > time()
+            fn(Order $item) => Carbon::createFromTimestamp($item->created_at)->addMonths(self::periodMonths($item))->timestamp > time()
         );
 
         // 「下单日 + 周期」只是订单覆盖期的近似：提前续费的单覆盖的是旧到期日之后那一段，
@@ -551,8 +552,8 @@ class OrderService
         // 单独退回余额（open() 内 user.balance += refund_amount）。因此 total+balance+surplus 已
         // 精确等于"消耗进该套餐的金额"，不能再减 refund_amount——否则退款被双扣（既进余额又从套餐
         // 折抵基数抹掉），客户每次"折抵超价退款"的套餐变更都会损失一笔=refund_amount 的钱。
-        $orderAmountSum = (int) $orders->sum(fn(Order $item) => max(0, (int) (($item->total_amount ?? 0) + ($item->balance_amount ?? 0) + ($item->surplus_amount ?? 0))));
-        $orderMonthSum = (int) $orders->sum(fn(Order $item) => self::STR_TO_TIME[PlanService::getPeriodKey((string) $item->period)] ?? 0);
+        $orderAmountSum = (int) $orders->sum(fn(Order $item) => self::paidIntoOrder($item));
+        $orderMonthSum = (int) $orders->sum(fn(Order $item) => self::periodMonths($item));
         if ($orderAmountSum <= 0 || $orderMonthSum <= 0) {
             $order->surplus_amount = 0;
             $order->surplus_order_ids = $orders->pluck('id')->all();
@@ -567,19 +568,86 @@ class OrderService
             return;
         }
 
-        $monthlyAmount = $orderAmountSum / $orderMonthSum;
         $trafficRatio = $this->getCurrentCycleTrafficRatio($user);
-        [$currentCycleTimeRatio, $futureCycleRatio] = $this->getRemainingCycleRatios($user, $now, $expiredAt);
+        [$currentCycleTimeRatio, , $cycleEnd] = $this->getRemainingCycleRatios($user, $now, $expiredAt);
 
-        $currentCycleValue = $monthlyAmount * min($currentCycleTimeRatio, $trafficRatio);
-        $futureCycleValue = $monthlyAmount * $futureCycleRatio;
-        $surplusAmount = min($orderAmountSum, $currentCycleValue + $futureCycleValue);
+        // 不能把几张单的钱、月数各自求和取均价再统一计值：续费是叠在旧周期后面的，旧单覆盖眼前这段、
+        // 新单覆盖后面那段，均价会把两段的价格搅在一起——后一期更贵（续费带上增值线路、涨价后续费）
+        // 就少折，更便宜就多折。#3440：¥50 旧单只剩几分钟 + ¥96 续费单一天没用，均价 ¥73 只折了
+        // ¥75.55，应约 ¥96。改为逐张订单按各自月单价计值，见 valueRemainingByOrder()。
+        $surplusAmount = min($orderAmountSum, $this->valueRemainingByOrder(
+            $orders->values()->all(), $now, $cycleEnd, $expiredAt, min($currentCycleTimeRatio, $trafficRatio)
+        ));
         if ($fallback) {
             $surplusAmount = min($surplusAmount, max(0, (int) $order->total_amount));
         }
 
         $order->surplus_amount = (int) max(0, $surplusAmount);
         $order->surplus_order_ids = $orders->pluck('id')->all();
+    }
+
+    /**
+     * 剩余时间逐张订单计值。
+     *
+     * 续费叠加在旧到期日之后，剩余时间 [now, expiredAt] 里越靠后的一段越是由越新的订单付的钱。
+     * 从 expiredAt 往前，每张单（由新到旧）认领自己周期长度（日历月，与 getTime() 开通时一致）的一段：
+     *   - 落在当前周期之后的部分：按这张单实际覆盖的时长折算它的实付——一天没用的整月续费单就值它的实付；
+     *   - 落在当前周期内的部分：当前周期整体按 min(剩余时间比, 剩余流量比) 打折，再按秒数分摊到各单。
+     * 最老的一张不限段长，兜住剩下的全部时间（补偿/延期天数等），并沿用原公式的口径（月单价 × 秒数 / 30 天），
+     * 所以只有一张单时结果与原来的均价公式逐分一致。
+     * 任何一张单的计值都不超过它自己的实付：多出来的时间不会让一张单比买它花的钱还"值钱"。
+     *
+     * @param Order[] $orders 由新到旧（id 倒序）
+     */
+    private function valueRemainingByOrder(array $orders, int $now, int $cycleEnd, int $expiredAt, float $currentCycleValueRatio): float
+    {
+        $currentSeconds = max(0, $cycleEnd - $now);
+        $oldest = count($orders) - 1;
+        $segmentEnd = $expiredAt;
+        $value = 0.0;
+        foreach ($orders as $index => $item) {
+            if ($segmentEnd <= $now) {
+                break;
+            }
+            $months = self::periodMonths($item);
+            if ($months <= 0) {
+                continue;
+            }
+            $paid = self::paidIntoOrder($item);
+            $unitAmount = $paid / $months;
+            if ($index === $oldest) {
+                $segmentStart = $now;
+                $futurePart = max(0, $segmentEnd - max($segmentStart, $cycleEnd));
+                $itemValue = $unitAmount * ($futurePart / self::SURPLUS_MONTH_SECONDS);
+            } else {
+                $coverStart = Carbon::createFromTimestamp($segmentEnd)->subMonthsNoOverflow($months)->timestamp;
+                $segmentStart = max($now, $coverStart);
+                $futurePart = max(0, $segmentEnd - max($segmentStart, $cycleEnd));
+                $itemValue = $paid * ($futurePart / max(1, $segmentEnd - $coverStart));
+            }
+            $currentPart = max(0, min($segmentEnd, $cycleEnd) - $segmentStart);
+            if ($currentSeconds > 0) {
+                $itemValue += $unitAmount * $currentCycleValueRatio * ($currentPart / $currentSeconds);
+            }
+            $value += min($paid, $itemValue);
+            $segmentEnd = $segmentStart;
+        }
+
+        return $value;
+    }
+
+    /**
+     * 消耗进这张单的钱。surplus_amount 已在 applySurplusDiscount() 被封顶到订单价，超出部分作为
+     * refund_amount 单独退回余额，所以这里不能再减 refund_amount（否则退款被双扣）。
+     */
+    private static function paidIntoOrder(Order $item): int
+    {
+        return max(0, (int) (($item->total_amount ?? 0) + ($item->balance_amount ?? 0) + ($item->surplus_amount ?? 0)));
+    }
+
+    private static function periodMonths(Order $item): int
+    {
+        return self::STR_TO_TIME[PlanService::getPeriodKey((string) $item->period)] ?? 0;
     }
 
     private function getCurrentCycleTrafficRatio(User $user): float
@@ -611,9 +679,12 @@ class OrderService
         return max($userTraffic, $planTraffic);
     }
 
+    /**
+     * @return array{0: float, 1: float, 2: int} [当前周期剩余比例, 未来周期月数(30 天口径), 当前周期结束时间]
+     */
     private function getRemainingCycleRatios(User $user, int $now, int $expiredAt): array
     {
-        $monthSeconds = 30 * 86400;
+        $monthSeconds = self::SURPLUS_MONTH_SECONDS;
         $cycleEnd = (int) ($user->next_reset_at ?: 0);
 
         if ($cycleEnd <= $now || $cycleEnd > $expiredAt) {
@@ -635,6 +706,7 @@ class OrderService
         return [
             min(1, $currentRemainSeconds / $cycleSeconds),
             $futureSeconds / $monthSeconds,
+            $cycleEnd,
         ];
     }
 

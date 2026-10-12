@@ -19,6 +19,9 @@ use Illuminate\Support\Facades\Hash;
  *
  *   · 注册成功、或订单付款开通后，把用户纳入验证流程：记下 started_at，
  *     往邮箱发一封带一次性链接的邮件（/verify-email/<凭据>，凭据 128 位随机，库里只存 SHA-256，7 天有效）。
+ *     同一封邮件里还附一个 6 位验证码（与链接同时签发、同时过期，库里同样只存 SHA-256）：
+ *     链接点不开的人（邮件客户端禁用了链接、安全扫描先替用户点掉了一次性链接、浏览器没反应），
+ *     登录面板后在提示栏里输入验证码也能完成验证；输错 5 次作废，重新发送一封即可。
  *   · 面板常驻横幅：剩余几天、重新发送（60 秒冷却、每天最多 5 封）、更换邮箱（新邮箱收到链接点开才真正换）。
  *   · 宽限期（email_verify_grace_days，默认 14 天）过后进入「限制状态」，限制什么由 email_verify_restrict_mode 定：
  *       features   订阅照常，但新建工单（「支付与订单」类除外）、佣金提现、佣金转余额前必须先验证（默认）
@@ -53,6 +56,8 @@ final class EmailVerification
     public const RESEND_COOLDOWN = 60;
     /** 每位用户每天最多发几封验证邮件（含换邮箱） */
     public const DAILY_LIMIT = 5;
+    /** 同一个验证码最多允许输错几次，错满作废（6 位数字一共一百万种，限次之后猜中的概率是百万分之五） */
+    public const CODE_MAX_ATTEMPTS = 5;
 
     /** 测试里替换 DNS 查询：fn(string $domain): ?bool（true 有记录 / false 没有 / null 查不到） */
     public static $dnsResolver = null;
@@ -179,7 +184,36 @@ final class EmailVerification
             'resend_after' => $resendAfter > $now ? $resendAfter : 0,
             'pending_email' => $user->email_verify_pending_email ? NotificationPreference::maskEmail((string) $user->email_verify_pending_email) : null,
             'mail_suppressed' => $user->mail_suppressed_at !== null,
+            // 面板上的验证码输入框只在「有一个还没过期、还没错满的验证码」时出现
+            'code_sent' => $pending && self::codeUsable($user),
+            'code_attempts_left' => $pending && self::codeUsable($user)
+                ? max(0, self::CODE_MAX_ATTEMPTS - (int) $user->email_verify_code_attempts)
+                : 0,
         ];
+    }
+
+    /** 库里有验证码、链接周期没过期、还没错满 */
+    private static function codeUsable(User $user): bool
+    {
+        if ($user->email_verify_code === null) {
+            return false;
+        }
+        if ($user->email_verify_token_expires_at !== null && (int) $user->email_verify_token_expires_at < time()) {
+            return false;
+        }
+        return (int) $user->email_verify_code_attempts < self::CODE_MAX_ATTEMPTS;
+    }
+
+    /** 验证码存库的形态：带用户 id 的 SHA-256，库里不存明文 */
+    private static function codeHash(User $user, string $code): string
+    {
+        return hash('sha256', $user->id . ':' . $code);
+    }
+
+    /** 6 位数字验证码，首位允许 0 */
+    private static function newCode(): string
+    {
+        return str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
     }
 
     // ---------------------------------------------------------------- 纳入 / 通过
@@ -212,6 +246,8 @@ final class EmailVerification
             'email_verified_at' => time(),
             'email_verify_token' => null,
             'email_verify_token_expires_at' => null,
+            'email_verify_code' => null,
+            'email_verify_code_attempts' => 0,
             'email_verify_pending_email' => null,
         ];
         if ($source !== null && $user->email_verify_source === null) {
@@ -230,6 +266,8 @@ final class EmailVerification
             'email_verify_source' => self::SOURCE_ADMIN,
             'email_verify_token' => null,
             'email_verify_token_expires_at' => null,
+            'email_verify_code' => null,
+            'email_verify_code_attempts' => 0,
             'email_verify_reminded_at' => null,
             'email_verify_pending_email' => null,
         ];
@@ -263,9 +301,12 @@ final class EmailVerification
         Cache::put($dayKey, $count + 1, 86400);
 
         $token = bin2hex(random_bytes(16));
+        $code = self::newCode();
         $data = [
             'email_verify_token' => hash('sha256', $token),
             'email_verify_token_expires_at' => $now + self::TOKEN_TTL,
+            'email_verify_code' => self::codeHash($user, $code),
+            'email_verify_code_attempts' => 0,
             'email_verify_sent_at' => $now,
             'email_verify_pending_email' => $newEmail,
         ];
@@ -287,6 +328,7 @@ final class EmailVerification
                 'name' => $name,
                 'url' => admin_setting('app_url'),
                 'link' => self::link($token),
+                'code' => $code,
                 'email' => $to,
                 'changing' => $changing,
                 'reminder' => false,
@@ -307,9 +349,12 @@ final class EmailVerification
         }
         $now = time();
         $token = bin2hex(random_bytes(16));
+        $code = self::newCode();
         $data = [
             'email_verify_token' => hash('sha256', $token),
             'email_verify_token_expires_at' => $now + self::TOKEN_TTL,
+            'email_verify_code' => self::codeHash($user, $code),
+            'email_verify_code_attempts' => 0,
             'email_verify_sent_at' => $now,
             'email_verify_reminded_at' => $now,
             'email_verify_pending_email' => null,
@@ -326,6 +371,7 @@ final class EmailVerification
                 'name' => $name,
                 'url' => admin_setting('app_url'),
                 'link' => self::link($token),
+                'code' => $code,
                 'email' => (string) $user->email,
                 'changing' => false,
                 'reminder' => true,
@@ -412,6 +458,54 @@ final class EmailVerification
         if ($user->email_verify_token_expires_at !== null && (int) $user->email_verify_token_expires_at < time()) {
             return null;
         }
+        return self::complete($user);
+    }
+
+    /**
+     * 面板里输入邮件中的 6 位验证码（用户已登录，验证码只对自己这个账号有效）。
+     * 成功返回 ['user' => User, 'changed' => bool]；没有可用的验证码 / 已过期 / 已错满 → 抛业务异常，
+     * 输错 → 记一次并抛业务异常（错满 5 次作废，必须重新发送）。
+     */
+    public static function confirmCode(User $user, string $code): array
+    {
+        $code = trim($code);
+        if (!preg_match('/^[0-9]{6}$/', $code)) {
+            throw new ApiException(__('Please enter the 6-digit verification code from the email'), 422);
+        }
+        if (self::isVerified($user)) {
+            throw new ApiException(__('Your email address is already verified'), 400);
+        }
+        if ($user->email_verify_code === null) {
+            throw new ApiException(__('No verification code is active, please send a new verification email'), 400);
+        }
+        if ($user->email_verify_token_expires_at !== null && (int) $user->email_verify_token_expires_at < time()) {
+            throw new ApiException(__('The verification code has expired, please send a new verification email'), 400);
+        }
+        if ((int) $user->email_verify_code_attempts >= self::CODE_MAX_ATTEMPTS) {
+            throw new ApiException(__('Too many wrong attempts, please send a new verification email'), 400);
+        }
+        if (!hash_equals((string) $user->email_verify_code, self::codeHash($user, $code))) {
+            $attempts = (int) $user->email_verify_code_attempts + 1;
+            // 错满作废：验证码本身也清掉，面板的输入框随之收起
+            $data = $attempts >= self::CODE_MAX_ATTEMPTS
+                ? ['email_verify_code' => null, 'email_verify_code_attempts' => $attempts]
+                : ['email_verify_code_attempts' => $attempts];
+            User::where('id', $user->id)->update($data);
+            $user->forceFill($data);
+            if ($attempts >= self::CODE_MAX_ATTEMPTS) {
+                throw new ApiException(__('Too many wrong attempts, please send a new verification email'), 400);
+            }
+            throw new ApiException(__('The verification code is incorrect, :n attempts left', ['n' => self::CODE_MAX_ATTEMPTS - $attempts]), 422);
+        }
+        return self::complete($user);
+    }
+
+    /**
+     * 链接或验证码对上之后的共同收尾：换邮箱的把新地址换上去，记已验证，退信暂停解除。
+     * 换邮箱时再查一次新地址有没有被别人注册掉。
+     */
+    private static function complete(User $user): array
+    {
         $changed = false;
         $pendingEmail = $user->email_verify_pending_email ? strtolower((string) $user->email_verify_pending_email) : null;
         if ($pendingEmail !== null && $pendingEmail !== strtolower((string) $user->email)) {
@@ -423,7 +517,7 @@ final class EmailVerification
             $changed = true;
         }
         self::markVerified($user);
-        // 链接能点开说明这个地址收得到信：之前因退信暂停的投递可以恢复
+        // 链接能点开 / 验证码能抄过来，说明这个地址收得到信：之前因退信暂停的投递可以恢复
         if ($user->mail_suppressed_at !== null) {
             DeliveryMonitor::unsuppress($user);
         }

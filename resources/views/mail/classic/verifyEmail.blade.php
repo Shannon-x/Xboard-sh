@@ -17,7 +17,13 @@ if ($changing) {
 } else {
     $consequence = '验证之后面板里的提示就会消失。';
 }
-$note = '链接 ' . $token_days . ' 天内有效、只能使用一次；邮件里的按钮打不开时，登录面板后可以重新发送。如果这不是您的操作，忽略这封邮件即可，账户不会有任何变化。';
+$code = isset($code) && $code !== null && $code !== '' ? (string) $code : null;
+$codeHint = $changing
+    ? '按钮打不开时，登录面板后在提示栏里输入上面的验证码，同样可以完成更换。'
+    : '按钮打不开时，登录面板后在页面顶部的提示栏里输入上面的验证码，同样可以完成验证。';
+$note = $code !== null
+    ? '链接和验证码 ' . $token_days . ' 天内有效，链接只能使用一次，验证码输错 5 次作废；都不行时，登录面板后可以重新发送。如果这不是您的操作，忽略这封邮件即可，账户不会有任何变化。'
+    : '链接 ' . $token_days . ' 天内有效、只能使用一次；邮件里的按钮打不开时，登录面板后可以重新发送。如果这不是您的操作，忽略这封邮件即可，账户不会有任何变化。';
 @endphp
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -152,11 +158,23 @@ $note = '链接 ' . $token_days . ' 天内有效、只能使用一次；邮件�
                                     <tr
                                         style="font-family: 'Helvetica Neue',Helvetica,Arial,sans-serif; box-sizing: border-box; font-size: 14px; margin: 0;">
                                         <td class="content-block"
-                                            style="font-family: 'Helvetica Neue',Helvetica,Arial,sans-serif; box-sizing: border-box; font-size: 36px; font-weight: bold; text-align: center; color: #4a4a4a; vertical-align: top; line-height: 1.6em; margin: 0; padding: 0 0 20px;"
+                                            style="font-family: 'Helvetica Neue',Helvetica,Arial,sans-serif; box-sizing: border-box; font-size: 14px; color: #4a4a4a; vertical-align: top; margin: 0; padding: 0 0 20px; word-break: break-all;"
                                             valign="top">
-                                            <a href="{{$link}}">{{$link}}</a>
+                                            {{ $changing ? '确认链接' : '验证链接' }}：<a href="{{$link}}" style="color: #0073ba;">{{$link}}</a>
                                         </td>
                                     </tr>
+                                    @if ($code !== null)
+                                    <tr
+                                        style="font-family: 'Helvetica Neue',Helvetica,Arial,sans-serif; box-sizing: border-box; font-size: 14px; margin: 0;">
+                                        <td class="content-block"
+                                            style="font-family: 'Helvetica Neue',Helvetica,Arial,sans-serif; box-sizing: border-box; font-size: 14px; color: #4a4a4a; vertical-align: top; text-align: center; margin: 0; padding: 0 0 20px;"
+                                            valign="top">
+                                            {{ $changing ? '或者在面板里输入这个验证码：' : '或者登录面板，在提示栏里输入这个验证码：' }}<br>
+                                            <span style="display: inline-block; margin-top: 8px; font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #0073ba; font-family: Menlo, Consolas, monospace;">{{ $code }}</span><br>
+                                            <span style="color: #999; font-size: 12px;">{{ $codeHint }}</span>
+                                        </td>
+                                    </tr>
+                                    @endif
                                     <tr
                                         style="font-family: 'Helvetica Neue',Helvetica,Arial,sans-serif; box-sizing: border-box; font-size: 14px; margin: 0;">
                                         <td class="content-block"
@@ -170,7 +188,7 @@ $note = '链接 ' . $token_days . ' 天内有效、只能使用一次；邮件�
                                         <td class="content-block"
                                             style="font-family: 'Helvetica Neue',Helvetica,Arial,sans-serif; box-sizing: border-box; font-size: 14px; text-align: center; vertical-align: top; margin: 0; padding: 0 0 20px;"
                                             valign="top">
-                                            <a href="{{$url}}"
+                                            <a href="{{$link}}"
                                                 class="btn-primary"
                                                 style="font-family: 'Helvetica Neue',Helvetica,Arial,sans-serif; box-sizing: border-box; font-size: 14px; color: #fff; text-decoration: none; line-height: 2em; font-weight: bold; text-align: center; cursor: pointer; display: inline-block; border-radius: 5px; text-transform: capitalize; background-color: #0073ba; margin: 0; border-color: #0073ba; border-style: solid; border-width: 8px 20px;">{{ $changing ? '确认新邮箱' : '验证邮箱' }}</a>
                                         </td>

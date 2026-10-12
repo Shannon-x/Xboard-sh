@@ -2,11 +2,11 @@
 /* 三套模板共用的文案：主题块 / 正文 / 说明 */
 $title = $changing ? '确认新邮箱' : ($reminder ? '提醒：请验证您的邮箱' : '请验证您的邮箱');
 if ($changing) {
-    $intro = '您在 ' . $name . ' 申请将账户邮箱换成 ' . $email . '。点击下方按钮确认，确认后新邮箱立即生效，之前的邮箱不再收到任何通知。';
+    $intro = '您在 ' . $name . ' 申请将账户邮箱换成 ' . $email . '。点击下方链接确认，确认后新邮箱立即生效，之前的邮箱不再收到任何通知。';
 } elseif ($reminder) {
-    $intro = '您在 ' . $name . ' 的账户邮箱还没有验证，宽限期将于 ' . $due_date . ' 结束。点一下下方按钮即可完成，之后收据、续费账单和服务通知都会发到这个邮箱。';
+    $intro = '您在 ' . $name . ' 的账户邮箱还没有验证，宽限期将于 ' . $due_date . ' 结束。点一下下方链接即可完成，之后收据、续费账单和服务通知都会发到这个邮箱。';
 } else {
-    $intro = '感谢使用 ' . $name . '。为了确保收据、续费账单和服务通知能送达，请点击下方按钮验证这个邮箱（' . $email . '）。';
+    $intro = '感谢使用 ' . $name . '。为了确保收据、续费账单和服务通知能送达，请点击下方链接验证这个邮箱（' . $email . '）。';
 }
 if ($changing) {
     $consequence = null;
@@ -17,7 +17,13 @@ if ($changing) {
 } else {
     $consequence = '验证之后面板里的提示就会消失。';
 }
-$note = '链接 ' . $token_days . ' 天内有效、只能使用一次；邮件里的按钮打不开时，登录面板后可以重新发送。如果这不是您的操作，忽略这封邮件即可，账户不会有任何变化。';
+$code = isset($code) && $code !== null && $code !== '' ? (string) $code : null;
+$codeHint = $changing
+    ? '按钮打不开时，登录面板后在提示栏里输入上面的验证码，同样可以完成更换。'
+    : '按钮打不开时，登录面板后在页面顶部的提示栏里输入上面的验证码，同样可以完成验证。';
+$note = $code !== null
+    ? '链接和验证码 ' . $token_days . ' 天内有效，链接只能使用一次，验证码输错 5 次作废；都不行时，登录面板后可以重新发送。如果这不是您的操作，忽略这封邮件即可，账户不会有任何变化。'
+    : '链接 ' . $token_days . ' 天内有效、只能使用一次；邮件里的按钮打不开时，登录面板后可以重新发送。如果这不是您的操作，忽略这封邮件即可，账户不会有任何变化。';
 @endphp
 <div style="background: #eee">
     <table width="600" border="0" align="center" cellpadding="0" cellspacing="0">
@@ -43,7 +49,16 @@ $note = '链接 ' . $token_days . ' 天内有效、只能使用一次；邮件�
                                 {{ $intro }}
                                 <br />
                                 <br />
-                                <a href="{{$link}}">{{$link}}</a>
+                                {{ $changing ? '确认链接' : '验证链接' }}：<a href="{{$link}}">{{$link}}</a>
+                                @if ($code !== null)
+                                <br />
+                                <br />
+                                {{ $changing ? '或者在面板里输入这个验证码：' : '或者登录面板，在提示栏里输入这个验证码：' }}
+                                <br />
+                                <span style="display:inline-block;margin-top:8px;font-size:28px;font-weight:bold;letter-spacing:6px;color:#415A94;font-family:Menlo,Consolas,monospace;">{{ $code }}</span>
+                                <br />
+                                <span style="color:#999;font-size:12px">{{ $codeHint }}</span>
+                                @endif
                                 @if ($consequence)
                                 <br />
                                 <br />

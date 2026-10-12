@@ -103,6 +103,9 @@ class UserRoute
                 ->middleware('throttle:email-verify-send');
             $router->post('/email-verify/change', [EmailVerifyController::class, 'change'])
                 ->middleware('throttle:email-verify-send');
+            // 输入邮件里的 6 位验证码（登记进中间件路径表）。服务层按验证码计错满 5 次作废，这里只防刷
+            $router->post('/email-verify/confirm-code', [EmailVerifyController::class, 'confirmCode'])
+                ->middleware('throttle:email-verify-code');
             // Server
             $router->get('/server/fetch', [ServerController::class, 'fetch']);
             // Coupon

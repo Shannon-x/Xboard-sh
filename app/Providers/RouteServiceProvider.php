@@ -191,6 +191,11 @@ class RouteServiceProvider extends ServiceProvider
             $key = $request->user()?->id ? 'u:' . $request->user()->id : 'ip:' . $request->ip();
             return Limit::perMinute(5)->by('email_verify_send:' . $key);
         });
+        // 填验证码：服务层按验证码错满 5 次作废，这里放宽到每分钟 20 次只防脚本撞库
+        RateLimiter::for('email-verify-code', function (Request $request) {
+            $key = $request->user()?->id ? 'u:' . $request->user()->id : 'ip:' . $request->ip();
+            return Limit::perMinute(20)->by('email_verify_code:' . $key);
+        });
     }
 
     /**

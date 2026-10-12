@@ -123,13 +123,13 @@ class EmailVerificationTest extends TestCase
             ->assertJsonPath('data.email_verification.restricted', false)
             ->assertJsonPath('data.email_verification.days_left', 14);
 
-        // 免登录确认：一次有效
+        // 免登录确认；同一条链接再点（页面二次加载）幂等地回「已验证」，不再 404
         $this->postJson('/api/v1/guest/email-verify/confirm', ['token' => $token])->assertOk()
             ->assertJsonPath('data.changed', false);
         $user->refresh();
         $this->assertNotNull($user->email_verified_at);
-        $this->assertNull($user->email_verify_token);
-        $this->postJson('/api/v1/guest/email-verify/confirm', ['token' => $token])->assertStatus(404);
+        $this->assertNotNull($user->email_verify_token);
+        $this->postJson('/api/v1/guest/email-verify/confirm', ['token' => $token])->assertOk()->assertJsonPath('data.changed', false);
         $this->postJson('/api/v1/guest/email-verify/confirm', ['token' => str_repeat('0', 32)])->assertStatus(404);
         $this->getJson('/api/v1/user/info')->assertOk()->assertJsonPath('data.email_verification.verified', true);
     }
@@ -168,7 +168,8 @@ class EmailVerificationTest extends TestCase
         $user->refresh();
         $this->assertNotNull($user->email_verified_at);
         $this->assertNull($user->email_verify_code);
-        $this->assertNull($user->email_verify_token);
+        // 验证码作废；同一封邮件里的链接再点只会看到「已验证」
+        $this->postJson('/api/v1/guest/email-verify/confirm', ['token' => $this->lastLinkToken()])->assertOk()->assertJsonPath('data.changed', false);
         $this->postJson('/api/v1/user/email-verify/confirm-code', ['code' => $code])->assertStatus(400);
         $this->getJson('/api/v1/user/info')->assertOk()->assertJsonPath('data.email_verification.verified', true);
     }
@@ -204,6 +205,23 @@ class EmailVerificationTest extends TestCase
         $this->getJson('/api/v1/user/info')->assertOk()->assertJsonPath('data.email_verification.code_sent', false);
         User::where('id', $user->id)->update(['email_verify_token_expires_at' => time() + 3600]);
         $this->postJson('/api/v1/user/email-verify/confirm-code', ['code' => $fresh])->assertOk()->assertJsonPath('data.status.verified', true);
+    }
+
+    public function test_a_used_link_keeps_answering_verified_until_it_expires(): void
+    {
+        $user = $this->user();
+        Sanctum::actingAs($user);
+        $this->postJson('/api/v1/user/email-verify/send')->assertOk();
+        $token = $this->lastLinkToken();
+        $this->postJson('/api/v1/guest/email-verify/confirm', ['token' => $token])->assertOk();
+        $verifiedAt = (int) $user->fresh()->email_verified_at;
+        // 邮件 App / QQ 内置浏览器把页面加载两次、用户再点一次：仍回成功，什么都不改
+        $this->postJson('/api/v1/guest/email-verify/confirm', ['token' => $token])->assertOk()->assertJsonPath('data.changed', false);
+        $this->assertSame($verifiedAt, (int) $user->fresh()->email_verified_at);
+        $this->getJson('/api/v1/user/info')->assertOk()->assertJsonPath('data.email_verification.verified', true);
+        // 到期后不再认
+        User::where('id', $user->id)->update(['email_verify_token_expires_at' => time() - 1]);
+        $this->postJson('/api/v1/guest/email-verify/confirm', ['token' => $token])->assertStatus(404);
     }
 
     public function test_the_change_email_code_swaps_the_address_like_the_link_does(): void

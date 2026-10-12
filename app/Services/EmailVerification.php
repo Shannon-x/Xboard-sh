@@ -242,10 +242,12 @@ final class EmailVerification
 
     public static function markVerified(User $user, ?string $source = null): void
     {
+        // 链接凭据刻意不清：邮件 App / QQ 内置浏览器常把验证页加载两次（预加载一次、用户看到的一次），
+        // 用户再点一次旧链接也很常见。线上 97% 的 confirm 404 都发生在同一人刚成功之后几秒到几分钟内，
+        // 页面却显示「链接已失效」，用户以为没验上。凭据在到期前继续被 confirm() 认出，只回「已验证」、
+        // 不再改任何东西（见 confirm）。验证码则立刻作废。
         $data = [
             'email_verified_at' => time(),
-            'email_verify_token' => null,
-            'email_verify_token_expires_at' => null,
             'email_verify_code' => null,
             'email_verify_code_attempts' => 0,
             'email_verify_pending_email' => null,
@@ -457,6 +459,10 @@ final class EmailVerification
         }
         if ($user->email_verify_token_expires_at !== null && (int) $user->email_verify_token_expires_at < time()) {
             return null;
+        }
+        // 已经验证过的用户再点同一条链接（页面二次加载 / 再点一次）：幂等地回「已验证」，什么都不改
+        if (self::isVerified($user)) {
+            return ['user' => $user, 'changed' => false];
         }
         return self::complete($user);
     }

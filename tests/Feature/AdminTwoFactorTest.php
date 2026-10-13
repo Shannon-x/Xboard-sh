@@ -277,17 +277,20 @@ class AdminTwoFactorTest extends TestCase
         [$admin, $secret] = $this->enrolledAdmin();
         $auth = (new AuthService($admin))->generateAdminAuthData('1.2.3.4', 'Mozilla/5.0 Test')['auth_data'];
         $other = (new AuthService($admin))->generateAdminAuthData('5.6.7.8', 'Mozilla/5.0 Other')['auth_data'];
-        $userPanel = (new AuthService($admin))->generateAuthData()['auth_data'];
+        $userPanel = (new AuthService($admin))->generateAuthData('9.9.9.9', 'Mozilla/5.0 Panel')['auth_data'];
         $h = ['Authorization' => $auth];
 
-        // 会话列表：3 条，当前会话有标记，用户面板的会话不带 admin
+        // 会话列表：只列 2 条后台会话（当前的排第一），用户面板的会话只给计数与最近一条的 IP
         $sessions = $this->withHeaders($h)->getJson($this->adminPath('/security/sessions'));
         $sessions->assertOk();
-        $rows = collect($sessions->json('data'));
-        $this->assertCount(3, $rows);
+        $rows = collect($sessions->json('data.sessions'));
+        $this->assertCount(2, $rows);
+        $this->assertTrue($rows->first()['current']);
         $this->assertSame(1, $rows->where('current', true)->count());
         $this->assertSame(2, $rows->where('admin', true)->count());
         $this->assertSame('1.2.3.4', $rows->firstWhere('current', true)['ip']);
+        $this->assertSame(1, $sessions->json('data.user_sessions.count'));
+        $this->assertSame('9.9.9.9', $sessions->json('data.user_sessions.latest_ip'));
 
         // 重新绑定要先验当前验证码。下面每一步之间都清掉防重放记录（同一秒内只有一个时间步的码可用），
         // 重放本身在上面的用例里单独验证。
@@ -341,6 +344,99 @@ class AdminTwoFactorTest extends TestCase
         // 审计日志里不出现验证码
         $this->assertSame(0, AdminAuditLog::where('request_data', 'like', '%' . Totp::codeAt($newSecret, $step) . '%')->count());
         $this->assertSame(0, AdminAuditLog::where('request_data', 'like', '%' . Totp::codeAt($secret, $step) . '%')->count());
+    }
+
+    public function test_api_tokens_let_integrations_poll_without_password_login(): void
+    {
+        [$admin, $secret] = $this->enrolledAdmin();
+        $auth = (new AuthService($admin))->generateAdminAuthData('1.2.3.4', 'Mozilla/5.0 Test')['auth_data'];
+        $h = ['Authorization' => $auth];
+
+        // 签发要验证码；错的拒绝
+        $this->withHeaders($h)->postJson($this->adminPath('/security/api-tokens/create'), ['name' => '订单通知', 'scope' => 'read', 'otp' => '000000'])->assertStatus(400);
+        $read = $this->withHeaders($h)->postJson($this->adminPath('/security/api-tokens/create'), ['name' => '订单通知', 'scope' => 'read', 'otp' => Totp::codeAt($secret, Totp::currentStep())]);
+        $read->assertOk()->assertJsonPath('data.scope', 'read')->assertJsonPath('data.name', '订单通知');
+        $readAuth = $read->json('data.auth_data');
+        $this->assertStringStartsWith('Bearer ', $readAuth);
+        AdminTwoFactor::where('user_id', $admin->id)->update(['last_used_step' => null]);
+        $full = $this->withHeaders($h)->postJson($this->adminPath('/security/api-tokens/create'), ['name' => '工单机器人', 'scope' => 'full', 'otp' => Totp::codeAt($secret, Totp::currentStep())]);
+        $full->assertOk()->assertJsonPath('data.scope', 'full');
+        $fullAuth = $full->json('data.auth_data');
+        $this->assertNull(PersonalAccessToken::find($read->json('data.id'))->expires_at);
+
+        // 列表里有两条接口令牌；会话列表不含它们
+        $list = $this->withHeaders($h)->getJson($this->adminPath('/security/api-tokens'));
+        $list->assertOk();
+        $this->assertSame(['工单机器人', '订单通知'], collect($list->json('data'))->pluck('name')->all());
+        $this->assertCount(1, $this->withHeaders($h)->getJson($this->adminPath('/security/sessions'))->json('data.sessions'));
+
+        // 只读令牌：GET 与 POST …/fetch 可以，写操作 403，账号安全页 403
+        app('auth')->forgetGuards();
+        $this->withHeader('Authorization', $readAuth)->getJson($this->adminPath('/config/fetch'))->assertOk();
+        app('auth')->forgetGuards();
+        $this->withHeader('Authorization', $readAuth)->postJson($this->adminPath('/order/fetch'))->assertOk();
+        app('auth')->forgetGuards();
+        $this->withHeader('Authorization', $readAuth)->postJson($this->adminPath('/config/save'), ['app_name' => 'x'])
+            ->assertStatus(403)->assertJsonPath('code', 'ADMIN_TOKEN_READ_ONLY');
+        app('auth')->forgetGuards();
+        $this->withHeader('Authorization', $readAuth)->getJson($this->adminPath('/security/sessions'))
+            ->assertStatus(403)->assertJsonPath('code', 'ADMIN_SESSION_REQUIRED');
+
+        // 完整令牌：写操作可以，但同样碰不到账号安全页（签不出新令牌）
+        app('auth')->forgetGuards();
+        $this->withHeader('Authorization', $fullAuth)->postJson($this->adminPath('/config/save'), ['app_name' => '苏菲家宽'])->assertOk();
+        app('auth')->forgetGuards();
+        $this->withHeader('Authorization', $fullAuth)->postJson($this->adminPath('/security/api-tokens/create'), ['name' => 'x', 'scope' => 'full', 'otp' => '123456'])
+            ->assertStatus(403)->assertJsonPath('code', 'ADMIN_SESSION_REQUIRED');
+
+        // 查询类 POST 不进审计日志，写操作照记
+        $this->assertSame(0, AdminAuditLog::where('action', 'order.fetch')->count());
+        $this->assertSame(1, AdminAuditLog::where('action', 'config.save')->count());
+        $this->assertSame(2, AdminAuditLog::where('action', AdminTwoFactorService::ACTION_API_TOKEN_CREATED)->count());
+
+        // 注销其他会话不动接口令牌；吊销后令牌立即失效
+        app('auth')->forgetGuards();
+        $this->withHeaders($h)->postJson($this->adminPath('/security/sessions/revoke-others'))->assertOk()->assertJsonPath('data.revoked', 0);
+        app('auth')->forgetGuards();
+        $this->withHeaders($h)->postJson($this->adminPath('/security/api-tokens/revoke'), ['id' => $read->json('data.id')])->assertOk();
+        app('auth')->forgetGuards();
+        $this->withHeader('Authorization', $readAuth)->getJson($this->adminPath('/config/fetch'))->assertStatus(403);
+        app('auth')->forgetGuards();
+        $this->withHeader('Authorization', $fullAuth)->getJson($this->adminPath('/config/fetch'))->assertOk();
+        // 吊销接口只认接口令牌，会话 id 传进来是 404
+        app('auth')->forgetGuards();
+        $currentId = PersonalAccessToken::findToken(substr($auth, 7))->id;
+        $this->withHeaders($h)->postJson($this->adminPath('/security/api-tokens/revoke'), ['id' => $currentId])->assertStatus(404);
+    }
+
+    public function test_user_panel_sessions_are_summarised_and_can_be_cleared_alone(): void
+    {
+        [$admin] = $this->enrolledAdmin();
+        $auth = (new AuthService($admin))->generateAdminAuthData('1.2.3.4', 'Mozilla/5.0 Test')['auth_data'];
+        $h = ['Authorization' => $auth];
+        // 模拟机器人用密码反复登录：用户面板会话堆了 50 个，外加一个两步验证上线前的旧 token
+        $this->withHeader('User-Agent', 'Go-http-client/2.0')
+            ->postJson('/api/v1/passport/auth/login', ['email' => $admin->email, 'password' => self::PASSWORD])->assertOk();
+        for ($i = 0; $i < 49; $i++) {
+            (new AuthService($admin))->generateAuthData('127.0.0.1', 'Go-http-client/2.0');
+        }
+        $admin->createToken(Str::random(20), ['*']);
+
+        app('auth')->forgetGuards();
+        $sessions = $this->withHeaders($h)->getJson($this->adminPath('/security/sessions'));
+        $sessions->assertOk();
+        $this->assertCount(1, $sessions->json('data.sessions'));
+        $this->assertSame(51, $sessions->json('data.user_sessions.count'));
+        // 密码登录签出的会话按来源命名，汇总行能看出是谁在登录
+        $this->assertSame('user|127.0.0.1|Go-http-client/2.0', PersonalAccessToken::where('name', 'like', 'user|%')->orderBy('id')->value('name'));
+        $this->assertSame('Go-http-client/2.0', $sessions->json('data.user_sessions.latest_user_agent'));
+
+        $this->withHeaders($h)->postJson($this->adminPath('/security/sessions/revoke-user'))->assertOk()->assertJsonPath('data.revoked', 51);
+        app('auth')->forgetGuards();
+        $after = $this->withHeaders($h)->getJson($this->adminPath('/security/sessions'));
+        $this->assertSame(0, $after->json('data.user_sessions.count'));
+        $this->assertCount(1, $after->json('data.sessions'));
+        $this->assertSame(1, AdminAuditLog::where('action', AdminTwoFactorService::ACTION_USER_SESSIONS_REVOKED)->count());
     }
 
     public function test_reset_command_clears_enrollment_and_sessions(): void

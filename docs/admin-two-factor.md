@@ -25,8 +25,21 @@
 |---|---|---|
 | 用户面板登录（`/api/v1/passport/auth/login`、Google、邮件链接等） | `['user']` | 1 年（原样） |
 | 后台登录（两步验证通过后） | `['user', 'admin']` | 后台设置 `admin_session_days`，默认 7 天，1–90 |
+| 接口令牌·完整（账号安全页签发） | `['admin', 'api']` | 不过期，手动吊销 |
+| 接口令牌·只读（账号安全页签发） | `['admin:read', 'api']` | 不过期，手动吊销 |
 
 `Admin` 中间件除了 `is_admin` 之外还检查当前令牌带 `admin` 能力；旧令牌（能力 `*`）与用户面板令牌访问 `/api/v2/<secure_path>/*` 一律 `403 {"code": "ADMIN_2FA_REQUIRED"}`。所以上线后所有已登录的后台会话自动失效，每个管理员下次登录各自绑定一次。
+
+令牌名约定：后台会话 `admin|ip|ua`，用户面板 `user|ip|ua`（更早的是 20 位随机串），接口令牌 `api|名称`。分类只看能力，名字只用来展示来源。
+
+### 接口令牌（给程序用）
+
+通知机器人、对账脚本这类程序不要再用管理员邮箱密码登录：密码登录只拿得到用户面板令牌，调后台接口必然 403，程序如果「被拒就重新登录」，会每次多出一个用户面板会话（2026-10-13 上线两步验证后，一个每 30 秒拉订单的程序每小时登录约 180 次）。改为在「账号安全 → 接口令牌」输入验证码签发一个令牌，请求时带 `Authorization: Bearer <令牌>`，接口地址与后台页面调用的一致。
+
+- 只读令牌只放行 `GET` / `HEAD` 以及 `POST` 到路径最后一段为 `fetch`、`detail` 的接口，其余返回 `403 {"code": "ADMIN_TOKEN_READ_ONLY"}`。
+- 两种接口令牌都不能调 `/security/*`（`403 {"code": "ADMIN_SESSION_REQUIRED"}`）：拿到令牌也签不出新令牌、改不了两步验证、看不了会话。
+- 「注销其他会话」不动接口令牌，要单独吊销；签发会推送 Telegram 并写审计。
+- 查询类请求（`GET`、`POST …/fetch`、`…/detail`）不写审计日志，免得轮询淹没真正的改动。
 
 ## 账号安全页接口（需要后台令牌）
 
@@ -36,15 +49,19 @@
 | `/security/two-factor/setup` | POST `{otp}` | 重新绑定验证器第一步（先验旧验证器），返回新二维码 |
 | `/security/two-factor/confirm` | POST `{otp}` | 用新验证器的验证码完成换绑，返回新恢复码 |
 | `/security/two-factor/recovery-codes` | POST `{otp}` | 重新生成恢复码（旧的立即作废） |
-| `/security/sessions` | GET | 本账号的后台会话：IP、客户端、登录 / 最近活动 / 到期时间，标出当前会话 |
-| `/security/sessions/revoke` | POST `{id}` | 注销一个会话 |
-| `/security/sessions/revoke-others` | POST | 注销除当前外的全部会话 |
+| `/security/sessions` | GET | `{sessions, user_sessions}`：本账号的后台会话逐条（IP、客户端、登录 / 最近活动 / 到期，标出当前），用户面板会话只给计数、最近登录 / 活动时间与最近一次的 IP、UA |
+| `/security/sessions/revoke` | POST `{id}` | 注销一个会话（接口令牌不认，404） |
+| `/security/sessions/revoke-others` | POST | 注销除当前外的全部后台与用户面板会话，接口令牌不动 |
+| `/security/sessions/revoke-user` | POST | 只清用户面板会话 |
+| `/security/api-tokens` | GET | 接口令牌列表：名称、`scope`（`read` / `full`）、创建与最近使用时间 |
+| `/security/api-tokens/create` | POST `{name, scope, otp}` | 签发接口令牌，明文只在这次返回（`token`、`auth_data`） |
+| `/security/api-tokens/revoke` | POST `{id}` | 吊销一个接口令牌 |
 | `/security/login-log` | GET `?limit` | 所有管理员的 `auth.*` 审计记录 |
 
 ## 存储与审计
 
 - `v2_admin_two_factor`：`user_id`（主键）、`secret` / `pending_secret`（用 `APP_KEY` 加密，`encrypted` cast —— 换 `APP_KEY` 会让所有绑定失效）、`confirmed_at`、`recovery_codes`（bcrypt 散列数组）、`last_used_step`。
-- 审计写 `v2_admin_audit_log`，动作：`auth.login`、`auth.login_failed`、`auth.two_factor_failed`、`auth.two_factor_locked`、`auth.two_factor_enrolled`、`auth.recovery_code_used`、`auth.recovery_codes_regenerated`、`auth.session_revoked`、`auth.sessions_revoked`。后台「系统日志 → 登录」筛选按 `auth.*` 匹配。
+- 审计写 `v2_admin_audit_log`，动作：`auth.login`、`auth.login_failed`、`auth.two_factor_failed`、`auth.two_factor_locked`、`auth.two_factor_enrolled`、`auth.recovery_code_used`、`auth.recovery_codes_regenerated`、`auth.session_revoked`、`auth.sessions_revoked`、`auth.user_sessions_revoked`、`auth.api_token_created`、`auth.api_token_revoked`。后台「系统日志 → 登录」筛选按 `auth.*` 匹配。
 - `RequestLog` 脱敏新增 `otp`、`recovery_code`、`challenge`、`totp`（字段名刻意不用 `code`，优惠码 / 礼品卡的 `code` 要留在日志里）。
 - 每次后台登录成功、密码锁定、验证码锁定都调 `TelegramService::sendMessageWithAdmin`（需要 `telegram_bot_enable` 且管理员已绑定机器人）。
 

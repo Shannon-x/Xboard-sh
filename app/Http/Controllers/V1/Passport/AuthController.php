@@ -67,7 +67,7 @@ class AuthController extends Controller
         }
 
         $authService = new AuthService($result);
-        return $this->success($authService->generateAuthData());
+        return $this->success($authService->generateAuthData($request->ip(), $request->userAgent()));
     }
 
     /**
@@ -85,7 +85,7 @@ class AuthController extends Controller
         }
 
         $authService = new AuthService($result);
-        return $this->success($authService->generateAuthData());
+        return $this->success($authService->generateAuthData($request->ip(), $request->userAgent()));
     }
 
     /**
@@ -156,7 +156,7 @@ class AuthController extends Controller
             $authService = new AuthService($user);
 
             return response()->json([
-                'data' => $authService->generateAuthData()
+                'data' => $authService->generateAuthData($request->ip(), $request->userAgent())
             ]);
         }
 

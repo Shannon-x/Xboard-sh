@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Models\AdminAuditLog;
+use App\Services\AuthService;
 use Closure;
 
 class RequestLog
@@ -48,6 +49,11 @@ class RequestLog
     public function handle($request, Closure $next)
     {
         if ($request->method() !== 'POST') {
+            return $next($request);
+        }
+        // 列表 / 详情查询（POST …/fetch、…/detail）不改数据，不进审计日志：
+        // 通知机器人每 30 秒拉一次订单列表，记下来只会把真正的改动淹没
+        if (AuthService::isReadOnlyAdminRequest($request)) {
             return $next($request);
         }
 

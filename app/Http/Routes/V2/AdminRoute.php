@@ -59,6 +59,10 @@ class AdminRoute
                 $router->get('/sessions', [SecurityController::class, 'sessions']);
                 $router->post('/sessions/revoke', [SecurityController::class, 'revokeSession']);
                 $router->post('/sessions/revoke-others', [SecurityController::class, 'revokeOtherSessions']);
+                $router->post('/sessions/revoke-user', [SecurityController::class, 'revokeUserSessions']);
+                $router->get('/api-tokens', [SecurityController::class, 'apiTokens']);
+                $router->post('/api-tokens/create', [SecurityController::class, 'createApiToken']);
+                $router->post('/api-tokens/revoke', [SecurityController::class, 'revokeApiToken']);
                 $router->get('/login-log', [SecurityController::class, 'loginLog']);
             });
 

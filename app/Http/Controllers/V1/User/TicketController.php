@@ -50,7 +50,7 @@ class TicketController extends Controller
         $category = $request->input('category');
         EmailVerification::assertTicketAllowed(User::findOrFail($request->user()->id), is_string($category) ? $category : null);
         if ((int) admin_setting('ticket_active_subscription_required', 0) && !$this->canOpenTicket($request)) {
-            return $this->fail([400, __('Please purchase a subscription, earn affiliate commission, or place an order before opening a ticket')]);
+            return $this->fail([400, __('Please purchase a subscription or submit a recent payment order before opening a ticket')]);
         }
 
         // 附件是先上传后绑定的：这里只校验归属与数量，真正绑定在创建消息的事务里完成
@@ -155,8 +155,23 @@ class TicketController extends Controller
             return true;
         }
 
+        // 付过款的老客户（套餐过期了也算）随时可以开工单
+        $hasPaidOrder = Order::query()
+            ->where('user_id', $user->id)
+            ->whereIn('status', [Order::STATUS_PROCESSING, Order::STATUS_COMPLETED, Order::STATUS_DISCOUNTED])
+            ->exists();
+        if ($hasPaidOrder) {
+            return true;
+        }
+
+        // 从没付过款的只认「近期真走到收银台」的订单，留给付了钱没到账、出码失败的人来问。
+        // 不能认任何订单：下单不付会被自动取消，注册小号随手下一单就能绕过这道门槛
+        $recentOrderDays = max(1, (int) admin_setting('ticket_recent_order_days', 7));
         return Order::query()
             ->where('user_id', $user->id)
+            ->where('total_amount', '>', 0)
+            ->whereNotNull('payment_id')
+            ->where('created_at', '>=', time() - $recentOrderDays * 86400)
             ->exists();
     }
 

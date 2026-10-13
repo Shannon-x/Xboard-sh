@@ -12,6 +12,7 @@
     "Failed to open ticket": "工單創建失敗",
     "Please purchase an active subscription before opening a ticket": "請先購買有效訂閱後再提交工單",
     "Please purchase a subscription or submit a recent payment order before opening a ticket": "請先購買套餐或提交近期支付訂單後再提交工單",
+    "Please purchase a subscription, earn affiliate commission, or place an order before opening a ticket": "請先購買套餐、獲得推廣佣金或下單後再提交工單",
     "Message cannot be empty": "消息不能為空",
     "The withdrawal address format is invalid": "收款地址格式不正確，請檢查所選鏈與地址",
     "The maximum amount per withdrawal is :limit": "單筆提現最多 :limit",

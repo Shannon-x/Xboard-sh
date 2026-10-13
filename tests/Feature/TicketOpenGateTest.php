@@ -14,8 +14,8 @@ use Tests\TestCase;
 
 /**
  * 「需有效订阅才能开工单」的放行口径：
- * 有效订阅 / 余额 / 佣金 / 付过款的老客户随时可开；从没付过款的只认近期走到收银台的订单。
- * 2026-10-12 有人批量注册小号、每号下一单不付（自动取消）就绕过了门槛去刷工单。
+ * 有效订阅 / 余额 / 佣金随时可开；其余用户要下过单（没付成的也算）且邮箱已验证。
+ * 2026-10-12 有人批量注册假邮箱小号、每号下一单不付（自动取消）就绕过了门槛去刷工单。
  *
  * Setting 用内存桩替换（同 TicketCategoryTest）。
  */
@@ -94,44 +94,35 @@ class TicketOpenGateTest extends TestCase
         ]);
     }
 
-    public function test_user_with_only_an_unpaid_cancelled_order_cannot_open_a_ticket(): void
+    public function test_unverified_user_with_only_a_failed_order_is_sent_to_email_verification(): void
     {
+        // 10-12 的小号就是这样：下单不付（被自动取消），邮箱是假的
         $user = $this->makeUser();
-        // 下单不付、也没选支付方式，被系统自动取消
         $this->makeOrder($user, ['status' => Order::STATUS_CANCELLED]);
 
-        $this->openTicket($user)->assertStatus(400);
+        $this->openTicket($user)->assertStatus(403)->assertJsonPath('error.reason', 'email_unverified');
         $this->assertSame(0, Ticket::where('user_id', $user->id)->count());
     }
 
-    public function test_user_without_any_order_cannot_open_a_ticket(): void
+    public function test_verified_user_with_a_failed_order_can_open_a_ticket(): void
     {
-        $this->openTicket($user = $this->makeUser())->assertStatus(400);
-        $this->assertSame(0, Ticket::where('user_id', $user->id)->count());
-    }
-
-    public function test_recent_checkout_order_can_open_a_ticket(): void
-    {
-        // 走到收银台但没到账（出码失败、付了钱没回调）——这类人必须能来问
-        $user = $this->makeUser();
-        $this->makeOrder($user, ['status' => Order::STATUS_CANCELLED, 'payment_id' => 1]);
+        // 付款出问题（出码失败、付了没到账）的人订单多半是取消状态，验证过邮箱就要能来问
+        $user = $this->makeUser(['email_verified_at' => time()]);
+        $this->makeOrder($user, ['status' => Order::STATUS_CANCELLED]);
 
         $this->openTicket($user)->assertStatus(200);
+        $this->assertSame(1, Ticket::where('user_id', $user->id)->count());
     }
 
-    public function test_stale_checkout_order_no_longer_opens_tickets(): void
+    public function test_verified_user_without_any_order_cannot_open_a_ticket(): void
     {
-        $user = $this->makeUser();
-        $this->makeOrder($user, [
-            'status' => Order::STATUS_CANCELLED,
-            'payment_id' => 1,
-            'created_at' => time() - 8 * 86400,
-        ]);
+        $user = $this->makeUser(['email_verified_at' => time()]);
 
         $this->openTicket($user)->assertStatus(400);
+        $this->assertSame(0, Ticket::where('user_id', $user->id)->count());
     }
 
-    public function test_former_paying_customer_with_expired_plan_can_open_a_ticket(): void
+    public function test_former_paying_customer_must_verify_email_too(): void
     {
         $user = $this->makeUser();
         $this->makeOrder($user, [
@@ -140,11 +131,28 @@ class TicketOpenGateTest extends TestCase
             'created_at' => time() - 90 * 86400,
         ]);
 
+        $this->openTicket($user)->assertStatus(403)->assertJsonPath('error.reason', 'email_unverified');
+
+        $user->forceFill(['email_verified_at' => time()])->save();
+        $this->openTicket($user->fresh())->assertStatus(200);
+    }
+
+    public function test_active_subscriber_is_not_gated_by_email_verification(): void
+    {
+        $user = $this->makeUser(['plan_id' => 1, 'expired_at' => time() + 30 * 86400]);
+
         $this->openTicket($user)->assertStatus(200);
     }
 
-    public function test_commission_holder_can_open_a_ticket(): void
+    public function test_commission_holder_without_orders_is_not_gated(): void
     {
         $this->openTicket($this->makeUser(['commission_balance' => 500]))->assertStatus(200);
+    }
+
+    public function test_gate_off_lets_anyone_open_a_ticket(): void
+    {
+        $this->settings['ticket_active_subscription_required'] = 0;
+
+        $this->openTicket($this->makeUser())->assertStatus(200);
     }
 }

@@ -290,6 +290,9 @@ class AdminTwoFactorService
     public const ACTION_RECOVERY_CODES_REGENERATED = 'auth.recovery_codes_regenerated';
     public const ACTION_SESSION_REVOKED = 'auth.session_revoked';
     public const ACTION_SESSIONS_REVOKED = 'auth.sessions_revoked';
+    public const ACTION_USER_SESSIONS_REVOKED = 'auth.user_sessions_revoked';
+    public const ACTION_API_TOKEN_CREATED = 'auth.api_token_created';
+    public const ACTION_API_TOKEN_REVOKED = 'auth.api_token_revoked';
 
     /** 登录相关事件写进后台审计日志（与 RequestLog 同一张表，日志页可按「登录」筛选） */
     public function audit(User $user, string $action, Request $request, array $data = []): void

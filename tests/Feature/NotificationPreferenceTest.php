@@ -304,7 +304,7 @@ class NotificationPreferenceTest extends TestCase
         NotificationPreference::set($a, 'marketing', false, 'list_unsubscribe', '9.9.9.9');
         NotificationPreference::set($b, 'marketing', false, 'email_link');
         NotificationPreference::set($b, 'support', false, 'panel');
-        Sanctum::actingAs($admin);
+        Sanctum::actingAs($admin, ['admin']);
 
         $stats = $this->getJson($this->admin('/notify/stats'))->assertOk()->json('data');
         $marketing = collect($stats['categories'])->firstWhere('category', 'marketing');
@@ -340,7 +340,7 @@ class NotificationPreferenceTest extends TestCase
         $in = $this->user();
         $out = $this->user();
         NotificationPreference::set($out, 'announcement', false, 'panel');
-        Sanctum::actingAs($admin);
+        Sanctum::actingAs($admin, ['admin']);
 
         $this->postJson($this->admin('/user/sendMail'), ['subject' => '维护公告', 'content' => '今晚维护', 'scope' => 'all'])->assertOk();
         // QUEUE_CONNECTION=sync：任务已同步执行

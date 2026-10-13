@@ -1,7 +1,9 @@
 <?php
 namespace App\Http\Routes\V2;
 
+use App\Http\Controllers\V2\Admin\AuthController;
 use App\Http\Controllers\V2\Admin\ConfigController;
+use App\Http\Controllers\V2\Admin\SecurityController;
 use App\Http\Controllers\V2\Admin\NotificationController;
 use App\Http\Controllers\V2\Admin\PlanController;
 use App\Http\Controllers\V2\Admin\Server\GroupController;
@@ -29,10 +31,37 @@ class AdminRoute
 {
     public function map(Registrar $router)
     {
+        $securePath = admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key'))));
+
+        // 后台登录与两步验证：同样藏在 secure_path 之下，但还没有会话，所以不挂 admin 中间件。
+        // 限流键见 RouteServiceProvider（admin-login / admin-two-factor）；挑战本身错满 5 次作废。
         $router->group([
-            'prefix' => admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key')))),
+            'prefix' => $securePath . '/auth',
+        ], function ($router) {
+            $router->post('/login', [AuthController::class, 'login'])->middleware('throttle:admin-login');
+            $router->post('/two-factor/setup', [AuthController::class, 'setup'])->middleware('throttle:admin-two-factor');
+            $router->post('/two-factor/confirm', [AuthController::class, 'confirm'])->middleware('throttle:admin-two-factor');
+            $router->post('/two-factor/verify', [AuthController::class, 'verify'])->middleware('throttle:admin-two-factor');
+        });
+
+        $router->group([
+            'prefix' => $securePath,
             'middleware' => ['admin', 'log'],
         ], function ($router) {
+            // Security：账号安全页（两步验证 / 会话 / 登录记录）
+            $router->group([
+                'prefix' => 'security'
+            ], function ($router) {
+                $router->get('/two-factor', [SecurityController::class, 'status']);
+                $router->post('/two-factor/setup', [SecurityController::class, 'setup']);
+                $router->post('/two-factor/confirm', [SecurityController::class, 'confirm']);
+                $router->post('/two-factor/recovery-codes', [SecurityController::class, 'regenerateRecoveryCodes']);
+                $router->get('/sessions', [SecurityController::class, 'sessions']);
+                $router->post('/sessions/revoke', [SecurityController::class, 'revokeSession']);
+                $router->post('/sessions/revoke-others', [SecurityController::class, 'revokeOtherSessions']);
+                $router->get('/login-log', [SecurityController::class, 'loginLog']);
+            });
+
             // Config
             $router->group([
                 'prefix' => 'config'

@@ -51,6 +51,18 @@ class RouteServiceProvider extends ServiceProvider
             ];
         });
 
+        // 后台登录（secure_path 之下）：密码错 5 次另有一小时锁定，这里只拦脚本式撞库；
+        // 两步验证的挑战错满 5 次即作废，限流只防刷
+        RateLimiter::for('admin-login', function (Request $request) use ($byEmailOrIp) {
+            return [
+                Limit::perMinute(5)->by($byEmailOrIp($request, 'admin_login')),
+                Limit::perMinute(20)->by('admin_login:ip:' . $request->ip()),
+            ];
+        });
+        RateLimiter::for('admin-two-factor', function (Request $request) {
+            return Limit::perMinute(20)->by('admin_2fa:ip:' . $request->ip());
+        });
+
         RateLimiter::for('passport-register', function (Request $request) use ($byEmailOrIp) {
             return [
                 Limit::perMinute(5)->by($byEmailOrIp($request, 'register')),

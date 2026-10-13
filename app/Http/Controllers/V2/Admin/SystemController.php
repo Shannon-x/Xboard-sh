@@ -105,7 +105,8 @@ class SystemController extends Controller
 
         $builder = AdminAuditLog::with('admin:id,email')
             ->orderBy('id', 'DESC')
-            ->when($request->input('action'), fn($q, $v) => $q->where('action', $v))
+            // 动作标识是 user.update / auth.login 这种点分形式，筛选按子串匹配（原本精确匹配 'update' 永远筛不到东西）
+            ->when($request->input('action'), fn($q, $v) => $q->where('action', 'like', '%' . $v . '%'))
             ->when($request->input('admin_id'), fn($q, $v) => $q->where('admin_id', $v))
             ->when($request->input('keyword'), function ($q, $keyword) {
                 $q->where(function ($q) use ($keyword) {

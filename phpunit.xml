@@ -22,6 +22,8 @@
     </source>
     <php>
         <env name="APP_ENV" value="testing"/>
+        <!-- 固定一把测试密钥：encrypted cast（管理员 TOTP 密钥）与 secure_path 的 crc32b 都要用到它 -->
+        <env name="APP_KEY" value="base64:eGJvYXJkLXBocHVuaXQta3hib2FyZC1waHB1bml0LWs="/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="CACHE_STORE" value="array"/>

@@ -174,7 +174,7 @@ class BillingSnapshotTest extends TestCase
         $this->plan->update(['name' => '旗舰家宽']);
         $this->fakePdf();
 
-        Sanctum::actingAs($this->user(['is_admin' => 1]));
+        Sanctum::actingAs($this->user(['is_admin' => 1]), ['admin']);
         $this->postJson($this->adminPath('/billing/document/resend'), ['id' => $doc->id])->assertStatus(200);
 
         $messages = app('mailer')->getSymfonyTransport()->messages();
@@ -263,7 +263,7 @@ class BillingSnapshotTest extends TestCase
         $this->get(str_replace("/{$other->id}/", "/{$doc->id}/", $other->downloadPath(time() + 60)))->assertStatus(404);
 
         // 后台列表给的链接有效期更长
-        Sanctum::actingAs($this->user(['is_admin' => 1]));
+        Sanctum::actingAs($this->user(['is_admin' => 1]), ['admin']);
         $row = collect($this->postJson($this->adminPath('/billing/document/fetch'))->assertStatus(200)->json('data'))->firstWhere('id', $doc->id);
         $expires = hexdec(substr($row['download_path'], strrpos($row['download_path'], '/') + 1, 8));
         $this->assertEqualsWithDelta(time() + BillingDocument::ADMIN_LINK_TTL, $expires, 5);
@@ -368,7 +368,7 @@ class BillingSnapshotTest extends TestCase
         $b = $this->receipt($this->user());
         $c = $this->invoice($this->user(['expired_at' => time() + 5 * 86400]));
 
-        Sanctum::actingAs($this->user(['is_admin' => 1]));
+        Sanctum::actingAs($this->user(['is_admin' => 1]), ['admin']);
         $json = $this->postJson($this->adminPath('/billing/document/fetch'))->assertStatus(200)->json();
         $this->assertSame([
             'total' => 3,

@@ -90,6 +90,10 @@ class ConfigSave extends FormRequest
         'show_protocol_to_server_enable' => '',
         'ticket_active_subscription_required' => '',
         'subscribe_path' => '',
+        // 订阅滥用防护：拉取限流 + 共享订阅检测（见 SubscriptionGuard）
+        'subscribe_rate_limit' => 'nullable|integer|min:0|max:6000',
+        'subscribe_shared_threshold' => 'nullable|integer|min:0|max:100000',
+        'subscribe_shared_window' => 'nullable|integer|min:60|max:604800',
         // server
         'server_token' => 'nullable|string|min:16|max:128',
         'server_pull_interval' => 'integer',

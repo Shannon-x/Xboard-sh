@@ -93,6 +93,18 @@ class RouteServiceProvider extends ServiceProvider
             return $uid ? "{$tag}:user:{$uid}" : "{$tag}:ip:{$request->ip()}";
         };
 
+        // 订阅拉取 /q/{token}：token 是 128-bit CSPRNG、本就不可爆破，这里防的是**单 IP 洪水 /
+        // 扫描负载**（曾见单条泄露 token 一周被同一批 IP 请求 169 万次），不是防猜测。阈值取得很宽——
+        // 正常客户端 30s+ 才拉一次（每分钟 ≤2 次），拖到每分钟 120 次也绰绰有余；只把单 IP 的高频
+        // 轰炸按住。限流在 token 校验之前，连 403 miss 洪水一起限。subscribe_rate_limit = 0 时关闭。
+        RateLimiter::for('subscribe', function (Request $request) {
+            $perMin = (int) admin_setting('subscribe_rate_limit', 120);
+            if ($perMin <= 0) {
+                return Limit::none();
+            }
+            return Limit::perMinute($perMin)->by('subscribe:ip:' . $request->ip());
+        });
+
         // 自选套餐报价：下单前的纯只读计算，且 guest 端无鉴权。每次调用都要取套餐、
         // 跑完整的规格校验再逐项计价，是有 DB 读 + 计算成本的 POST，不限流时任何人
         // 都能无限调用。但它返回的只是本就公开的定价，没有 coupon / gift-card 那种

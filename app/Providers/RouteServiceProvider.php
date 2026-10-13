@@ -94,11 +94,19 @@ class RouteServiceProvider extends ServiceProvider
         };
 
         // 订阅拉取 /q/{token}：token 是 128-bit CSPRNG、本就不可爆破，这里防的是**单 IP 洪水 /
-        // 扫描负载**（曾见单条泄露 token 一周被同一批 IP 请求 169 万次），不是防猜测。阈值取得很宽——
-        // 正常客户端 30s+ 才拉一次（每分钟 ≤2 次），拖到每分钟 120 次也绰绰有余；只把单 IP 的高频
-        // 轰炸按住。限流在 token 校验之前，连 403 miss 洪水一起限。subscribe_rate_limit = 0 时关闭。
+        // 扫描负载**（曾见单条泄露 token 一周被同一批 IP 请求 169 万次），不是防猜测。
+        //
+        // ⚠️ 默认关闭（0），刻意的：按 IP 限流依赖 $request->ip() 是真实客户端 IP。生产链路
+        // 是 Cloudflare → openresty → Octane（/q 不过 xb-secure），TrustProxies 已信任 CF +
+        // 内网段、用 X-Forwarded-For（与后台会话列表里显示真实 IP 的 /api 链路同一套中间件），
+        // 正常情况下取到的就是真实客户端 IP。但万一 /q 这条 location 的 openresty 没透传 XFF，
+        // $request->ip() 会退化成网关地址，届时一个限额会把**所有真实用户挤进同一个桶**、订阅
+        // 一起失败。所以边缘限流首选放在 Cloudflare（边缘拿得到真实 IP），后端这道设为 opt-in：
+        // 在订阅域名链路上确认 $request->ip() 为真实客户端 IP 后，再把 subscribe_rate_limit 调成
+        // 正数（建议 120/min，正常客户端 ≤2/min）。共享检测（SubscriptionGuard）只打日志、
+        // 不拦请求，即便 IP 退化也只是告警失真、不会影响任何用户，故照常默认开启。
         RateLimiter::for('subscribe', function (Request $request) {
-            $perMin = (int) admin_setting('subscribe_rate_limit', 120);
+            $perMin = (int) admin_setting('subscribe_rate_limit', 0);
             if ($perMin <= 0) {
                 return Limit::none();
             }

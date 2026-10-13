@@ -20,6 +20,21 @@ class LoginService
      */
     public function login(string $email, string $password): array
     {
+        [$success, $result] = $this->authenticate($email, $password);
+        if (!$success) {
+            return [false, $result];
+        }
+        return [true, $this->finalize($result)];
+    }
+
+    /**
+     * 只校验邮箱 + 密码（含密码错误次数限制与封禁检查），不更新登录时间、不触发登录后钩子。
+     * 后台登录在这一步之后还要过两步验证，通过了才算真正登录（见 finalize）。
+     *
+     * @return array [成功状态, 用户对象或错误信息]
+     */
+    public function authenticate(string $email, string $password): array
+    {
         $email = strtolower(trim((string) $email));
 
         // 检查密码错误限制
@@ -77,14 +92,30 @@ class LoginService
             $user->password = password_hash($password, PASSWORD_DEFAULT);
             $user->password_algo = null;
             $user->password_salt = null;
+            $user->save();
         }
 
-        // 更新最后登录时间
+        return [true, $user];
+    }
+
+    /** 密码（与两步验证）都通过后的收尾：记录登录时间、触发登录后钩子 */
+    public function finalize(User $user): User
+    {
         $user->last_login_at = time();
         $user->save();
 
         HookManager::call('user.login.after', $user);
-        return [true, $user];
+        return $user;
+    }
+
+    /** 密码错误次数是否已到上限（后台登录页用它决定要不要提示「账号已锁定」） */
+    public static function isPasswordLocked(string $email): bool
+    {
+        if (!(int) admin_setting('password_limit_enable', true)) {
+            return false;
+        }
+        $count = (int) Cache::get(CacheKey::get('PASSWORD_ERROR_LIMIT', strtolower(trim($email))), 0);
+        return $count >= (int) admin_setting('password_limit_count', 5);
     }
 
     /**

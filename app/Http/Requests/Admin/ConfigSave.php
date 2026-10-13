@@ -187,6 +187,8 @@ class ConfigSave extends FormRequest
         'password_limit_enable' => 'boolean',
         'password_limit_count' => 'integer',
         'password_limit_expire' => 'integer',
+        // 后台会话有效期（天）：两步验证通过后签发的 token 到期就得重新登录再验一次
+        'admin_session_days' => 'integer|min:1|max:90',
         'default_remind_expire' => 'boolean',
         'default_remind_traffic' => 'boolean',
         'subscribe_template_singbox' => 'nullable',

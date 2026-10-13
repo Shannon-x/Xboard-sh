@@ -218,7 +218,7 @@ class FinancePanelTest extends TestCase
         $doc = BillingDocument::where('order_id', $order->id)->firstOrFail();
         $this->assertCount(1, $this->sent());
 
-        Sanctum::actingAs($this->user(['is_admin' => 1]));
+        Sanctum::actingAs($this->user(['is_admin' => 1]), ['admin']);
         $rows = $this->postJson($this->adminPath('/billing/document/fetch'), ['email' => $user->email])->assertStatus(200)->json('data');
         $this->assertCount(1, $rows);
         $this->assertSame((int) $doc->id, $rows[0]['id']);
@@ -506,7 +506,7 @@ class FinancePanelTest extends TestCase
         Bus::assertDispatched(SendEmailJob::class, fn (SendEmailJob $job) => (fn () => $this->params)->call($job)['email'] === $admin->email);
         Bus::assertDispatchedTimes(SendEmailJob::class, 1);
 
-        Sanctum::actingAs($admin);
+        Sanctum::actingAs($admin, ['admin']);
         $stats = $this->getJson($this->adminPath('/mail/stats'))->assertStatus(200)->json('data');
         $this->assertEquals(1, $stats['last_24h']['failed']);
         $this->assertEquals(1, $stats['last_24h']['sent']);
@@ -540,7 +540,7 @@ class FinancePanelTest extends TestCase
         $admin = $this->user(['is_admin' => 1]);
 
         // 后台手工调整：单位元，带操作人与备注
-        Sanctum::actingAs($admin);
+        Sanctum::actingAs($admin, ['admin']);
         $this->postJson($this->adminPath('/billing/balance/adjust'), ['user_id' => $user->id, 'amount' => 50, 'remark' => '补偿'])->assertStatus(200);
         $this->assertSame(5000, (int) $user->fresh()->balance);
         $adjust = BalanceLog::where('user_id', $user->id)->latest('id')->firstOrFail();
@@ -592,7 +592,7 @@ class FinancePanelTest extends TestCase
         $this->assertArrayNotHasKey('operator_id', $page['data'][0], '操作人不下发给用户');
 
         // 后台按用户查，含变动前后快照和操作人
-        Sanctum::actingAs($admin);
+        Sanctum::actingAs($admin, ['admin']);
         $adminPage = $this->postJson($this->adminPath('/billing/balance/log'), ['user_id' => $user->id])->assertStatus(200)->json();
         $this->assertSame(4, $adminPage['total']);
         $this->assertSame((int) $admin->id, $adminPage['data'][3]['operator_id']);

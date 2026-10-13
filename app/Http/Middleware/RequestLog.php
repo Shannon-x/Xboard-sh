@@ -33,6 +33,11 @@ class RequestLog
         'turnstile_secret_key',
         'recaptcha_v3_secret_key',
         'stripe_token',
+        // 后台两步验证：验证码（字段名 otp，不用 code —— 优惠码 / 礼品卡的 code 要留在日志里）/ 恢复码 / 登录挑战都不进审计日志
+        'otp',
+        'recovery_code',
+        'challenge',
+        'totp',
     ];
     private const SENSITIVE_KEY_PATTERNS = [
         '/(?:^|[_-])auth(?:$|[_-])/i',

@@ -65,7 +65,7 @@ class ServerGroupManagementTest extends TestCase
         $this->getJson($path)->assertForbidden();
         Sanctum::actingAs($this->user());
         $this->getJson($path)->assertForbidden();
-        Sanctum::actingAs($this->user(['is_admin' => true]));
+        Sanctum::actingAs($this->user(['is_admin' => true]), ['admin']);
         $response = $this->getJson($path)->assertOk();
         $response->assertJsonPath('data.0.nodes.0.id', $node->id);
         $this->assertSame(['id', 'name', 'type', 'show', 'rate'], array_keys($response->json('data.0.nodes.0')));
@@ -136,7 +136,7 @@ class ServerGroupManagementTest extends TestCase
         $user = $this->user(['admin_group_ids' => [$group->id]]);
         $before = [$plan->fresh()->getRawOriginal(), $node->fresh()->getRawOriginal(), $user->fresh()->getRawOriginal()];
         Cache::put(PlanCustomizationService::CACHE_GROUP_NAMES, [$group->id => $group->name], 60);
-        Sanctum::actingAs($this->user(['is_admin' => true]));
+        Sanctum::actingAs($this->user(['is_admin' => true]), ['admin']);
         $this->postJson($this->endpoint('save'), ['id' => $group->id, 'name' => ' 三网优化线路·美国星链 '])->assertOk();
         $this->assertSame('三网优化线路·美国星链', $group->fresh()->name);
         $this->assertFalse(Cache::has(PlanCustomizationService::CACHE_GROUP_NAMES));
@@ -162,7 +162,7 @@ class ServerGroupManagementTest extends TestCase
             'admin' => $this->user(['admin_group_ids' => [$group->id]]),
             'base_user' => $this->user(['group_id' => $group->id]),
         };
-        Sanctum::actingAs($this->user(['is_admin' => true]));
+        Sanctum::actingAs($this->user(['is_admin' => true]), ['admin']);
         $this->postJson($this->endpoint('drop'), ['id' => $group->id])->assertStatus(400);
         $this->assertNotNull($group->fresh());
     }
@@ -170,7 +170,7 @@ class ServerGroupManagementTest extends TestCase
     public function test_unused_group_can_be_deleted_and_invalid_names_are_rejected(): void
     {
         $group = $this->group('Unused');
-        Sanctum::actingAs($this->user(['is_admin' => true]));
+        Sanctum::actingAs($this->user(['is_admin' => true]), ['admin']);
         foreach (['   ', str_repeat('x', 256), ['not a name']] as $name) {
             $this->postJson($this->endpoint('save'), ['id' => $group->id, 'name' => $name])->assertStatus(422);
         }

@@ -502,7 +502,7 @@ class EmailVerificationTest extends TestCase
     {
         $admin = $this->user(['is_admin' => 1]);
         $user = $this->user();
-        Sanctum::actingAs($admin);
+        Sanctum::actingAs($admin, ['admin']);
         $path = '/api/v2/' . admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key')))) . '/user/emailVerify';
 
         $this->postJson($path, ['id' => $user->id, 'action' => 'send'])->assertOk()->assertJsonPath('data.pending', true);

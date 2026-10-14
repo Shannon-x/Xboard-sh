@@ -103,8 +103,8 @@ class RouteServiceProvider extends ServiceProvider
         // $request->ip() 会退化成网关地址，届时一个限额会把**所有真实用户挤进同一个桶**、订阅
         // 一起失败。所以边缘限流首选放在 Cloudflare（边缘拿得到真实 IP），后端这道设为 opt-in：
         // 在订阅域名链路上确认 $request->ip() 为真实客户端 IP 后，再把 subscribe_rate_limit 调成
-        // 正数（建议 120/min，正常客户端 ≤2/min）。共享检测（SubscriptionGuard）只打日志、
-        // 不拦请求，即便 IP 退化也只是告警失真、不会影响任何用户，故照常默认开启。
+        // 正数（建议 120/min，正常客户端 ≤2/min）。共享检测（SubscriptionGuard）不看拉取 IP，
+        // 用的是节点上报的连接 IP，只打日志、不拦请求，故照常默认开启。
         RateLimiter::for('subscribe', function (Request $request) {
             $perMin = (int) admin_setting('subscribe_rate_limit', 0);
             if ($perMin <= 0) {

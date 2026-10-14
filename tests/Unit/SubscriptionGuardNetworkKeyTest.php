@@ -6,7 +6,7 @@ use App\Services\SubscriptionGuard;
 use PHPUnit\Framework\TestCase;
 
 /**
- * 共享订阅检测把来源 IP 收敛到「网络」粒度（IPv4 /24、IPv6 /48），
+ * 共享订阅检测把节点上报的连接 IP 收敛到「网络」粒度（IPv4 /24、IPv6 /48），
  * 让单个用户的动态 IP / 移动漫游算作同一个网络、不误报，而被转卖的
  * 订阅横跨几十个互不相关网络时才累计。
  */
@@ -52,5 +52,30 @@ class SubscriptionGuardNetworkKeyTest extends TestCase
         $this->assertSame('unknown', SubscriptionGuard::networkKey(''));
         $this->assertSame('unknown', SubscriptionGuard::networkKey('   '));
         $this->assertSame('other:not-an-ip', SubscriptionGuard::networkKey('not-an-ip'));
+    }
+
+    public function test_node_snapshot_ips_dedupe_to_networks(): void
+    {
+        // 同一 /24 的两台设备、同一 /48 的两个 IPv6 地址各只算一个网络
+        $this->assertSame(
+            ['v4:203.0.113', 'v4:198.51.100', 'v6:20010db8abcd'],
+            SubscriptionGuard::networksOf([
+                '203.0.113.5',
+                '203.0.113.9',
+                '198.51.100.7',
+                '2001:db8:abcd:1::1',
+                '2001:db8:abcd:2::1',
+            ])
+        );
+    }
+
+    public function test_node_snapshot_ignores_non_ip_entries(): void
+    {
+        // 节点上报的脏数据不计入网络数，免得凭空凑出「很多网络」
+        $this->assertSame(
+            ['v4:203.0.113'],
+            SubscriptionGuard::networksOf(['', 'not-an-ip', '203.0.113.5', null, 42, ['x']])
+        );
+        $this->assertSame([], SubscriptionGuard::networksOf([]));
     }
 }

@@ -9,7 +9,6 @@ use App\Services\Plugin\HookManager;
 use App\Services\EmailVerification;
 use App\Services\ServerService;
 use App\Services\UserService;
-use App\Services\SubscriptionGuard;
 use App\Utils\Helper;
 use Illuminate\Http\Request;
 
@@ -49,9 +48,6 @@ class ClientController extends Controller
             HookManager::call('client.subscribe.unavailable');
             return response('', 403, ['Content-Type' => 'text/plain']);
         }
-
-        // 记录成功拉取的来源网络，检测被分享 / 泄露的订阅（只告警，不拦截）。
-        app(SubscriptionGuard::class)->record((int) $user->id, (string) $request->ip());
 
         return $this->doSubscribe($request, $user);
     }

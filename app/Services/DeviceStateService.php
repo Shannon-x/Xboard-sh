@@ -78,6 +78,13 @@ class DeviceStateService
             $this->setDevices($userId, $nodeId, $ips);
         }
 
+        // 共享订阅检测：节点上报的是真实连上来的客户端地址，比订阅拉取 IP 可靠
+        //（客户端常走代理更新订阅，拉取 IP 是我们自己节点的出口）。只记日志，不影响设备计数。
+        app(SubscriptionGuard::class)->recordNodeSnapshot(array_map(
+            fn (array $ips) => array_map([self::class, 'normalizeIP'], $ips),
+            $normalized
+        ));
+
         return $affectedUserIds;
     }
 

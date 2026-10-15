@@ -239,6 +239,99 @@ class EmailVerificationTest extends TestCase
         $this->assertNull($user->email_verify_pending_email);
     }
 
+    // ---------------------------------------------------------------- 已验证的用户换邮箱（#3582）
+
+    /**
+     * 已验证的账号换邮箱：链接点开要真的换过去，不能被「已验证就直接回」拦住（#3582：之前永远换不成，页面却显示成功）；
+     * 换完同一条链接再点，待确认地址已清空，仍幂等地回「已验证」、邮箱不再变。
+     */
+    public function test_a_verified_user_can_change_email_via_the_link_and_a_second_click_stays_idempotent(): void
+    {
+        $user = $this->user(['email_verified_at' => time() - 3 * 86400, 'email_verify_started_at' => time() - 4 * 86400, 'email_verify_source' => 'register']);
+        $old = $user->email;
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/v1/user/email-verify/change', ['email' => 'moved@example.test', 'password' => 'secret-pass'])->assertOk()
+            ->assertJsonPath('data.status.verified', true)
+            ->assertJsonPath('data.status.pending', false)
+            ->assertJsonPath('data.status.pending_email', 'mo***@example.test')
+            // 验证码发在新地址那封邮件里，已验证的人也要看得到输入框
+            ->assertJsonPath('data.status.code_sent', true)
+            ->assertJsonPath('data.status.code_attempts_left', 5);
+        $this->assertSame('moved@example.test', $this->sent()->last()->getOriginalMessage()->getTo()[0]->getAddress());
+        // 点开之前什么都没变
+        $this->assertSame($old, $user->fresh()->email);
+
+        $token = $this->lastLinkToken();
+        $this->postJson('/api/v1/guest/email-verify/confirm', ['token' => $token])->assertOk()
+            ->assertJsonPath('data.changed', true)
+            ->assertJsonPath('data.email', 'mo***@example.test');
+        $user->refresh();
+        $this->assertSame('moved@example.test', $user->email);
+        $this->assertNotNull($user->email_verified_at);
+        $this->assertNull($user->email_verify_pending_email);
+        $this->assertNull($user->email_verify_code);
+        $this->assertFalse(User::byEmail($old)->exists());
+
+        // 邮件 App 把页面加载两次 / 用户再点一次：没有待确认地址了，幂等地回「已验证」，邮箱不变
+        $this->postJson('/api/v1/guest/email-verify/confirm', ['token' => $token])->assertOk()
+            ->assertJsonPath('data.changed', false)
+            ->assertJsonPath('data.email', 'mo***@example.test');
+        $this->assertSame('moved@example.test', $user->fresh()->email);
+        $this->getJson('/api/v1/user/info')->assertOk()
+            ->assertJsonPath('data.email', 'moved@example.test')
+            ->assertJsonPath('data.email_verification.verified', true)
+            ->assertJsonPath('data.email_verification.pending_email', null)
+            ->assertJsonPath('data.email_verification.code_sent', false);
+    }
+
+    /** 已验证的账号换邮箱：在面板里填新地址那封邮件的 6 位验证码，效果与链接相同；换完验证码立刻作废 */
+    public function test_a_verified_user_can_change_email_via_the_code(): void
+    {
+        $user = $this->user(['email_verified_at' => time() - 86400, 'email_verify_started_at' => time() - 2 * 86400]);
+        $old = $user->email;
+        Sanctum::actingAs($user);
+        $this->postJson('/api/v1/user/email-verify/change', ['email' => 'moved@example.test', 'password' => 'secret-pass'])->assertOk();
+        $code = $this->lastCode();
+
+        // 输错照样计次、不换邮箱
+        $wrong = $code === '000000' ? '000001' : '000000';
+        $this->postJson('/api/v1/user/email-verify/confirm-code', ['code' => $wrong])->assertStatus(422);
+        $this->assertSame($old, $user->fresh()->email);
+        $this->getJson('/api/v1/user/email-verify/status')->assertOk()
+            ->assertJsonPath('data.code_sent', true)
+            ->assertJsonPath('data.code_attempts_left', 4);
+
+        $this->postJson('/api/v1/user/email-verify/confirm-code', ['code' => $code])->assertOk()
+            ->assertJsonPath('data.changed', true)
+            ->assertJsonPath('data.email', 'moved@example.test')
+            ->assertJsonPath('data.status.verified', true)
+            ->assertJsonPath('data.status.pending_email', null)
+            ->assertJsonPath('data.status.code_sent', false);
+        $user->refresh();
+        $this->assertSame('moved@example.test', $user->email);
+        $this->assertNull($user->email_verify_pending_email);
+        $this->assertNull($user->email_verify_code);
+        // 换完再输同一枚验证码：已验证、也没有待确认地址 → 还是「已验证」
+        $this->postJson('/api/v1/user/email-verify/confirm-code', ['code' => $code])->assertStatus(400);
+    }
+
+    /** 已验证的账号想换到一个发完链接后被别人注册掉的地址：点开时拒绝，自己的邮箱与已验证状态都不动 */
+    public function test_a_verified_user_changing_to_a_taken_address_is_refused_at_confirm(): void
+    {
+        $user = $this->user(['email_verified_at' => time() - 86400, 'email_verify_started_at' => time() - 2 * 86400]);
+        $old = $user->email;
+        Sanctum::actingAs($user);
+        $this->postJson('/api/v1/user/email-verify/change', ['email' => 'late@example.test', 'password' => 'secret-pass'])->assertOk();
+        $this->user(['email' => 'late@example.test']);
+
+        $this->postJson('/api/v1/guest/email-verify/confirm', ['token' => $this->lastLinkToken()])->assertStatus(422);
+        $this->postJson('/api/v1/user/email-verify/confirm-code', ['code' => $this->lastCode()])->assertStatus(422);
+        $user->refresh();
+        $this->assertSame($old, $user->email);
+        $this->assertNotNull($user->email_verified_at);
+    }
+
     public function test_every_template_points_its_button_at_the_link_and_shows_the_code(): void
     {
         foreach (['editorial', 'classic', 'default'] as $i => $template) {

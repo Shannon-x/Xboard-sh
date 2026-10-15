@@ -23,6 +23,8 @@ use Illuminate\Support\Facades\Hash;
  *     链接点不开的人（邮件客户端禁用了链接、安全扫描先替用户点掉了一次性链接、浏览器没反应），
  *     登录面板后在提示栏里输入验证码也能完成验证；输错 5 次作废，重新发送一封即可。
  *   · 面板常驻横幅：剩余几天、重新发送（60 秒冷却、每天最多 5 封）、更换邮箱（新邮箱收到链接点开才真正换）。
+ *     已验证的用户也能换邮箱：新地址记在 email_verify_pending_email，链接 / 验证码对上才换过去；
+ *     这段时间账号仍是「已验证」，所以 confirm / confirmCode 的「已验证就直接回」必须给换邮箱让路（见 changingEmail）。
  *   · 宽限期（email_verify_grace_days，默认 14 天）过后进入「限制状态」，限制什么由 email_verify_restrict_mode 定：
  *       features   订阅照常，但新建工单（「支付与订单」类除外）、佣金提现、佣金转余额前必须先验证（默认）
  *       subscribe  在 features 之上再暂停订阅链接（客户端拉不到节点，节点侧也不再下发该用户）
@@ -103,6 +105,16 @@ final class EmailVerification
         return !self::isVerified($user) && $user->email_verify_started_at !== null;
     }
 
+    /**
+     * 有一个申请了、还没确认的新邮箱。换邮箱不看 email_verified_at：已验证的用户换邮箱时账号照样是「已验证」，
+     * 只有这个字段能说明「这条链接 / 这枚验证码是来换邮箱的，不是重复点旧链接」。
+     * 换成功（markVerified）、重发到当前邮箱（send 不带新地址）、到期提醒、后台重新要求验证都会把它清掉。
+     */
+    public static function changingEmail(User $user): bool
+    {
+        return $user->email_verify_pending_email !== null && $user->email_verify_pending_email !== '';
+    }
+
     public static function dueAt(User $user): ?int
     {
         return $user->email_verify_started_at === null ? null : (int) $user->email_verify_started_at + self::graceDays() * 86400;
@@ -172,6 +184,8 @@ final class EmailVerification
         $now = time();
         $due = self::dueAt($user);
         $pending = self::enabled() && self::pending($user);
+        // 验证码还有用的两种情形：还没验证（注册 / 付款后那封）、或正在换邮箱（新地址那封）—— 后者与已验证与否无关
+        $awaitingCode = $pending || (self::enabled() && self::changingEmail($user));
         $resendAfter = $user->email_verify_sent_at ? (int) $user->email_verify_sent_at + self::RESEND_COOLDOWN : 0;
         return [
             'verified' => self::isVerified($user),
@@ -185,8 +199,8 @@ final class EmailVerification
             'pending_email' => $user->email_verify_pending_email ? NotificationPreference::maskEmail((string) $user->email_verify_pending_email) : null,
             'mail_suppressed' => $user->mail_suppressed_at !== null,
             // 面板上的验证码输入框只在「有一个还没过期、还没错满的验证码」时出现
-            'code_sent' => $pending && self::codeUsable($user),
-            'code_attempts_left' => $pending && self::codeUsable($user)
+            'code_sent' => $awaitingCode && self::codeUsable($user),
+            'code_attempts_left' => $awaitingCode && self::codeUsable($user)
                 ? max(0, self::CODE_MAX_ATTEMPTS - (int) $user->email_verify_code_attempts)
                 : 0,
         ];
@@ -460,8 +474,11 @@ final class EmailVerification
         if ($user->email_verify_token_expires_at !== null && (int) $user->email_verify_token_expires_at < time()) {
             return null;
         }
-        // 已经验证过的用户再点同一条链接（页面二次加载 / 再点一次）：幂等地回「已验证」，什么都不改
-        if (self::isVerified($user)) {
+        // 已经验证过的用户再点同一条链接（页面二次加载 / 再点一次）：幂等地回「已验证」，什么都不改。
+        // 但「已验证」不等于「没事可做」：已验证的用户换邮箱时账号本来就是已验证状态，新地址还挂在
+        // email_verify_pending_email 上等着换 —— 这条链接是来换邮箱的，必须往下走。换成功后 pending 清空，
+        // 同一条链接再点一次又回到这里，照样幂等地回「已验证」（#3582：之前这里不看 pending，已验证的人永远换不成）。
+        if (self::isVerified($user) && !self::changingEmail($user)) {
             return ['user' => $user, 'changed' => false];
         }
         return self::complete($user);
@@ -478,7 +495,8 @@ final class EmailVerification
         if (!preg_match('/^[0-9]{6}$/', $code)) {
             throw new ApiException(__('Please enter the 6-digit verification code from the email'), 422);
         }
-        if (self::isVerified($user)) {
+        // 同 confirm：已验证但正在换邮箱的，验证码是新地址那封里的，要继续核对（#3582）
+        if (self::isVerified($user) && !self::changingEmail($user)) {
             throw new ApiException(__('Your email address is already verified'), 400);
         }
         if ($user->email_verify_code === null) {

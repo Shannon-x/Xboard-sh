@@ -219,5 +219,16 @@
     "Daily commission summary :amount": "每日佣金汇总 :amount",
     ":count commission payment(s) totalling :amount were credited to your commission balance in the past day": "过去一天共 :count 笔佣金入账，合计 :amount，已计入你的佣金余额",
     ":count payment(s) in the past day, credited to your commission balance": "过去一天共 :count 笔，已计入你的佣金余额",
-    ":count more not listed, see them all on the invite page": "另有 :count 笔未列出，可在邀请页查看全部"
+    ":count more not listed, see them all on the invite page": "另有 :count 笔未列出，可在邀请页查看全部",
+    "Periodic commission applications are not open": "周期返佣暂未开放申请",
+    "Your commission mode is set by the administrator, no application is needed": "你的返佣方式由站长单独设置，无需申请",
+    "Your application is under review": "你的申请正在审核中",
+    "Periodic commission is already enabled": "周期返佣已开通",
+    "You can apply once you have :min active paying invitees, you currently have :count": "有效付费用户达到 :min 位后才能申请，你当前有 :count 位",
+    "Periodic commission enabled": "周期返佣已开通",
+    "Your periodic commission application has been approved. From now on, every payment by the users you invited, renewals included, earns you commission. Keep at least :min active paying invitees; below that the qualification is cancelled automatically and you can apply again once you reach it.": "你的周期返佣申请已通过。从现在起，你邀请的用户每次付费（包括续费）都会给你返佣。\n\n有效付费用户需要保持在 :min 位及以上，低于这个数会自动取消资格，之后达标可以重新申请。",
+    "Periodic commission application not approved": "周期返佣申请未通过",
+    "Sorry, your periodic commission application was not approved: :reason. You can apply again on the invite page.": "很抱歉，你的周期返佣申请未通过：:reason\n\n你可以在邀请页重新申请。",
+    "Periodic commission qualification cancelled": "周期返佣资格已取消",
+    "You now have :count active paying invitees, below the threshold of :min, so your periodic commission qualification has been cancelled and commission is back to the default rule. Once you reach :min again, you can reapply on the invite page.": "你当前的有效付费用户为 :count 位，低于 :min 位的门槛，周期返佣资格已自动取消，返佣方式恢复为站点默认规则。\n\n有效付费用户重新达到 :min 位后，可以在邀请页再次申请。"
 }

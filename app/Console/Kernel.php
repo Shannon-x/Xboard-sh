@@ -50,6 +50,8 @@ class Kernel extends ConsoleKernel
         $schedule->command('ticket:clean-attachments')->dailyAt('3:20')->onOneServer()->withoutOverlapping(120);
         // 收据 / 账单归档：收据 PDF 过保留期只删文件（可重建），已结清 / 失效的旧账单连记录删，防止归档无限膨胀
         $schedule->command('billing:prune-documents')->dailyAt('3:40')->onOneServer()->withoutOverlapping(120);
+        // 周期返佣资格巡检：有效付费被邀请人低于门槛的取消资格（发佣 / 打开邀请页时也会当场检查）
+        $schedule->command('commission:period-sweep')->dailyAt('4:10')->onOneServer()->withoutOverlapping(60);
         // Redis TTL expiration does not execute PHP, so reconcile the DB display snapshot.
         $schedule->command('device:reconcile-online-counts')
             ->everyMinute()

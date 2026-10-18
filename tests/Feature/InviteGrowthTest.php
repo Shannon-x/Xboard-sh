@@ -18,6 +18,7 @@ use App\Services\Commission\CommissionNotifier;
 use App\Services\Commission\InviteFunnel;
 use App\Services\EmailVerification;
 use App\Services\Commission\Leaderboard;
+use App\Services\Commission\PeriodCommission;
 use App\Services\Notification\NotificationPreference;
 use App\Services\OrderService;
 use App\Support\Setting;
@@ -34,7 +35,7 @@ use Tests\TestCase;
 
 /**
  * 推广增长：分渠道漏斗（C2）、被邀请人首单优惠（B1）、阶梯比例（B2）、
- * 自动周期返佣（B3）、佣金入账通知（C1，含每日 / 每周汇总）、月度榜单（B5）。
+ * 周期返佣申请制（B3）、佣金入账通知（C1，含每日 / 每周汇总）、月度榜单（B5）。
  */
 class InviteGrowthTest extends TestCase
 {
@@ -351,7 +352,10 @@ class InviteGrowthTest extends TestCase
                 'levels' => [['min' => 10, 'rate' => 15], ['min' => 30, 'rate' => 20]],
                 'next' => ['min' => 30, 'rate' => 20],
             ],
-            'period_auto' => ['enable' => false, 'min_invitees' => 50, 'active_paid_invitee_count' => 0],
+            'period_auto' => [
+                'enable' => false, 'min_invitees' => 50, 'active_paid_invitee_count' => 0,
+                'application' => ['status' => 'none', 'reason' => null, 'applied_at' => null, 'decided_at' => null, 'revoked_at' => null, 'can_apply' => false],
+            ],
         ], $resp->json('data.commission'));
         $this->assertSame(15, $resp->json('data.stat.3'));
         $this->assertSame(12, $resp->json('data.first_order_discount'));
@@ -389,69 +393,170 @@ class InviteGrowthTest extends TestCase
         return (int) $order->commission_balance;
     }
 
-    public function test_period_commission_switches_on_at_the_threshold_and_back_off_below(): void
+    private function adminPath(string $path): string
+    {
+        return '/api/v2/' . admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key')))) . $path;
+    }
+
+    /** 已推送的邮件任务参数（按推送顺序） */
+    private function pushedMails(): array
+    {
+        return Queue::pushed(SendEmailJob::class)->map(fn (SendEmailJob $job) => (fn () => $this->params)->call($job))->values()->all();
+    }
+
+    /**
+     * 周期返佣改为申请制：达标后申请 → 站长通过才开通；有效付费人数低于门槛自动取消资格，再达标要重新申请。
+     */
+    public function test_period_commission_needs_an_approved_application_and_is_revoked_below_the_threshold(): void
     {
         $this->settings['commission_period_auto_enable'] = 1;
         $this->settings['commission_period_auto_min_invitees'] = 3;
         $inviter = $this->makeUser();
+        $admin = $this->makeUser(['is_admin' => 1]);
         $a = $this->activeInvitee($inviter);
         $this->paidOrder($a, $inviter);
         $b = $this->activeInvitee($inviter);
         $this->paidOrder($b, $inviter);
-
-        // 2 位有效付费：仍是首单返佣，老用户续费不返
-        $this->assertSame(0, $this->renewalCommission($a));
-        $this->assertSame($inviter->id, (int) Order::where('user_id', $a->id)->latest('id')->value('invite_user_id'));   // 邀请关系照记
-
-        // 第 3 位到位：自动升级为周期返佣，续费也返
         $c = $this->activeInvitee($inviter);
         $this->paidOrder($c, $inviter);
-        $this->assertSame(1000, $this->renewalCommission($a));
 
-        // 一位到期 → 有效人数掉回 2：自动恢复首单返佣
+        // 达标但没申请：仍是首单返佣（上一版这里会自动升级）
+        $this->assertSame(0, $this->renewalCommission($a));
+        Sanctum::actingAs($inviter);
+        $this->assertTrue($this->getJson('/api/v1/user/invite/fetch')->json('data.commission.period_auto.application.can_apply'));
+
+        // 申请 → 待审核，仍是首单返佣；不能重复申请
+        $resp = $this->postJson('/api/v1/user/invite/period/apply')->assertOk();
+        $this->assertSame('pending', $resp->json('data.period_auto.application.status'));
+        $this->assertFalse($resp->json('data.period_auto.application.can_apply'));
+        $this->postJson('/api/v1/user/invite/period/apply')->assertStatus(400);
+        $this->assertSame(0, $this->renewalCommission($a));
+
+        // 站长在后台看到申请（含当前人数）并通过 → 周期返佣，续费也返；用户收到通知，不带编号
+        Sanctum::actingAs($admin, ['admin']);
+        $list = $this->postJson($this->adminPath('/commission-period/fetch'))->assertOk();
+        $this->assertSame(1, $list->json('total'));
+        $this->assertSame([0, 3, 3, 3], [
+            $list->json('data.0.status'), $list->json('data.0.active_count'),
+            $list->json('data.0.current_active_count'), $list->json('data.0.min_invitees'),
+        ]);
+        $this->assertSame(1, $this->getJson($this->adminPath('/commission-period/stats'))->json('data.pending_count'));
+        $id = $list->json('data.0.id');
+        $this->postJson($this->adminPath('/commission-period/approve'), ['id' => $id])->assertOk()->assertJsonPath('data.status', 1);
+        $this->postJson($this->adminPath('/commission-period/approve'), ['id' => $id])->assertStatus(400);
+        $this->assertSame(1000, $this->renewalCommission($a));
+        $mails = $this->pushedMails();
+        $this->assertCount(1, $mails);
+        $this->assertSame([$inviter->email, 'notify'], [$mails[0]['email'], $mails[0]['template_name']]);
+        $this->assertStringContainsString('周期返佣已开通', $mails[0]['subject']);
+        $this->assertDoesNotMatchRegularExpression('/#\d+/', $mails[0]['subject'] . $mails[0]['template_value']['content']);
+
+        Sanctum::actingAs($inviter);
+        $resp = $this->getJson('/api/v1/user/invite/fetch')->assertOk();
+        $this->assertSame(['period', 'applied'], [$resp->json('data.commission.mode'), $resp->json('data.commission.mode_source')]);
+        $this->assertSame('approved', $resp->json('data.commission.period_auto.application.status'));
+
+        // 一位到期 → 有效人数 2 < 3：当场取消资格、恢复首单返佣，并通知一次
         User::where('id', $c->id)->update(['expired_at' => time() - 10]);
         $this->assertSame(0, $this->renewalCommission($a));
-
-        // 付过费但没套餐的不算「有效」
-        $d = $this->makeUser(['invite_user_id' => $inviter->id]);
-        $this->paidOrder($d, $inviter);
         $this->assertSame(0, $this->renewalCommission($a));
+        $row = \App\Models\CommissionPeriodApplication::findOrFail($id);
+        $this->assertSame([3, 2], [(int) $row->status, (int) $row->revoked_count]);
+        $mails = $this->pushedMails();
+        $this->assertCount(2, $mails, '取消资格只通知一次');
+        $this->assertStringContainsString('周期返佣资格已取消', $mails[1]['subject']);
 
-        // 管理员单设「周期」：门槛不参与
+        // 人数回到 3：不会自动恢复，要重新申请
+        User::where('id', $c->id)->update(['expired_at' => time() + 86400]);
+        $this->assertSame(0, $this->renewalCommission($a));
+        $resp = $this->getJson('/api/v1/user/invite/fetch')->assertOk();
+        $this->assertSame('revoked', $resp->json('data.commission.period_auto.application.status'));
+        $this->assertTrue($resp->json('data.commission.period_auto.application.can_apply'));
+
+        // 管理员单设返佣方式时以单设为准，申请制不参与
         User::where('id', $inviter->id)->update(['commission_type' => User::COMMISSION_TYPE_PERIOD]);
         $this->assertSame(1000, $this->renewalCommission($a));
-        // 管理员单设「一次性」：即使人数够也只返首单
-        User::where('id', $c->id)->update(['expired_at' => time() + 86400]);
-        User::where('id', $inviter->id)->update(['commission_type' => User::COMMISSION_TYPE_ONETIME]);
-        $this->assertSame(0, $this->renewalCommission($a));
-        // 开关关着：人数够也不自动开
+        $this->postJson('/api/v1/user/invite/period/apply')->assertStatus(400);
         User::where('id', $inviter->id)->update(['commission_type' => User::COMMISSION_TYPE_SYSTEM]);
+
+        // 重新申请并通过后，后台关掉开关：不再按周期返佣（资格保留，重新打开且仍达标就恢复）
+        $this->postJson('/api/v1/user/invite/period/apply')->assertOk();
+        $next = \App\Models\CommissionPeriodApplication::where('user_id', $inviter->id)->latest('id')->firstOrFail();
+        (new PeriodCommission())->approve($next->id, $admin);
+        $this->assertSame(1000, $this->renewalCommission($a));
         $this->settings['commission_period_auto_enable'] = 0;
         $this->assertSame(0, $this->renewalCommission($a));
+        $this->settings['commission_period_auto_enable'] = 1;
+        $this->assertSame(1000, $this->renewalCommission($a));
     }
 
-    public function test_invite_fetch_shows_the_period_auto_threshold_and_mode(): void
+    public function test_period_application_rules_reject_and_reapply(): void
     {
         $this->settings['commission_period_auto_enable'] = 1;
         $this->settings['commission_period_auto_min_invitees'] = 2;
         $inviter = $this->makeUser();
+        $admin = $this->makeUser(['is_admin' => 1]);
         $this->addPaidInvitees($inviter, 1, true);
         Sanctum::actingAs($inviter);
 
-        $resp = $this->getJson('/api/v1/user/invite/fetch')->assertOk();
-        $this->assertSame('first_order', $resp->json('data.commission.mode'));
-        $this->assertSame('default', $resp->json('data.commission.mode_source'));
-        $this->assertSame(['enable' => true, 'min_invitees' => 2, 'active_paid_invitee_count' => 1], $resp->json('data.commission.period_auto'));
+        // 不够人数：不能申请，提示当前人数
+        $resp = $this->postJson('/api/v1/user/invite/period/apply')->assertStatus(400);
+        $this->assertStringContainsString('2', (string) $resp->json('message'));
+        $this->assertStringContainsString('1', (string) $resp->json('message'));
+        $this->assertFalse($this->getJson('/api/v1/user/invite/fetch')->json('data.commission.period_auto.application.can_apply'));
 
+        // 开关关着：不能申请
         $this->addPaidInvitees($inviter, 1, true);
-        $resp = $this->getJson('/api/v1/user/invite/fetch')->assertOk();
-        $this->assertSame('period', $resp->json('data.commission.mode'));
-        $this->assertSame('auto', $resp->json('data.commission.mode_source'));
-        $this->assertSame(2, $resp->json('data.commission.period_auto.active_paid_invitee_count'));
+        $this->settings['commission_period_auto_enable'] = 0;
+        $this->postJson('/api/v1/user/invite/period/apply')->assertStatus(400);
+        $this->settings['commission_period_auto_enable'] = 1;
 
-        User::where('id', $inviter->id)->update(['commission_type' => User::COMMISSION_TYPE_ONETIME]);
-        $resp = $this->getJson('/api/v1/user/invite/fetch')->assertOk();
-        $this->assertSame(['first_order', 'user'], [$resp->json('data.commission.mode'), $resp->json('data.commission.mode_source')]);
+        // 申请 → 审核期间人数掉下去：站长不能通过，只能驳回（驳回必须写原因）
+        $this->postJson('/api/v1/user/invite/period/apply')->assertOk();
+        $application = \App\Models\CommissionPeriodApplication::firstOrFail();
+        User::where('invite_user_id', $inviter->id)->limit(1)->update(['expired_at' => time() - 10]);
+        Sanctum::actingAs($admin, ['admin']);
+        $this->postJson($this->adminPath('/commission-period/approve'), ['id' => $application->id])->assertStatus(400);
+        $this->postJson($this->adminPath('/commission-period/reject'), ['id' => $application->id])->assertStatus(422);
+        $this->postJson($this->adminPath('/commission-period/reject'), ['id' => $application->id, 'reason' => '近期新增用户集中在同一网段'])
+            ->assertOk()->assertJsonPath('data.status', 2);
+        $mail = $this->pushedMails()[0];
+        $this->assertStringContainsString('近期新增用户集中在同一网段', $mail['template_value']['content']);
+
+        // 用户看到驳回原因；人数回来后可以重新申请
+        User::where('invite_user_id', $inviter->id)->update(['expired_at' => time() + 86400]);
+        Sanctum::actingAs($inviter);
+        $state = $this->getJson('/api/v1/user/invite/fetch')->json('data.commission.period_auto.application');
+        $this->assertSame(['rejected', '近期新增用户集中在同一网段', true], [$state['status'], $state['reason'], $state['can_apply']]);
+        $this->postJson('/api/v1/user/invite/period/apply')->assertOk();
+        $this->assertSame(2, \App\Models\CommissionPeriodApplication::where('user_id', $inviter->id)->count(), '每次申请一行，保留历史');
+
+        // 普通用户调不到后台接口
+        $this->postJson($this->adminPath('/commission-period/fetch'))->assertStatus(403);
+    }
+
+    public function test_daily_sweep_revokes_approved_users_below_the_threshold_once(): void
+    {
+        $this->settings['commission_period_auto_enable'] = 1;
+        $this->settings['commission_period_auto_min_invitees'] = 2;
+        $admin = $this->makeUser(['is_admin' => 1]);
+        $keep = $this->makeUser();
+        $this->addPaidInvitees($keep, 2, true);
+        $drop = $this->makeUser();
+        $this->addPaidInvitees($drop, 2, true);
+        foreach ([$keep, $drop] as $user) {
+            (new PeriodCommission())->apply($user);
+            (new PeriodCommission())->approve(\App\Models\CommissionPeriodApplication::where('user_id', $user->id)->value('id'), $admin);
+        }
+        User::where('invite_user_id', $drop->id)->limit(1)->update(['expired_at' => time() - 10]);
+
+        $this->artisan('commission:period-sweep')->assertSuccessful();
+        $this->artisan('commission:period-sweep')->assertSuccessful();
+
+        $status = fn (User $u) => (int) \App\Models\CommissionPeriodApplication::where('user_id', $u->id)->value('status');
+        $this->assertSame([1, 3], [$status($keep), $status($drop)]);
+        $revokedMails = array_filter($this->pushedMails(), fn ($m) => str_contains($m['subject'], '资格已取消'));
+        $this->assertCount(1, $revokedMails);
     }
 
     public function test_admin_config_rules_accept_the_invite_growth_settings(): void
@@ -595,7 +700,7 @@ class InviteGrowthTest extends TestCase
     }
 
     /** 每个收件人的 SendEmailJob params，按邮箱分组 */
-    private function pushedMails(): array
+    private function mailsByRecipient(): array
     {
         $jobs = [];
         Queue::assertPushed(SendEmailJob::class, function (SendEmailJob $job) use (&$jobs) {
@@ -632,7 +737,7 @@ class InviteGrowthTest extends TestCase
         $this->travelTo(Carbon::parse('2026-10-19 12:00:00'));
         $this->artisan('commission:notify-digest')->assertExitCode(0);
         Queue::assertPushed(SendEmailJob::class, 1);
-        $mail = $this->pushedMails()['promoter@example.test'];
+        $mail = $this->mailsByRecipient()['promoter@example.test'];
         $this->assertSame('commissionCredited', $mail['template_name']);
         $this->assertSame('commission', $mail['category']);
         $this->assertSame('每周佣金汇总 ¥25.00 - Sufe', $mail['subject']);
@@ -698,7 +803,7 @@ class InviteGrowthTest extends TestCase
 
         $this->artisan('commission:notify-digest')->assertExitCode(0);
         Queue::assertPushed(SendEmailJob::class, 2);
-        $mails = $this->pushedMails();
+        $mails = $this->mailsByRecipient();
 
         $topMail = $mails['top@example.test'];
         $this->assertSame('每日佣金汇总 ¥5.00 - Sufe', $topMail['subject']);

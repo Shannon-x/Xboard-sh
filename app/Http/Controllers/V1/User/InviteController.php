@@ -16,6 +16,7 @@ use App\Services\Commission\InviteDiscount;
 use App\Services\Commission\InviteFunnel;
 use App\Services\Commission\InviteeStats;
 use App\Services\Commission\Leaderboard;
+use App\Services\Commission\PeriodCommission;
 use App\Services\Commission\WithdrawalConfig;
 use App\Support\InviteCodeRules;
 use App\Utils\Helper;
@@ -247,6 +248,17 @@ class InviteController extends Controller
             'data' => ComissionLogResource::collection($details),
             'total' => $total
         ]);
+    }
+
+    /**
+     * 申请周期返佣：有效付费被邀请人达标后才能提交，提交后由站长在后台审核。
+     * 返回最新的 commission 视图，前端直接用它刷新状态。
+     */
+    public function applyPeriod(Request $request)
+    {
+        $user = User::findOrFail($request->user()->id);
+        (new PeriodCommission())->apply($user);
+        return $this->success(CommissionPolicy::view($user->fresh()));
     }
 
     public function fetch(Request $request)

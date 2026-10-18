@@ -6,7 +6,7 @@
     <!--[if !mso]><!-->
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500&family=Noto+Serif+SC:wght@400;600;700&display=swap" rel="stylesheet" />
     <!--<![endif]-->
-    <title>佣金入账 - {{ $name ?? 'XBoard' }}</title>
+    <title>{{ $heading ?? '佣金入账' }} - {{ $name ?? 'XBoard' }}</title>
 </head>
 <body style="margin:0;padding:0;background-color:#f5f3ef;font-family:'Noto Sans SC','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;-webkit-font-smoothing:antialiased;">
     <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color:#f5f3ef;">
@@ -20,8 +20,8 @@
                     </tr>
                     <tr>
                         <td style="padding:32px 44px 0 44px;">
-                            <div style="font-family:'Noto Serif SC',Georgia,'Songti SC',serif;font-size:26px;font-weight:700;color:#2a2520;line-height:1.4;letter-spacing:0.5px;">佣金入账</div>
-                            <div style="margin-top:8px;font-size:14px;color:#716a65;">本轮共 {{ $count }} 笔，已计入你的佣金余额</div>
+                            <div style="font-family:'Noto Serif SC',Georgia,'Songti SC',serif;font-size:26px;font-weight:700;color:#2a2520;line-height:1.4;letter-spacing:0.5px;">{{ $heading ?? '佣金入账' }}</div>
+                            <div style="margin-top:8px;font-size:14px;color:#716a65;">{{ $subtitle ?? ('本轮共 ' . $count . ' 笔，已计入你的佣金余额') }}</div>
                         </td>
                     </tr>
                     <tr>
@@ -48,6 +48,11 @@
                                     <td style="padding:8px 0 8px 16px;color:#716a65;border-bottom:1px solid #efebe5;text-align:right;white-space:nowrap;font-size:13px;">{{ $item['time'] }}</td>
                                 </tr>
                                 @endforeach
+                                @if(!empty($more))
+                                <tr>
+                                    <td colspan="3" style="padding:10px 0 0 0;color:#a09890;font-size:13px;">{{ $more }}</td>
+                                </tr>
+                                @endif
                             </table>
                             <div style="margin-top:16px;font-size:12px;color:#a09890;line-height:1.7;">佣金可在邀请页提现或划转到账户余额。</div>
                         </td>

@@ -208,5 +208,16 @@
     "Commission credited :amount": "佣金入賬 :amount",
     ":count commission payment(s) totalling :amount have been credited to your commission balance": "本輪共 :count 筆佣金入賬，合計 :amount，已計入你的佣金餘額",
     "Level :level": "第 :level 級",
-    "View commissions": "查看佣金"
+    "View commissions": "查看佣金",
+    "Commission credited": "佣金入賬",
+    ":count payment(s) this round, credited to your commission balance": "本輪共 :count 筆，已計入你的佣金餘額",
+    "Weekly commission summary": "每週佣金匯總",
+    "Weekly commission summary :amount": "每週佣金匯總 :amount",
+    ":count commission payment(s) totalling :amount were credited to your commission balance in the past week": "過去一週共 :count 筆佣金入賬，合計 :amount，已計入你的佣金餘額",
+    ":count payment(s) in the past week, credited to your commission balance": "過去一週共 :count 筆，已計入你的佣金餘額",
+    "Daily commission summary": "每日佣金匯總",
+    "Daily commission summary :amount": "每日佣金匯總 :amount",
+    ":count commission payment(s) totalling :amount were credited to your commission balance in the past day": "過去一天共 :count 筆佣金入賬，合計 :amount，已計入你的佣金餘額",
+    ":count payment(s) in the past day, credited to your commission balance": "過去一天共 :count 筆，已計入你的佣金餘額",
+    ":count more not listed, see them all on the invite page": "另有 :count 筆未列出，可在邀請頁查看全部"
 }

@@ -14,6 +14,7 @@ use App\Models\ServerGroup;
 use App\Models\User;
 use App\Models\UserNotificationPref;
 use App\Services\Commission\InviteFunnel;
+use App\Services\EmailVerification;
 use App\Services\Commission\Leaderboard;
 use App\Services\Notification\NotificationPreference;
 use App\Services\OrderService;
@@ -47,6 +48,8 @@ class InviteGrowthTest extends TestCase
         app()->forgetScopedInstances();
         Queue::fake();
         Http::preventStrayRequests();
+        // 注册走 MX 检查：CI 的 DNS 能解析出 example.test 没有收信服务器（400），本地 DNS 失败则放行，统一桩掉
+        EmailVerification::$dnsResolver = fn (string $domain) => true;
 
         $stub = new class extends Setting {
             public array $store = [];
@@ -85,6 +88,12 @@ class InviteGrowthTest extends TestCase
             'transfer_enable' => 100, 'device_limit' => 2, 'speed_limit' => null, 'reset_traffic_method' => 1,
             'prices' => ['monthly' => 100, 'quarterly' => 270],
         ]);
+    }
+
+    protected function tearDown(): void
+    {
+        EmailVerification::$dnsResolver = null;
+        parent::tearDown();
     }
 
     private function makeUser(array $attrs = []): User

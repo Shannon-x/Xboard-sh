@@ -16,7 +16,7 @@ use Illuminate\Support\Facades\Log;
  *   marketing     营销与活动：到期后的挽回邮件、后台群发里标为「营销」的邮件
  *   announcement  服务公告：后台群发默认的类别（维护、线路调整这类）
  *   support       工单：工单有新回复
- *   commission    推广与佣金：佣金入账汇总（每轮结算每人一封）。可关、非批量、没有老列。
+ *   commission    推广与佣金：佣金入账汇总（默认每周一封，见 CommissionNotifier::frequency）。可关、非批量、没有老列。
  *   交易类（收据、提现结果、验证码、登录链接、邮箱自测）不属于任何类别，永远发送，面板里只展示不给关。
  *
  * 存储：v2_user_notification_pref 每用户每类别一行（没有行 = 开启），source 记这次取值从哪来。

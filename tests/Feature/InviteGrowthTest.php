@@ -13,6 +13,8 @@ use App\Models\Plan;
 use App\Models\ServerGroup;
 use App\Models\User;
 use App\Models\UserNotificationPref;
+use App\Services\Commission\CommissionDigest;
+use App\Services\Commission\CommissionNotifier;
 use App\Services\Commission\InviteFunnel;
 use App\Services\EmailVerification;
 use App\Services\Commission\Leaderboard;
@@ -21,6 +23,7 @@ use App\Services\Notification\NotificationPreference;
 use App\Services\OrderService;
 use App\Support\Setting;
 use App\Utils\Helper;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -32,7 +35,7 @@ use Tests\TestCase;
 
 /**
  * 推广增长：分渠道漏斗（C2）、被邀请人首单优惠（B1）、阶梯比例（B2）、
- * 周期返佣申请制（B3）、佣金入账通知（C1）、月度榜单（B5）。
+ * 周期返佣申请制（B3）、佣金入账通知（C1，含每日 / 每周汇总）、月度榜单（B5）。
  */
 class InviteGrowthTest extends TestCase
 {
@@ -564,8 +567,13 @@ class InviteGrowthTest extends TestCase
             'commission_tier_3_min' => 30, 'commission_tier_3_rate' => 20,
             'commission_period_auto_enable' => 1, 'commission_period_auto_min_invitees' => 50,
             'commission_notify_enable' => 1, 'commission_leaderboard_enable' => 1,
+            'commission_notify_frequency' => 'weekly',
         ];
         $this->assertTrue(Validator::make($data, ConfigSave::RULES)->passes());
+        foreach (['instant', 'daily'] as $frequency) {
+            $this->assertTrue(Validator::make(['commission_notify_frequency' => $frequency], ConfigSave::RULES)->passes());
+        }
+        $this->assertTrue(Validator::make(['commission_notify_frequency' => 'hourly'], ConfigSave::RULES)->fails());
         $this->assertTrue(Validator::make(['invite_first_order_discount' => 101], ConfigSave::RULES)->fails());
         $this->assertTrue(Validator::make(['commission_tier_2_rate' => -1], ConfigSave::RULES)->fails());
         $this->assertTrue(Validator::make(['commission_period_auto_min_invitees' => 0], ConfigSave::RULES)->fails());
@@ -587,6 +595,7 @@ class InviteGrowthTest extends TestCase
 
     public function test_commission_round_sends_one_summary_per_inviter_and_renders_in_every_theme(): void
     {
+        $this->settings['commission_notify_frequency'] = 'instant';
         $inviter = $this->makeUser(['email' => 'promoter@example.test', 'telegram_id' => 123456]);
         $other = $this->makeUser(['email' => 'other@example.test']);
         $buyerA = $this->makeUser(['email' => 'alice@gmail.com', 'invite_user_id' => $inviter->id]);
@@ -653,6 +662,7 @@ class InviteGrowthTest extends TestCase
 
     public function test_commission_notification_respects_the_preference_the_switch_and_bounced_mailboxes(): void
     {
+        $this->settings['commission_notify_frequency'] = 'instant';
         $inviter = $this->makeUser(['email' => 'promoter@example.test', 'telegram_id' => 123456]);
         $buyer = $this->makeUser(['invite_user_id' => $inviter->id]);
 
@@ -687,6 +697,175 @@ class InviteGrowthTest extends TestCase
         $this->assertTrue($cats->has('commission'));
         $this->assertTrue($cats['commission']['enabled']);
         $this->assertFalse($cats['commission']['locked']);
+    }
+
+    /** 每个收件人的 SendEmailJob params，按邮箱分组 */
+    private function mailsByRecipient(): array
+    {
+        $jobs = [];
+        Queue::assertPushed(SendEmailJob::class, function (SendEmailJob $job) use (&$jobs) {
+            $p = $this->mailParams($job);
+            $jobs[$p['email']] = $p;
+            return true;
+        });
+        return $jobs;
+    }
+
+    public function test_weekly_by_default_settlement_sends_nothing_and_monday_noon_sends_one_summary(): void
+    {
+        $inviter = $this->makeUser(['email' => 'promoter@example.test', 'telegram_id' => 123456]);
+        $buyerA = $this->makeUser(['email' => 'alice@gmail.com', 'invite_user_id' => $inviter->id]);
+        $buyerB = $this->makeUser(['email' => 'bob@qq.com', 'invite_user_id' => $inviter->id]);
+
+        // 周五、周六各入账一笔：佣金照常落账，结算当下不发
+        $this->travelTo(Carbon::parse('2026-10-16 10:00:00'));
+        $this->settleableOrder($buyerA, $inviter, 1000);
+        $this->artisan('check:commission')->assertExitCode(0);
+        $this->travelTo(Carbon::parse('2026-10-17 15:00:00'));
+        $this->settleableOrder($buyerB, $inviter, 1500);
+        $this->artisan('check:commission')->assertExitCode(0);
+        $this->assertSame(2500, (int) $inviter->fresh()->commission_balance);
+        Queue::assertNotPushed(SendEmailJob::class);
+        Queue::assertNotPushed(SendTelegramJob::class);
+
+        // 周日不是发送日
+        $this->travelTo(Carbon::parse('2026-10-18 12:00:00'));
+        $this->artisan('commission:notify-digest')->assertExitCode(0);
+        Queue::assertNotPushed(SendEmailJob::class);
+
+        // 周一中午：一封汇总，Telegram 一条
+        $this->travelTo(Carbon::parse('2026-10-19 12:00:00'));
+        $this->artisan('commission:notify-digest')->assertExitCode(0);
+        Queue::assertPushed(SendEmailJob::class, 1);
+        $mail = $this->mailsByRecipient()['promoter@example.test'];
+        $this->assertSame('commissionCredited', $mail['template_name']);
+        $this->assertSame('commission', $mail['category']);
+        $this->assertSame('每周佣金汇总 ¥25.00 - Sufe', $mail['subject']);
+        $v = $mail['template_value'];
+        $this->assertSame('每周佣金汇总', $v['heading']);
+        $this->assertSame('过去一周共 2 笔，已计入你的佣金余额', $v['subtitle']);
+        $this->assertSame('过去一周共 2 笔佣金入账，合计 ¥25.00，已计入你的佣金余额', $v['summary']);
+        $this->assertSame(2, $v['count']);
+        $this->assertNull($v['more']);
+        $this->assertSame(['al****@g****.com', 'bo****@q****.com'], array_column($v['items'], 'email'));
+        $this->assertSame(['¥10.00', '¥15.00'], array_column($v['items'], 'amount'));
+        $this->assertSame(['2026-10-16 10:00', '2026-10-17 15:00'], array_column($v['items'], 'time'));
+        $this->assertStringStartsWith('过去一周共 2 笔佣金入账，合计 ¥25.00', $v['content']);
+        Queue::assertPushed(SendTelegramJob::class, function (SendTelegramJob $job) {
+            [$id, $text] = (fn () => [$this->telegramId, $this->text])->call($job);
+            return $id === 123456 && str_starts_with($text, '每周佣金汇总 ¥25.00') && str_contains($text, 'bo****@q****.com');
+        });
+        $this->assertSame((int) CommissionLog::max('id'), (int) $this->settings[CommissionDigest::WATERMARK_KEY]);
+
+        // 三套主题的模板都用上了汇总的标题和说明
+        foreach (['editorial', 'classic', 'default'] as $theme) {
+            $html = view("mail.{$theme}.commissionCredited", $v)->render();
+            $this->assertStringContainsString('每周佣金汇总', $html, $theme);
+            $this->assertStringContainsString('过去一周共', $html, $theme);
+            $this->assertStringNotContainsString('本轮', $html, $theme);
+        }
+
+        // 同一天再跑：没有新入账就不发
+        $this->artisan('commission:notify-digest')->assertExitCode(0);
+        Queue::assertPushed(SendEmailJob::class, 1);
+
+        // 下一周只汇总新的那笔
+        $this->travelTo(Carbon::parse('2026-10-21 09:30:00'));
+        $this->settleableOrder($this->makeUser(['email' => 'erin@gmail.com', 'invite_user_id' => $inviter->id]), $inviter, 800);
+        $this->artisan('check:commission')->assertExitCode(0);
+        $this->travelTo(Carbon::parse('2026-10-26 12:00:00'));
+        $this->artisan('commission:notify-digest')->assertExitCode(0);
+        Queue::assertPushed(SendEmailJob::class, 2);
+        Queue::assertPushed(SendEmailJob::class, function (SendEmailJob $job) {
+            $p = $this->mailParams($job);
+            return $p['subject'] === '每周佣金汇总 ¥8.00 - Sufe' && $p['template_value']['count'] === 1;
+        });
+    }
+
+    public function test_daily_digest_shows_levels_caps_long_lists_and_never_reaches_back_past_the_lookback(): void
+    {
+        $this->settings['commission_notify_frequency'] = 'daily';
+        $this->settings['commission_distribution_enable'] = 1;
+        $this->travelTo(Carbon::parse('2026-10-18 12:00:00'));
+        $top = $this->makeUser(['email' => 'top@example.test']);
+        $mid = $this->makeUser(['email' => 'mid@example.test', 'invite_user_id' => $top->id]);
+        $buyer = $this->makeUser(['email' => 'dave@gmail.com', 'invite_user_id' => $mid->id]);
+
+        // 十天前的历史佣金：第一次跑（还没有水位）也不会翻出来
+        $this->log($top, $buyer, 999, now()->subDays(10)->getTimestamp());
+        // 同一笔订单：mid 是一级，top 是二级
+        $this->log($mid, $buyer, 1000, now()->subHours(5)->getTimestamp());
+        $this->log($top, $buyer, 500, now()->subHours(5)->getTimestamp());
+        // mid 另有 31 笔，一封里只列最近 30 笔
+        for ($i = 0; $i < 31; $i++) {
+            $this->log($mid, $this->makeUser(['invite_user_id' => $mid->id]), 100, now()->subHours(2)->getTimestamp());
+        }
+
+        $this->artisan('commission:notify-digest')->assertExitCode(0);
+        Queue::assertPushed(SendEmailJob::class, 2);
+        $mails = $this->mailsByRecipient();
+
+        $topMail = $mails['top@example.test'];
+        $this->assertSame('每日佣金汇总 ¥5.00 - Sufe', $topMail['subject']);
+        $this->assertSame([2], array_column($topMail['template_value']['items'], 'level'));
+        $this->assertStringContainsString('第 2 级', $topMail['template_value']['content']);
+        $this->assertSame('过去一天共 1 笔，已计入你的佣金余额', $topMail['template_value']['subtitle']);
+
+        $v = $mails['mid@example.test']['template_value'];
+        $this->assertSame('每日佣金汇总 ¥41.00 - Sufe', $mails['mid@example.test']['subject']);
+        $this->assertSame(32, $v['count']);
+        $this->assertCount(30, $v['items']);
+        $this->assertSame([1], array_values(array_unique(array_column($v['items'], 'level'))));
+        $this->assertSame('另有 2 笔未列出，可在邀请页查看全部', $v['more']);
+        $this->assertStringContainsString('另有 2 笔未列出', $v['content']);
+        foreach (['editorial', 'classic', 'default'] as $theme) {
+            $html = view("mail.{$theme}.commissionCredited", $v)->render();
+            $this->assertStringContainsString('另有 2 笔未列出', $html, $theme);
+        }
+
+        // 每天都发，但没有新入账就不发
+        $this->travelTo(Carbon::parse('2026-10-19 12:00:00'));
+        $this->artisan('commission:notify-digest')->assertExitCode(0);
+        Queue::assertPushed(SendEmailJob::class, 2);
+    }
+
+    public function test_digest_does_nothing_in_instant_mode_and_never_replays_what_the_switch_or_preference_held_back(): void
+    {
+        $this->travelTo(Carbon::parse('2026-10-19 12:00:00'));
+        $inviter = $this->makeUser(['email' => 'promoter@example.test']);
+        $buyer = $this->makeUser(['invite_user_id' => $inviter->id]);
+        $this->log($inviter, $buyer, 1000, now()->subDay()->getTimestamp());
+
+        // 每笔即时发送：结算当下已经发过，汇总命令什么都不做
+        $this->settings['commission_notify_frequency'] = 'instant';
+        $this->artisan('commission:notify-digest')->assertExitCode(0);
+        Queue::assertNotPushed(SendEmailJob::class);
+        $this->assertArrayNotHasKey(CommissionDigest::WATERMARK_KEY, $this->settings);
+
+        // 每周 + 总开关关着：不发，水位照样推进
+        $this->settings['commission_notify_frequency'] = 'weekly';
+        $this->settings['commission_notify_enable'] = 0;
+        $this->artisan('commission:notify-digest')->assertExitCode(0);
+        Queue::assertNotPushed(SendEmailJob::class);
+        $this->assertSame((int) CommissionLog::max('id'), (int) $this->settings[CommissionDigest::WATERMARK_KEY]);
+
+        // 再打开：关着期间的不补发
+        $this->settings['commission_notify_enable'] = 1;
+        $this->artisan('commission:notify-digest')->assertExitCode(0);
+        Queue::assertNotPushed(SendEmailJob::class);
+
+        // 用户在偏好里关了「推广与佣金」：新入账也不发，水位推进
+        NotificationPreference::set($inviter, NotificationPreference::COMMISSION, false, UserNotificationPref::SOURCE_PANEL);
+        $this->log($inviter, $buyer, 700, now()->subHour()->getTimestamp());
+        $this->artisan('commission:notify-digest')->assertExitCode(0);
+        Queue::assertNotPushed(SendEmailJob::class);
+        $this->assertSame((int) CommissionLog::max('id'), (int) $this->settings[CommissionDigest::WATERMARK_KEY]);
+
+        // 没填或填了不认识的值都按每周
+        unset($this->settings['commission_notify_frequency']);
+        $this->assertSame('weekly', CommissionNotifier::frequency());
+        $this->settings['commission_notify_frequency'] = 'bogus';
+        $this->assertSame('weekly', CommissionNotifier::frequency());
     }
 
     // ---------------------------------------------------------------- B5 月度榜单

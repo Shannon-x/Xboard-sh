@@ -18,6 +18,7 @@
 | `commission_period_auto_enable` | [B3] 开放周期返佣申请(键名沿用最初的「自动开启」版) | 关 |
 | `commission_period_auto_min_invitees` | [B3] 有效付费被邀请人达到 N 才能申请;已开通的掉到 N 以下自动取消资格 | 50 |
 | `commission_notify_enable` | [C1] 佣金入账汇总通知总开关(邮件 + Telegram) | 开 |
+| `commission_notify_frequency` | [C1] 入账通知多久一封:`instant` 每轮结算 / `daily` 每天 12:00 / `weekly` 每周一 12:00 | `weekly` |
 | `commission_leaderboard_enable` | [B5] 邀请页月度榜单 | 关 |
 
 基础比例仍是原来的 `invite_commission`,首单 / 周期的站点默认仍是 `commission_first_time_enable`;
@@ -51,9 +52,21 @@
 订单的去重人数) → 佣金 `commission_total`(这些用户订单的 `CommissionLog.get_amount` 求和)。
 老用户没记码的归入 `unknown`。`daily` 为最近 30 天按天(`app.timezone`),缺的天补 0。每个用户缓存 120 秒。
 
-**入账通知**(`CommissionNotifier`,[C1]):`check:commission` 每分钟一轮,一轮里每个邀请人收到的每一笔先攒着,
-整轮结束**每人一封**汇总邮件(三级分销时上级各收各的);已绑 Telegram 的再推一条纯文本。单笔结算事务回滚的
-不会进通知。发送条件:总开关 → 用户通知偏好新类别 `commission`(推广与佣金,可关、非批量、没有老列)→ 邮箱未退信。
+**入账通知**(`CommissionNotifier`,[C1]):每个邀请人**每次一封**汇总邮件(三级分销时上级各收各的),
+已绑 Telegram 的再推一条纯文本。多久一次看 `commission_notify_frequency`:
+
+- `weekly`(默认):`commission:notify-digest` 每天 12:00 跑,只在周一发,汇总上次以来落库的 `CommissionLog`
+  (`CommissionDigest`)。标题「每周佣金汇总 ¥x」,正文「过去一周共 n 笔」。
+- `daily`:同一个命令每天都发,标题「每日佣金汇总 ¥x」。
+- `instant`:老行为。`check:commission` 每分钟一轮,一轮里的入账攒着、整轮结束每人一封;因为每笔订单满 3 天的
+  时间点各不相同,实际接近一笔一封。单笔结算事务回滚的不会进通知。
+
+汇总的水位是上次发到的最大 `CommissionLog` id(`v2_settings.commission_notify_digest_last_id`),发完才推进;
+另有「周期 + 1 天」的回看下限,第一次跑或从 `instant` 切回来时最多回看一个周期,不会翻出几个月前的历史佣金。
+总开关关着时水位照样推进,再打开不补发。`CommissionLog` 不存层级,开了三级分销时顺着被邀请人的邀请链反推。
+一封最多列最近 30 笔,多出来的写「另有 n 笔未列出」。
+
+发送条件:总开关 → 用户通知偏好新类别 `commission`(推广与佣金,可关、非批量、没有老列)→ 邮箱未退信。
 通知失败只记日志,佣金早已落账。
 
 **月度榜单**(`Leaderboard`,[B5]):本月(`app.timezone`)`CommissionLog.get_amount` 按邀请人求和取前 10;
@@ -104,6 +117,8 @@
 2. **邮件模板要手动同步**:线上 `resources/views/mail` 是宿主机挂载的,镜像里新加的
    `mail/{editorial,classic,default}/commissionCredited.blade.php` 不会自动出现,要从新镜像里拷出来
    (`docker create` + `docker cp`)。没同步之前通知会自动退回通用 `notify` 模板(纯文本正文),不会报错。
+   每周 / 每日汇总(`commission_notify_frequency`)又改了这三个模板(标题、说明、「另有 n 笔未列出」),部署后要**再同步一次**;
+   没同步时旧模板照样能渲染,只是大标题仍是「佣金入账」、说明仍是「本轮共 n 笔」。汇总不需要迁移,水位存 `v2_settings`。
 3. **后台要填的值**(默认全关,开哪项填哪项):`invite_first_order_discount = 12`;
    `commission_tier_enable = 1`(档位默认 10 → 15%、30 → 20%,可改);
    `commission_period_auto_enable = 1`(开放申请)、`commission_period_auto_min_invitees = 50`;

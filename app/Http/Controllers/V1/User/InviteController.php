@@ -11,6 +11,7 @@ use App\Models\InviteCode;
 use App\Models\Order;
 use App\Models\User;
 use App\Services\Commission\CommissionPolicy;
+use App\Services\Commission\EmailMask;
 use App\Services\Commission\InviteDiscount;
 use App\Services\Commission\InviteFunnel;
 use App\Services\Commission\InviteeStats;
@@ -120,33 +121,14 @@ class InviteController extends Controller
     }
 
     /**
-     * 邮箱脱敏：ab****@e****.com。把被邀请人/买家邮箱展示给邀请人（aff 明细）时，
-     * 保留极弱辨识度但尽量降低撞库/社工价值（local 最多留 1-2 位、域名只露主域首字母 + 后缀）。
+     * 邮箱脱敏：ab****@e****.com，口径在 EmailMask（入账通知、榜单同一份）。
      *
-     * ⚠️ 刻意内联在本控制器，不调用 Helper::maskEmail：部分部署把旧版 app/Utils/Helper.php
-     *    bind-mount 覆盖了镜像版，旧 Helper 缺该方法会让本接口 500（Call to undefined method）。
-     *    本控制器走镜像版、不被覆盖，内联即可彻底规避该版本漂移。
+     * ⚠️ 刻意不调用 Helper::maskEmail：部分部署把旧版 app/Utils/Helper.php bind-mount 覆盖了镜像版，
+     *    旧 Helper 缺该方法会让本接口 500（Call to undefined method）。EmailMask 在 app/Services 下、走镜像版。
      */
     private static function maskEmail(?string $email): string
     {
-        if ($email === null || $email === '' || !str_contains($email, '@')) {
-            return '****';
-        }
-        [$local, $domain] = explode('@', $email, 2);
-
-        $localKeep = mb_strlen($local) <= 2 ? 1 : 2;
-        $maskedLocal = mb_substr($local, 0, $localKeep) . '****';
-
-        $parts = explode('.', $domain);
-        if (count($parts) >= 2) {
-            $host = $parts[0];
-            $suffix = implode('.', array_slice($parts, 1));
-            $maskedDomain = mb_substr($host, 0, 1) . '****.' . $suffix;
-        } else {
-            $maskedDomain = mb_substr($domain, 0, 1) . '****';
-        }
-
-        return $maskedLocal . '@' . $maskedDomain;
+        return EmailMask::mask($email);
     }
 
     /**

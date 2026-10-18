@@ -78,7 +78,7 @@ class NotificationPreferenceTest extends TestCase
     {
         $user = $this->user();
         $view = NotificationPreference::view($user);
-        $this->assertCount(5, $view['categories']);
+        $this->assertCount(6, $view['categories']);   // billing / usage / support / commission / announcement / marketing
         foreach ($view['categories'] as $row) {
             $this->assertTrue($row['enabled'], $row['key']);
             $this->assertFalse($row['locked'], $row['key']);
@@ -110,7 +110,7 @@ class NotificationPreferenceTest extends TestCase
         $this->postJson('/api/v1/user/notify/prefs/save', ['prefs' => ['marketing' => false, 'support' => false]])
             ->assertOk()
             ->assertJsonPath('data.categories.2.enabled', false)   // support
-            ->assertJsonPath('data.categories.4.enabled', false);  // marketing
+            ->assertJsonPath('data.categories.5.enabled', false);  // marketing（commission 插在 support 之后）
         $this->postJson('/api/v1/user/notify/prefs/save', ['prefs' => ['nope' => false]])->assertStatus(422);
         $this->assertFalse(NotificationPreference::allows($user->id, 'marketing'));
         $this->assertTrue(NotificationPreference::allows($user->id, 'billing'));
@@ -143,12 +143,12 @@ class NotificationPreferenceTest extends TestCase
 
         $this->postJson('/api/v1/guest/notify/fetch', ['token' => $key])->assertOk()
             ->assertJsonPath('data.email', 'sh***@example.test')
-            ->assertJsonPath('data.categories.4.key', 'marketing');
+            ->assertJsonPath('data.categories.5.key', 'marketing');
         $this->postJson('/api/v1/guest/notify/fetch', ['token' => str_repeat('0', 32)])->assertNotFound();
         $this->postJson('/api/v1/guest/notify/fetch', ['token' => 'abc'])->assertNotFound();
 
         $this->postJson('/api/v1/guest/notify/update', ['token' => $key, 'prefs' => ['marketing' => false]])->assertOk()
-            ->assertJsonPath('data.categories.4.enabled', false);
+            ->assertJsonPath('data.categories.5.enabled', false);
         $this->assertSame('email_link', UserNotificationPref::where('user_id', $user->id)->where('category', 'marketing')->value('source'));
 
         // 换钥匙后旧链接全部失效

@@ -3,6 +3,8 @@
 namespace Tests\Feature;
 
 use App\Http\Requests\Admin\ConfigSave;
+use App\Jobs\SendEmailJob;
+use App\Jobs\SendTelegramJob;
 use App\Models\CommissionLog;
 use App\Models\Coupon;
 use App\Models\InviteCode;
@@ -10,7 +12,9 @@ use App\Models\Order;
 use App\Models\Plan;
 use App\Models\ServerGroup;
 use App\Models\User;
+use App\Models\UserNotificationPref;
 use App\Services\Commission\InviteFunnel;
+use App\Services\Notification\NotificationPreference;
 use App\Services\OrderService;
 use App\Support\Setting;
 use App\Utils\Helper;
@@ -450,5 +454,123 @@ class InviteGrowthTest extends TestCase
         $this->assertTrue(Validator::make(['invite_first_order_discount' => 101], ConfigSave::RULES)->fails());
         $this->assertTrue(Validator::make(['commission_tier_2_rate' => -1], ConfigSave::RULES)->fails());
         $this->assertTrue(Validator::make(['commission_period_auto_min_invitees' => 0], ConfigSave::RULES)->fails());
+    }
+
+    // ---------------------------------------------------------------- C1 佣金入账通知
+
+    /** 待结算（commission_status=1）的已完成订单 */
+    private function settleableOrder(User $buyer, User $inviter, int $commission = 1000): Order
+    {
+        return $this->paidOrder($buyer, $inviter, 10000, 1, $commission);
+    }
+
+    /** 取 SendEmailJob 的 params（protected） */
+    private function mailParams(SendEmailJob $job): array
+    {
+        return (fn () => $this->params)->call($job);
+    }
+
+    public function test_commission_round_sends_one_summary_per_inviter_and_renders_in_every_theme(): void
+    {
+        $inviter = $this->makeUser(['email' => 'promoter@example.test', 'telegram_id' => 123456]);
+        $other = $this->makeUser(['email' => 'other@example.test']);
+        $buyerA = $this->makeUser(['email' => 'alice@gmail.com', 'invite_user_id' => $inviter->id]);
+        $buyerB = $this->makeUser(['email' => 'bob@qq.com', 'invite_user_id' => $inviter->id]);
+        $buyerC = $this->makeUser(['email' => 'carol@outlook.com', 'invite_user_id' => $other->id]);
+        $this->settleableOrder($buyerA, $inviter, 1000);
+        $this->settleableOrder($buyerB, $inviter, 1500);
+        $this->settleableOrder($buyerC, $other, 700);
+        $this->paidOrder($buyerA, $inviter, 10000, 2, 1000);   // 已结算过的不再进本轮
+
+        $this->artisan('check:commission')->assertExitCode(0);
+
+        // 佣金照常落账
+        $this->assertSame(2500, (int) $inviter->fresh()->commission_balance);
+        $this->assertSame(700, (int) $other->fresh()->commission_balance);
+        $this->assertSame(3, CommissionLog::count());
+        $this->assertSame(0, Order::where('commission_status', 1)->count());
+
+        // 每个邀请人一封汇总
+        Queue::assertPushed(SendEmailJob::class, 2);
+        $jobs = [];
+        Queue::assertPushed(SendEmailJob::class, function (SendEmailJob $job) use (&$jobs) {
+            $p = $this->mailParams($job);
+            $jobs[$p['email']] = $p;
+            return true;
+        });
+        $mail = $jobs['promoter@example.test'];
+        $this->assertSame('commissionCredited', $mail['template_name']);
+        $this->assertSame('commission', $mail['category']);
+        $this->assertSame($inviter->id, $mail['user_id']);
+        $this->assertSame('佣金入账 ¥25.00 - Sufe', $mail['subject']);
+        $v = $mail['template_value'];
+        $this->assertSame('¥25.00', $v['total']);
+        $this->assertSame(2, $v['count']);
+        $this->assertSame('¥25.00', $v['balance']);
+        $this->assertSame('https://www.example.test/invite', $v['invite_url']);
+        $this->assertSame(['al****@g****.com', 'bo****@q****.com'], array_column($v['items'], 'email'));
+        $this->assertSame(['¥10.00', '¥15.00'], array_column($v['items'], 'amount'));
+        $this->assertStringContainsString('本轮共 2 笔佣金入账，合计 ¥25.00', $v['content']);
+        $this->assertStringContainsString('al****@g****.com  ¥10.00', $v['content']);
+        $this->assertStringNotContainsString('alice@gmail.com', json_encode($v, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(1, $jobs['other@example.test']['template_value']['count']);
+
+        // 绑了 Telegram 的再推一条纯文本
+        Queue::assertPushed(SendTelegramJob::class, 1);
+        Queue::assertPushed(SendTelegramJob::class, function (SendTelegramJob $job) {
+            [$id, $text, $mode] = (fn () => [$this->telegramId, $this->text, $this->parseMode])->call($job);
+            return $id === 123456 && $mode === '' && str_starts_with($text, '佣金入账 ¥25.00') && str_contains($text, 'bo****@q****.com');
+        });
+
+        // 三套主题的模板都能渲染，且页脚带偏好管理链接
+        foreach (['editorial', 'classic', 'default'] as $theme) {
+            $html = view("mail.{$theme}.commissionCredited", $v + ['manage_url' => 'https://www.example.test/n/abc', 'manage_label' => '管理通知偏好'])->render();
+            $this->assertStringContainsString('¥25.00', $html, $theme);
+            $this->assertStringContainsString('al****@g****.com', $html, $theme);
+            $this->assertStringContainsString('https://www.example.test/invite', $html, $theme);
+            $this->assertStringContainsString('https://www.example.test/n/abc', $html, $theme);
+        }
+
+        // 再跑一轮：没有新入账就不发
+        $this->artisan('check:commission')->assertExitCode(0);
+        Queue::assertPushed(SendEmailJob::class, 2);
+    }
+
+    public function test_commission_notification_respects_the_preference_the_switch_and_bounced_mailboxes(): void
+    {
+        $inviter = $this->makeUser(['email' => 'promoter@example.test', 'telegram_id' => 123456]);
+        $buyer = $this->makeUser(['invite_user_id' => $inviter->id]);
+
+        // 用户在偏好里关掉了「推广与佣金」：邮件和 Telegram 都不发，佣金照发
+        NotificationPreference::set($inviter, NotificationPreference::COMMISSION, false, UserNotificationPref::SOURCE_PANEL);
+        $this->settleableOrder($buyer, $inviter, 1000);
+        $this->artisan('check:commission')->assertExitCode(0);
+        $this->assertSame(1000, (int) $inviter->fresh()->commission_balance);
+        Queue::assertNotPushed(SendEmailJob::class);
+        Queue::assertNotPushed(SendTelegramJob::class);
+
+        // 偏好打开但总开关关着
+        NotificationPreference::set($inviter, NotificationPreference::COMMISSION, true, UserNotificationPref::SOURCE_PANEL);
+        $this->settings['commission_notify_enable'] = 0;
+        $this->settleableOrder($this->makeUser(['invite_user_id' => $inviter->id]), $inviter, 1000);
+        $this->artisan('check:commission')->assertExitCode(0);
+        $this->assertSame(2000, (int) $inviter->fresh()->commission_balance);
+        Queue::assertNotPushed(SendEmailJob::class);
+        Queue::assertNotPushed(SendTelegramJob::class);
+
+        // 退信过的邮箱：不发邮件，Telegram 照推
+        $this->settings['commission_notify_enable'] = 1;
+        User::where('id', $inviter->id)->update(['mail_suppressed_at' => time()]);
+        $this->settleableOrder($this->makeUser(['invite_user_id' => $inviter->id]), $inviter, 1000);
+        $this->artisan('check:commission')->assertExitCode(0);
+        Queue::assertNotPushed(SendEmailJob::class);
+        Queue::assertPushed(SendTelegramJob::class, 1);
+
+        // 偏好面板列出了新类别，默认开启、可关
+        Sanctum::actingAs($inviter);
+        $cats = collect($this->getJson('/api/v1/user/notify/prefs')->assertOk()->json('data.categories'))->keyBy('key');
+        $this->assertTrue($cats->has('commission'));
+        $this->assertTrue($cats['commission']['enabled']);
+        $this->assertFalse($cats['commission']['locked']);
     }
 }

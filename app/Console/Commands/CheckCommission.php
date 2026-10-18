@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\CommissionLog;
+use App\Services\Commission\CommissionNotifier;
 use App\Services\Plugin\HookManager;
 use Illuminate\Console\Command;
 use App\Models\Order;
@@ -25,6 +26,9 @@ class CheckCommission extends Command
      * @var string
      */
     protected $description = '返佣服务';
+
+    /** 本轮入账汇总通知（C1）：payHandle 攒、每单事务提交后并入、整轮结束后每个邀请人一封 */
+    private ?CommissionNotifier $notifier = null;
 
     /**
      * Create a new command instance.
@@ -64,6 +68,7 @@ class CheckCommission extends Command
     {
         // 改 chunkById：原 ->get() 在待结算订单量大时直接拉全量 id 到内存
         // 同时把"单笔异常即 re-throw 终止整轮"改为"per-order 捕获 + 日志"，单笔失败不再影响后续订单结算
+        $this->notifier = new CommissionNotifier();
         Order::where('commission_status', 1)
             ->where('invite_user_id', '!=', NULL)
             ->select('id')
@@ -115,7 +120,9 @@ class CheckCommission extends Command
                                 throw new \RuntimeException('Failed to save commission status');
                             }
                         });
+                        $this->notifier->commit();
                     } catch (\Throwable $e) {
+                        $this->notifier->discard();
                         // 单笔失败不应阻断后续订单。常见原因：inviter 被删 / lockForUpdate 超时 /
                         // CommissionLog uniq_commission_trade_inviter 冲突（已结算过的订单重新被置回 status=1）。
                         // 这里只记日志、继续；运营可基于 commission_status=1 且 updated_at 长期不变筛出滞留单。
@@ -127,6 +134,8 @@ class CheckCommission extends Command
                     }
                 }
             });
+        // 整轮结束再发：同一邀请人本轮多笔只收一封；发送失败只记日志，佣金早已落账
+        $this->notifier->flush();
     }
 
     public function payHandle($inviteUserId, Order $order)
@@ -177,6 +186,8 @@ class CheckCommission extends Command
                 'order_amount' => $order->total_amount,
                 'get_amount' => $commissionBalance
             ]);
+            // 入账通知草稿（只记内存；事务提交后由 autoPayCommission 并入待发）
+            $this->notifier?->collect((int) $inviter->id, $commissionBalance, (int) $order->user_id, (string) $order->trade_no, $l + 1);
             // 佣金到账事件：给插件留扩展点（Telegram/邮件通知等）。
             // 必须吞掉 hook 异常：本方法在结算事务内执行，插件抛错会回滚整笔结算并卡单。
             try {

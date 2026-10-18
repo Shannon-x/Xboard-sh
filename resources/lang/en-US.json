@@ -204,5 +204,9 @@
     "Invalid email address": "Invalid email address",
     "This email domain cannot receive mail, please check the address": "This email domain cannot receive mail, please check the address",
     "Your email address is already verified": "Your email address is already verified",
-    "Email verification is not enabled": "Email verification is not enabled"
+    "Email verification is not enabled": "Email verification is not enabled",
+    "Commission credited :amount": "Commission credited :amount",
+    ":count commission payment(s) totalling :amount have been credited to your commission balance": ":count commission payment(s) totalling :amount have been credited to your commission balance",
+    "Level :level": "Level :level",
+    "View commissions": "View commissions"
 }

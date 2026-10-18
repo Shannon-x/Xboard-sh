@@ -21,6 +21,14 @@
 | `commission_withdraw_method` | 旧版前端的提现方式列表(仅供旧主题使用) | — |
 | `commission_withdraw_min_invitees` | 提现所需的**不同付费被邀请人数**,与最低金额叠加;0 = 不限 | 0 |
 | `commission_transfer_require_invitees` | 佣金划转到余额是否同样受人数门槛 | 关 |
+| `invite_first_order_discount` | 被邀请人首单优惠百分比(12 = 88 折,0 关),见 [invite-growth.md](invite-growth.md) | 0 |
+| `commission_tier_enable` | 按付费被邀请人数的阶梯比例开关 | 关 |
+| `commission_tier_2_min` / `commission_tier_2_rate` | 档位 2:付费被邀请人 ≥ N 时的比例(%) | 10 / 15 |
+| `commission_tier_3_min` / `commission_tier_3_rate` | 档位 3 | 30 / 20 |
+| `commission_period_auto_enable` | 有效付费被邀请人 ≥ N 自动周期返佣,低于自动恢复首单返佣 | 关 |
+| `commission_period_auto_min_invitees` | 上面的 N | 50 |
+| `commission_notify_enable` | 佣金入账汇总通知(邮件 + Telegram)总开关 | 开 |
+| `commission_leaderboard_enable` | 邀请页月度榜单 | 关 |
 
 ### 付费被邀请人门槛(防自邀)
 

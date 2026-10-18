@@ -14,6 +14,7 @@ use App\Models\UserPayoutProfile;
 use App\Services\Billing\BillingDocumentService;
 use App\Services\Commission\WithdrawalConfig;
 use App\Services\Plugin\HookManager;
+use App\Services\Commission\InviteeStats;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\View;
@@ -65,6 +66,7 @@ class CommissionWithdrawalService
         if ($this->config->maxCents > 0 && $amountCents > $this->config->maxCents) {
             throw new ApiException(__('The maximum amount per withdrawal is :limit', ['limit' => $this->config->maxCents / 100]));
         }
+        $this->assertInviteeThreshold($user);
 
         $profile = UserPayoutProfile::where('user_id', $user->id)->first();
         if (!$attachmentIds && $reuseSavedQr && $profile && $profile->qr_attachment_id) {
@@ -166,6 +168,26 @@ class CommissionWithdrawalService
      *
      * @throws ApiException
      */
+    /**
+     * 付费被邀请人门槛：不同付费被邀请人数 < 设定值时不能拿佣金（与最低金额叠加）。
+     * 目的是抬高「自己邀请自己」的成本：要先养出 N 个真实付费账号才能把佣金提成现金。
+     * 提现必查；佣金划转到余额只在 commission_transfer_require_invitees 开启时查。
+     */
+    public function assertInviteeThreshold(User $user): void
+    {
+        $min = $this->config->minInvitees;
+        if ($min <= 0) {
+            return;
+        }
+        $count = InviteeStats::paidInviteeCount((int) $user->id);
+        if ($count < $min) {
+            throw new ApiException(__('At least :min paying invitees are required, you currently have :count', [
+                'min' => $min,
+                'count' => $count,
+            ]));
+        }
+    }
+
     public function cancel(User $user, int $withdrawalId): CommissionWithdrawal
     {
         return $this->refundAndClose(

@@ -67,6 +67,9 @@ final class WithdrawalConfig
         'commission_withdraw_usdt_rate' => 0,
         'commission_withdraw_require_qrcode' => 0,
         'commission_withdraw_thanks' => self::DEFAULT_THANKS,
+        // 提现人数门槛：不同付费被邀请人 ≥ N 才能提现（0 = 不限）；以及佣金划转到余额是否同样受限
+        'commission_withdraw_min_invitees' => 0,
+        'commission_transfer_require_invitees' => 0,
     ];
 
     /** @var array{rate: float|null, source: string, source_label: string, fetched_at: int|null, is_live: bool, is_stale: bool}|null */
@@ -86,6 +89,8 @@ final class WithdrawalConfig
         public readonly string $thanks,
         public readonly string $currency,
         public readonly string $currencySymbol,
+        public readonly int $minInvitees = 0,
+        public readonly bool $transferRequireInvitees = false,
     ) {
     }
 
@@ -109,6 +114,8 @@ final class WithdrawalConfig
             thanks: trim((string) $get('commission_withdraw_thanks')) ?: self::DEFAULT_THANKS,
             currency: (string) admin_setting('currency', 'CNY'),
             currencySymbol: (string) admin_setting('currency_symbol', '¥'),
+            minInvitees: max(0, (int) $get('commission_withdraw_min_invitees')),
+            transferRequireInvitees: (bool) (int) $get('commission_transfer_require_invitees'),
         );
     }
 
@@ -397,6 +404,9 @@ final class WithdrawalConfig
             'usdt_rate_updated_at' => $rate['fetched_at'],
             'usdt_rate_is_live' => $rate['is_live'],
             'require_qrcode' => $this->requireQrcode,
+            // 人数门槛：前端据此显示「已邀请 x/N 位付费用户」并在不达标时禁用提交
+            'min_invitees' => $this->minInvitees,
+            'transfer_require_invitees' => $this->transferRequireInvitees,
             'currency' => $this->currency,
             'currency_symbol' => $this->currencySymbol,
             'chains' => array_map(static fn(array $c) => [
@@ -431,6 +441,8 @@ final class WithdrawalConfig
             'commission_withdraw_usdt_rate' => $this->fallbackRate,
             'commission_withdraw_require_qrcode' => $this->requireQrcode,
             'commission_withdraw_thanks' => $this->thanks,
+            'commission_withdraw_min_invitees' => $this->minInvitees,
+            'commission_transfer_require_invitees' => $this->transferRequireInvitees,
             'commission_withdraw_presets' => array_map(
                 static fn(string $key, array $p) => ['value' => $key, 'hint' => $p['hint']],
                 array_keys(self::PRESETS),

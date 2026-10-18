@@ -10,6 +10,8 @@ use App\Models\CommissionLog;
 use App\Models\InviteCode;
 use App\Models\Order;
 use App\Models\User;
+use App\Services\Commission\InviteeStats;
+use App\Services\Commission\WithdrawalConfig;
 use App\Support\InviteCodeRules;
 use App\Utils\Helper;
 use Illuminate\Http\Request;
@@ -291,9 +293,14 @@ class InviteController extends Controller
             //可用佣金
             (int)$user->commission_balance
         ];
+        // 提现人数门槛（additive 字段，老前端忽略）：邀请页据此显示「已邀请 x/N 位付费用户」
+        $withdrawConfig = WithdrawalConfig::fromSettings();
         $data = [
             'codes' => InviteCodeResource::collection($user->codes),
-            'stat' => $stat
+            'stat' => $stat,
+            'paid_invitee_count' => InviteeStats::paidInviteeCount($user->id),
+            'withdraw_min_invitees' => $withdrawConfig->minInvitees,
+            'transfer_require_invitees' => $withdrawConfig->transferRequireInvitees,
         ];
         return $this->success($data);
     }

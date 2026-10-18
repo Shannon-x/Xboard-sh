@@ -13,6 +13,8 @@ use App\Models\Plan;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\BalanceLedger;
+use App\Services\Commission\WithdrawalConfig;
+use App\Services\CommissionWithdrawalService;
 use App\Services\Auth\LoginService;
 use App\Services\AuthService;
 use App\Services\Plugin\HookManager;
@@ -275,6 +277,12 @@ class UserController extends Controller
     {
         // 佣金转余额与佣金提现同属「拿佣金」，邮箱软验证受限时一起挡（下单付款不受影响）
         EmailVerification::assertAllowed(User::findOrFail($request->user()->id));
+        // 后台开启「划转同样受人数门槛」时，划转与提现一样要求不同付费被邀请人 ≥ N：
+        // 否则自邀者不提现、直接把佣金划成余额抵下一单，提现门槛就被绕过了。
+        $withdrawConfig = WithdrawalConfig::fromSettings();
+        if ($withdrawConfig->transferRequireInvitees) {
+            (new CommissionWithdrawalService($withdrawConfig))->assertInviteeThreshold($request->user());
+        }
         $amount = $request->input('transfer_amount');
         try {
             DB::transaction(function () use ($request, $amount) {

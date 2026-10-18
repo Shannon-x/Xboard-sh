@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Services\EmailVerification;
 use App\Http\Resources\CommissionWithdrawalResource;
 use App\Models\CommissionWithdrawal;
+use App\Services\Commission\InviteeStats;
 use App\Services\CommissionWithdrawalService;
 use App\Services\TicketAttachmentService;
 use Illuminate\Http\Request;
@@ -21,6 +22,8 @@ class WithdrawController extends Controller
         $service = new CommissionWithdrawalService();
         $data = $service->config()->toPublicArray();
         $data['commission_balance'] = (int) $request->user()->commission_balance;
+        // 人数门槛的分子：不同付费被邀请人数（分母 min_invitees 在 toPublicArray 里）
+        $data['paid_invitee_count'] = InviteeStats::paidInviteeCount((int) $request->user()->id);
         $data['has_pending'] = CommissionWithdrawal::where('user_id', $request->user()->id)
             ->where('status', CommissionWithdrawal::STATUS_PENDING)
             ->exists();

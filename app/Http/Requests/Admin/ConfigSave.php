@@ -39,6 +39,8 @@ class ConfigSave extends FormRequest
         'commission_withdraw_thanks' => 'nullable|string|max:1000',
         'commission_withdraw_min_invitees' => 'nullable|integer|min:0|max:100000',
         'commission_transfer_require_invitees' => '',
+        // invite growth
+        'invite_first_order_discount' => 'nullable|integer|min:0|max:100',
         // site
         'logo' => 'nullable|url',
         'force_https' => '',

@@ -3,12 +3,14 @@
 namespace Tests\Feature;
 
 use App\Models\CommissionLog;
+use App\Models\Coupon;
 use App\Models\InviteCode;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\ServerGroup;
 use App\Models\User;
 use App\Services\Commission\InviteFunnel;
+use App\Services\OrderService;
 use App\Support\Setting;
 use App\Utils\Helper;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -185,5 +187,88 @@ class InviteGrowthTest extends TestCase
         // 老字段原样保留
         $this->assertSame(5, $resp->json('data.stat.0'));
         $this->assertSame(2, $resp->json('data.paid_invitee_count'));
+    }
+    // ---------------------------------------------------------------- B1 被邀请人首单优惠
+
+    private function coupon(string $code, int $type, int $value, ?int $limitUse = null): Coupon
+    {
+        return Coupon::create([
+            'code' => $code, 'name' => $code, 'type' => $type, 'value' => $value, 'show' => true,
+            'limit_use' => $limitUse, 'limit_use_with_user' => null, 'limit_plan_ids' => null, 'limit_period' => null,
+            'started_at' => time() - 60, 'ended_at' => time() + 86400,
+        ]);
+    }
+
+    public function test_invitee_gets_the_first_order_discount_once(): void
+    {
+        $this->settings['invite_first_order_discount'] = 12;   // 88 折
+        $inviter = $this->makeUser();
+        $friend = $this->makeUser(['invite_user_id' => $inviter->id]);
+
+        $order = OrderService::createFromRequest($friend, $this->plan, 'monthly');
+        $this->assertSame(8800, (int) $order->total_amount);
+        $this->assertSame(1200, (int) $order->discount_amount);
+        $this->assertSame(1200, (int) $order->invite_discount_amount);
+        $this->assertNull($order->coupon_id);
+        // 佣金按折后实付算（邀请人默认 10%）
+        $this->assertSame(880, (int) $order->commission_balance);
+
+        // 第一单完成后，第二单不再享受
+        Order::where('id', $order->id)->update(['status' => Order::STATUS_COMPLETED]);
+        $second = OrderService::createFromRequest($friend->fresh(), $this->plan, 'monthly');
+        $this->assertSame(10000, (int) $second->total_amount);
+        $this->assertSame(0, (int) $second->invite_discount_amount);
+
+        // 没有邀请人 / 自邀 / 开关为 0 都不打折
+        $this->assertSame(10000, (int) OrderService::createFromRequest($this->makeUser(), $this->plan, 'monthly')->total_amount);
+        $self = $this->makeUser();
+        User::where('id', $self->id)->update(['invite_user_id' => $self->id]);
+        $this->assertSame(10000, (int) OrderService::createFromRequest($self->fresh(), $this->plan, 'monthly')->total_amount);
+        $this->settings['invite_first_order_discount'] = 0;
+        $this->assertSame(10000, (int) OrderService::createFromRequest($this->makeUser(['invite_user_id' => $inviter->id]), $this->plan, 'monthly')->total_amount);
+    }
+
+    public function test_first_order_discount_and_coupon_do_not_stack_the_bigger_one_wins(): void
+    {
+        $this->settings['invite_first_order_discount'] = 12;
+        $inviter = $this->makeUser();
+
+        // 券更大（20%）：保留券，邀请折扣不记
+        $big = $this->coupon('BIG20', 2, 20);
+        $order = OrderService::createFromRequest($this->makeUser(['invite_user_id' => $inviter->id]), $this->plan, 'monthly', 'BIG20');
+        $this->assertSame(8000, (int) $order->total_amount);
+        $this->assertSame($big->id, (int) $order->coupon_id);
+        $this->assertSame(0, (int) $order->invite_discount_amount);
+
+        // 券更小（减 5 元，限量 3 张）：改用邀请折扣，券的占用退回
+        $small = $this->coupon('MINUS5', 1, 500, 3);
+        $order = OrderService::createFromRequest($this->makeUser(['invite_user_id' => $inviter->id]), $this->plan, 'monthly', 'MINUS5');
+        $this->assertSame(8800, (int) $order->total_amount);
+        $this->assertNull($order->coupon_id);
+        $this->assertSame(1200, (int) $order->invite_discount_amount);
+        $this->assertSame(3, (int) $small->fresh()->limit_use);
+    }
+
+    public function test_info_and_guest_config_expose_the_first_order_discount(): void
+    {
+        $this->settings['invite_first_order_discount'] = 12;
+        $inviter = $this->makeUser();
+        $friend = $this->makeUser(['invite_user_id' => $inviter->id]);
+
+        $this->getJson('/api/v1/guest/comm/config')->assertOk()->assertJsonPath('data.invite_first_order_discount', 12);
+
+        Sanctum::actingAs($friend);
+        $this->getJson('/api/v1/user/info')->assertOk()
+            ->assertJsonPath('data.invite_first_order_discount', 12)
+            ->assertJsonPath('data.invite_first_order_discount_eligible', true);
+
+        $this->paidOrder($friend, $inviter, 8800);
+        $this->getJson('/api/v1/user/info')->assertOk()->assertJsonPath('data.invite_first_order_discount_eligible', false);
+
+        Sanctum::actingAs($inviter);
+        $this->getJson('/api/v1/user/info')->assertOk()->assertJsonPath('data.invite_first_order_discount_eligible', false);
+
+        $this->settings['invite_first_order_discount'] = 0;
+        $this->getJson('/api/v1/guest/comm/config')->assertOk()->assertJsonPath('data.invite_first_order_discount', 0);
     }
 }

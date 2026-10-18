@@ -13,6 +13,7 @@ use App\Models\TrafficResetLog;
 use App\Models\User;
 use App\Services\Billing\BillingDocumentService;
 use App\Services\EmailVerification;
+use App\Services\Commission\InviteDiscount;
 use App\Services\Plugin\HookManager;
 use App\Support\PaymentGatewayBinding;
 use App\Support\PaymentMetrics;
@@ -121,6 +122,11 @@ class OrderService
             }
             if ($couponCode && $order->total_amount > 0) {
                 $orderService->applyCoupon($couponCode);
+            }
+
+            // 被邀请人首单优惠：与优惠券取较大者，之后由 setVipDiscount 一并从应付额里扣
+            if ($order->total_amount > 0 && !$fixedTopupPrice) {
+                $orderService->applyInviteFirstOrderDiscount($user);
             }
 
             if ($order->total_amount > 0 && !$fixedTopupPrice) {
@@ -1308,6 +1314,39 @@ class OrderService
         }
 
         $coupon->increment('limit_use');
+    }
+
+    /**
+     * 被邀请人首单优惠（InviteDiscount）。只对套餐购买类订单（新购 / 续费 / 变更）生效，
+     * 流量重置包、加油包不算「首单」。
+     *
+     * 与优惠券不叠加、取较大者：券的折扣 ≥ 邀请折扣 → 保留券、不动；否则退回券的占用、
+     * 清掉 coupon_id，改用邀请折扣。这里只把金额写进 discount_amount / invite_discount_amount，
+     * 真正从 total_amount 扣减仍由随后的 setVipDiscount 统一做（与券同一条路径）。
+     */
+    protected function applyInviteFirstOrderDiscount(User $user): void
+    {
+        $order = $this->order;
+        if (in_array((int) $order->type, [Order::TYPE_RESET_TRAFFIC, Order::TYPE_TRAFFIC_TOPUP], true)) {
+            return;
+        }
+        if (!InviteDiscount::eligible($user)) {
+            return;
+        }
+        $inviteDiscount = InviteDiscount::amountFor((int) $order->total_amount);
+        if ($inviteDiscount <= 0) {
+            return;
+        }
+        $couponDiscount = (int) round((float) ($order->discount_amount ?? 0));
+        if ($order->coupon_id && $couponDiscount >= $inviteDiscount) {
+            return;
+        }
+        if ($order->coupon_id) {
+            $this->restoreCouponUsage($order);
+            $order->coupon_id = null;
+        }
+        $order->discount_amount = $inviteDiscount;
+        $order->invite_discount_amount = $inviteDiscount;
     }
 
     protected function applyCoupon(string $couponCode): void

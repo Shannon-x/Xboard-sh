@@ -144,6 +144,8 @@ class ConfigController extends Controller
                 'commission_distribution_l3' => admin_setting('commission_distribution_l3'),
                 // 提现工作流：链列表 / 单笔上限 / USDT 参考汇率 / 是否必须二维码 / 结算感谢语（默认值集中在 WithdrawalConfig）
                 ...WithdrawalConfig::fromSettings()->toAdminArray(),
+                // 推广增长：被邀请人首单优惠（百分比，0 = 关）
+                'invite_first_order_discount' => (int) admin_setting('invite_first_order_discount', 0),
             ],
             'site' => [
                 'logo' => admin_setting('logo'),

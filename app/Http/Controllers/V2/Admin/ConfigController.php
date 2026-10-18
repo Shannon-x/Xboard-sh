@@ -146,6 +146,12 @@ class ConfigController extends Controller
                 ...WithdrawalConfig::fromSettings()->toAdminArray(),
                 // 推广增长：被邀请人首单优惠（百分比，0 = 关）
                 'invite_first_order_discount' => (int) admin_setting('invite_first_order_discount', 0),
+                // 阶梯佣金比例（按付费被邀请人数取档）
+                'commission_tier_enable' => (bool) admin_setting('commission_tier_enable', 0),
+                'commission_tier_2_min' => (int) admin_setting('commission_tier_2_min', 10),
+                'commission_tier_2_rate' => (int) admin_setting('commission_tier_2_rate', 15),
+                'commission_tier_3_min' => (int) admin_setting('commission_tier_3_min', 30),
+                'commission_tier_3_rate' => (int) admin_setting('commission_tier_3_rate', 20),
             ],
             'site' => [
                 'logo' => admin_setting('logo'),

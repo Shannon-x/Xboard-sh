@@ -41,6 +41,11 @@ class ConfigSave extends FormRequest
         'commission_transfer_require_invitees' => '',
         // invite growth
         'invite_first_order_discount' => 'nullable|integer|min:0|max:100',
+        'commission_tier_enable' => '',
+        'commission_tier_2_min' => 'nullable|integer|min:1|max:100000',
+        'commission_tier_2_rate' => 'nullable|integer|min:0|max:100',
+        'commission_tier_3_min' => 'nullable|integer|min:1|max:100000',
+        'commission_tier_3_rate' => 'nullable|integer|min:0|max:100',
         // site
         'logo' => 'nullable|url',
         'force_https' => '',

@@ -271,4 +271,91 @@ class InviteGrowthTest extends TestCase
         $this->settings['invite_first_order_discount'] = 0;
         $this->getJson('/api/v1/guest/comm/config')->assertOk()->assertJsonPath('data.invite_first_order_discount', 0);
     }
+
+    // ---------------------------------------------------------------- B2 阶梯比例
+
+    /** 让 $inviter 多 $n 位付费被邀请人（各一单 100 元，已完成） */
+    private function addPaidInvitees(User $inviter, int $n, bool $active = false): void
+    {
+        for ($i = 0; $i < $n; $i++) {
+            $buyer = $active ? $this->activeInvitee($inviter) : $this->makeUser(['invite_user_id' => $inviter->id]);
+            $this->paidOrder($buyer, $inviter, 10000);
+        }
+    }
+
+    private function newFriendOrder(User $inviter): Order
+    {
+        return OrderService::createFromRequest($this->makeUser(['invite_user_id' => $inviter->id]), $this->plan, 'monthly');
+    }
+
+    public function test_tier_rate_follows_the_paid_invitee_count_and_user_rate_wins(): void
+    {
+        $this->settings['commission_tier_enable'] = 1;
+        $inviter = $this->makeUser();
+
+        // 0 位付费：基础 10%
+        $this->assertSame(1000, (int) $this->newFriendOrder($inviter)->commission_balance);
+        // 10 位付费：15%
+        $this->addPaidInvitees($inviter, 10);
+        $this->assertSame(1500, (int) $this->newFriendOrder($inviter)->commission_balance);
+        // 30 位付费：20%
+        $this->addPaidInvitees($inviter, 20);
+        $this->assertSame(2000, (int) $this->newFriendOrder($inviter)->commission_balance);
+        // 自定义档位：只认后台填的数
+        $this->settings['commission_tier_3_min'] = 25;
+        $this->settings['commission_tier_3_rate'] = 33;
+        $this->assertSame(3300, (int) $this->newFriendOrder($inviter)->commission_balance);
+        // 管理员给该用户单设了比例：阶梯不再参与
+        User::where('id', $inviter->id)->update(['commission_rate' => 5]);
+        $this->assertSame(500, (int) $this->newFriendOrder($inviter->fresh())->commission_balance);
+        // 开关关着：回到站点默认
+        User::where('id', $inviter->id)->update(['commission_rate' => null]);
+        $this->settings['commission_tier_enable'] = 0;
+        $this->assertSame(1000, (int) $this->newFriendOrder($inviter->fresh())->commission_balance);
+        $this->settings['invite_commission'] = 8;
+        $this->assertSame(800, (int) $this->newFriendOrder($inviter->fresh())->commission_balance);
+    }
+
+    public function test_invite_fetch_exposes_the_effective_commission_policy(): void
+    {
+        $this->settings['commission_tier_enable'] = 1;
+        $this->settings['invite_first_order_discount'] = 12;
+        $inviter = $this->makeUser();
+        $this->addPaidInvitees($inviter, 10);
+        Sanctum::actingAs($inviter);
+
+        $resp = $this->getJson('/api/v1/user/invite/fetch')->assertOk();
+        $this->assertSame([
+            'rate' => 15, 'rate_source' => 'tier', 'mode' => 'first_order', 'mode_source' => 'default',
+            'tiers' => [
+                'enable' => true, 'base_rate' => 10,
+                'levels' => [['min' => 10, 'rate' => 15], ['min' => 30, 'rate' => 20]],
+                'next' => ['min' => 30, 'rate' => 20],
+            ],
+            'period_auto' => ['enable' => false, 'min_invitees' => 50, 'active_paid_invitee_count' => 0],
+        ], $resp->json('data.commission'));
+        $this->assertSame(15, $resp->json('data.stat.3'));
+        $this->assertSame(12, $resp->json('data.first_order_discount'));
+
+        // 到顶：next = null
+        $this->addPaidInvitees($inviter, 20);
+        $resp = $this->getJson('/api/v1/user/invite/fetch')->assertOk();
+        $this->assertSame(20, $resp->json('data.commission.rate'));
+        $this->assertNull($resp->json('data.commission.tiers.next'));
+
+        // 用户单设比例：rate_source=user，不再提示下一档
+        User::where('id', $inviter->id)->update(['commission_rate' => 5]);
+        $resp = $this->getJson('/api/v1/user/invite/fetch')->assertOk();
+        $this->assertSame('user', $resp->json('data.commission.rate_source'));
+        $this->assertSame(5, $resp->json('data.commission.rate'));
+        $this->assertNull($resp->json('data.commission.tiers.next'));
+
+        // 关着：levels 为空、按站点默认
+        User::where('id', $inviter->id)->update(['commission_rate' => null]);
+        $this->settings['commission_tier_enable'] = 0;
+        $resp = $this->getJson('/api/v1/user/invite/fetch')->assertOk();
+        $this->assertSame(['enable' => false, 'base_rate' => 10, 'levels' => [], 'next' => null], $resp->json('data.commission.tiers'));
+        $this->assertSame('default', $resp->json('data.commission.rate_source'));
+        $this->assertSame(10, $resp->json('data.commission.rate'));
+    }
 }

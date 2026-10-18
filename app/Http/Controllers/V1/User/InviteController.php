@@ -10,6 +10,8 @@ use App\Models\CommissionLog;
 use App\Models\InviteCode;
 use App\Models\Order;
 use App\Models\User;
+use App\Services\Commission\CommissionPolicy;
+use App\Services\Commission\InviteDiscount;
 use App\Services\Commission\InviteFunnel;
 use App\Services\Commission\InviteeStats;
 use App\Services\Commission\WithdrawalConfig;
@@ -266,14 +268,11 @@ class InviteController extends Controller
 
     public function fetch(Request $request)
     {
-        $commission_rate = admin_setting('invite_commission', 10);
         $user = User::find($request->user()->id)
                 ->load(['codes' => fn($query) => $query->where('status', 0)]);
-        // 保持原 truthy 语义，与 OrderService::setInvite 一致：commission_rate 为 0/null 都回落全局默认。
-        // （详见 OrderService::setInvite 注释——避免破坏 XBoard-admin「清空=跟随默认」契约。）
-        if ($user->commission_rate) {
-            $commission_rate = $user->commission_rate;
-        }
+        // 当前生效的比例 / 方式与发佣同一份口径（用户单设 > 阶梯 / 自动周期 > 站点默认）
+        $commissionView = CommissionPolicy::view($user);
+        $commission_rate = $commissionView['rate'];
         $uncheck_commission_balance = (int)Order::where('status', 3)
             ->where('commission_status', 0)
             ->where('invite_user_id', $user->id)
@@ -302,6 +301,10 @@ class InviteController extends Controller
             'paid_invitee_count' => InviteeStats::paidInviteeCount($user->id),
             'withdraw_min_invitees' => $withdrawConfig->minInvitees,
             'transfer_require_invitees' => $withdrawConfig->transferRequireInvitees,
+            // 被邀请人首单优惠百分比（additive，0 = 关）：分享区角标用
+            'first_order_discount' => InviteDiscount::percent(),
+            // 当前生效的返佣规则 + 阶梯表 + 自动周期门槛（additive）
+            'commission' => $commissionView,
             // 分渠道漏斗（additive）：每个码的 打开 → 注册 → 付费 → 佣金 + 近 30 天序列
             'funnel' => InviteFunnel::forUser($user),
         ];

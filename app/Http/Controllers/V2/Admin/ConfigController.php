@@ -155,6 +155,7 @@ class ConfigController extends Controller
                 'commission_period_auto_enable' => (bool) admin_setting('commission_period_auto_enable', 0),
                 'commission_period_auto_min_invitees' => (int) admin_setting('commission_period_auto_min_invitees', 50),
                 'commission_notify_enable' => (bool) admin_setting('commission_notify_enable', 1),
+                'commission_leaderboard_enable' => (bool) admin_setting('commission_leaderboard_enable', 0),
             ],
             'site' => [
                 'logo' => admin_setting('logo'),

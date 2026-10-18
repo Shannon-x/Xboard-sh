@@ -14,6 +14,7 @@ use App\Models\ServerGroup;
 use App\Models\User;
 use App\Models\UserNotificationPref;
 use App\Services\Commission\InviteFunnel;
+use App\Services\Commission\Leaderboard;
 use App\Services\Notification\NotificationPreference;
 use App\Services\OrderService;
 use App\Support\Setting;
@@ -572,5 +573,52 @@ class InviteGrowthTest extends TestCase
         $this->assertTrue($cats->has('commission'));
         $this->assertTrue($cats['commission']['enabled']);
         $this->assertFalse($cats['commission']['locked']);
+    }
+
+    // ---------------------------------------------------------------- B5 月度榜单
+
+    private function log(User $inviter, User $buyer, int $amount, ?int $at = null): void
+    {
+        CommissionLog::create([
+            'invite_user_id' => $inviter->id, 'user_id' => $buyer->id, 'trade_no' => Helper::generateOrderNo(),
+            'order_amount' => $amount * 10, 'get_amount' => $amount, 'created_at' => $at ?? time(), 'updated_at' => $at ?? time(),
+        ]);
+    }
+
+    public function test_leaderboard_is_off_by_default_and_ranks_this_months_commission_when_on(): void
+    {
+        $me = $this->makeUser(['email' => 'shannon@sufe.us']);
+        Sanctum::actingAs($me);
+        $this->assertSame(['enable' => false], $this->getJson('/api/v1/user/invite/fetch')->assertOk()->json('data.leaderboard'));
+
+        $this->settings['commission_leaderboard_enable'] = 1;
+        $top = $this->makeUser(['email' => 'lihua@gmail.com']);
+        $buyers = [$this->makeUser(), $this->makeUser(), $this->makeUser()];
+        $this->log($top, $buyers[0], 6000);
+        $this->log($top, $buyers[1], 4000);
+        $this->log($top, $buyers[1], 2000);                 // 同一人第二笔：人数不重复
+        $this->log($me, $buyers[2], 500);
+        $this->log($me, $buyers[0], 9000, strtotime('first day of last month'));   // 上月的不算
+        // 11 位只有一笔小佣金的人，把「我」挤出前 10
+        for ($i = 0; $i < 11; $i++) {
+            $this->log($this->makeUser(), $buyers[2], 600 + $i);
+        }
+        Leaderboard::forget();
+
+        $board = $this->getJson('/api/v1/user/invite/fetch')->assertOk()->json('data.leaderboard');
+        $this->assertTrue($board['enable']);
+        $this->assertSame(date('Y-m'), $board['month']);
+        $this->assertCount(10, $board['items']);
+        $this->assertSame(['rank' => 1, 'email' => 'li****@g****.com', 'paid_invitees' => 2, 'commission_total' => 12000, 'is_me' => false], $board['items'][0]);
+        $this->assertSame(range(1, 10), array_column($board['items'], 'rank'));
+        $this->assertFalse(in_array(true, array_column($board['items'], 'is_me'), true));
+        $this->assertSame(['rank' => null, 'paid_invitees' => 1, 'commission_total' => 500], $board['me']);
+        $this->assertStringNotContainsString('lihua@gmail.com', json_encode($board));
+
+        // 榜首看自己：is_me 与 me.rank
+        Sanctum::actingAs($top);
+        $board = $this->getJson('/api/v1/user/invite/fetch')->assertOk()->json('data.leaderboard');
+        $this->assertTrue($board['items'][0]['is_me']);
+        $this->assertSame(['rank' => 1, 'paid_invitees' => 2, 'commission_total' => 12000], $board['me']);
     }
 }

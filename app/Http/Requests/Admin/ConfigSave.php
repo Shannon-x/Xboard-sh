@@ -49,6 +49,7 @@ class ConfigSave extends FormRequest
         'commission_period_auto_enable' => '',
         'commission_period_auto_min_invitees' => 'nullable|integer|min:1|max:100000',
         'commission_notify_enable' => '',
+        'commission_leaderboard_enable' => '',
         // site
         'logo' => 'nullable|url',
         'force_https' => '',

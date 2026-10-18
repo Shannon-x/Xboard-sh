@@ -15,6 +15,7 @@ use App\Services\Commission\EmailMask;
 use App\Services\Commission\InviteDiscount;
 use App\Services\Commission\InviteFunnel;
 use App\Services\Commission\InviteeStats;
+use App\Services\Commission\Leaderboard;
 use App\Services\Commission\WithdrawalConfig;
 use App\Support\InviteCodeRules;
 use App\Utils\Helper;
@@ -289,6 +290,8 @@ class InviteController extends Controller
             'commission' => $commissionView,
             // 分渠道漏斗（additive）：每个码的 打开 → 注册 → 付费 → 佣金 + 近 30 天序列
             'funnel' => InviteFunnel::forUser($user),
+            // 月度榜单（additive，可开关）：关着时只有 {enable:false}
+            'leaderboard' => Leaderboard::forUser($user),
         ];
         return $this->success($data);
     }

@@ -117,6 +117,15 @@ class RegisterService
      * @param string $inviteCode 邀请码
      * @return int|null 邀请人ID
      */
+    /**
+     * 写进 v2_user.invite_code 的形态：去空白、截到列宽。码本身的格式已由 handleInviteCode 校过。
+     */
+    public static function storableInviteCode(?string $inviteCode): ?string
+    {
+        $code = trim((string) $inviteCode);
+        return $code === '' ? null : mb_substr($code, 0, 32);
+    }
+
     public function handleInviteCode(string $inviteCode): int|null
     {
         // 不允许重复消费：原实现"SELECT WHERE status=UNUSED → save status=USED" 非原子，
@@ -198,6 +207,8 @@ class RegisterService
                     'email' => $email,
                     'password' => $password,
                     'invite_user_id' => $inviteUserId,
+                    // 分渠道漏斗：只在码真的落到邀请人头上时记下它（无效码被静默忽略时不记）
+                    'invite_code' => $inviteUserId ? self::storableInviteCode($inviteCode) : null,
                 ]);
 
                 // 保存用户 —— save 失败 / 唯一冲突会让事务回滚，handleInviteCode 的 USED 标记一起撤销

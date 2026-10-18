@@ -204,5 +204,9 @@
     "Invalid email address": "郵箱地址格式不正確",
     "This email domain cannot receive mail, please check the address": "這個郵箱的網域無法收信，請檢查地址是否寫錯",
     "Your email address is already verified": "您的郵箱已經驗證過了",
-    "Email verification is not enabled": "郵箱驗證未啟用"
+    "Email verification is not enabled": "郵箱驗證未啟用",
+    "Commission credited :amount": "佣金入賬 :amount",
+    ":count commission payment(s) totalling :amount have been credited to your commission balance": "本輪共 :count 筆佣金入賬，合計 :amount，已計入你的佣金餘額",
+    "Level :level": "第 :level 級",
+    "View commissions": "查看佣金"
 }

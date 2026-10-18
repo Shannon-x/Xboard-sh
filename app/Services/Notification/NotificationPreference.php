@@ -16,13 +16,14 @@ use Illuminate\Support\Facades\Log;
  *   marketing     营销与活动：到期后的挽回邮件、后台群发里标为「营销」的邮件
  *   announcement  服务公告：后台群发默认的类别（维护、线路调整这类）
  *   support       工单：工单有新回复
+ *   commission    推广与佣金：佣金入账汇总（每轮结算每人一封）。可关、非批量、没有老列。
  *   交易类（收据、提现结果、验证码、登录链接、邮箱自测）不属于任何类别，永远发送，面板里只展示不给关。
  *
  * 存储：v2_user_notification_pref 每用户每类别一行（没有行 = 开启），source 记这次取值从哪来。
  * billing / usage 同时镜像到老列 remind_expire / remind_traffic —— 扫描任务（send:remindMail）按这两列筛用户、
  * 老前端与后台也还读写它们；读取时这两类以老列为准，保证两边永远一致。
  *
- * 后台可配置哪些类别允许用户关闭（notify_optional_categories，默认全部五类）：锁定的类别面板里显示为灰色「始终发送」，
+ * 后台可配置哪些类别允许用户关闭（notify_optional_categories，默认全部六类）：锁定的类别面板里显示为灰色「始终发送」，
  * 用户已关掉的也照发。
  */
 final class NotificationPreference
@@ -32,9 +33,10 @@ final class NotificationPreference
     public const MARKETING = 'marketing';
     public const ANNOUNCEMENT = 'announcement';
     public const SUPPORT = 'support';
+    public const COMMISSION = 'commission';
 
     /** 面板展示顺序 */
-    public const CATEGORIES = [self::BILLING, self::USAGE, self::SUPPORT, self::ANNOUNCEMENT, self::MARKETING];
+    public const CATEGORIES = [self::BILLING, self::USAGE, self::SUPPORT, self::COMMISSION, self::ANNOUNCEMENT, self::MARKETING];
 
     /** 批量 / 推广性质的类别：这几类邮件带 List-Unsubscribe 头（Gmail / Yahoo 对批量发件人的送达率要求） */
     public const BULK = [self::MARKETING, self::ANNOUNCEMENT];

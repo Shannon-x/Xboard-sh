@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\V1\User;
 
 use App\Http\Controllers\Controller;
+use App\Services\Commission\InviteDiscount;
 use App\Services\EmailVerification;
 use App\Http\Requests\User\UserChangePassword;
 use App\Http\Requests\User\UserTransfer;
@@ -166,6 +167,9 @@ class UserController extends Controller
         $user['avatar_url'] = 'https://cdn.v2ex.com/gravatar/' . md5($user->email) . '?s=64&d=identicon';
         // 邮箱软验证状态（横幅、倒计时、限制态）；派生键，老前端不读
         $user['email_verification'] = EmailVerification::view($user);
+        // 被邀请人首单优惠：百分比 + 本人是否还能享受（有邀请人、尚无有效订单）
+        $user['invite_first_order_discount'] = InviteDiscount::percent();
+        $user['invite_first_order_discount_eligible'] = InviteDiscount::eligible($request->user());
         // 验证码哈希 / 计次 / 有效期只给 view() 派生 code_sent 用，不下发
         unset($user['email_verify_sent_at'], $user['email_verify_pending_email'], $user['email_verify_token_expires_at'], $user['email_verify_code'], $user['email_verify_code_attempts']);
         if (!$request->boolean('include_addon_groups') && $user->plan_options) {

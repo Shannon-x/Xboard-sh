@@ -144,6 +144,18 @@ class ConfigController extends Controller
                 'commission_distribution_l3' => admin_setting('commission_distribution_l3'),
                 // 提现工作流：链列表 / 单笔上限 / USDT 参考汇率 / 是否必须二维码 / 结算感谢语（默认值集中在 WithdrawalConfig）
                 ...WithdrawalConfig::fromSettings()->toAdminArray(),
+                // 推广增长：被邀请人首单优惠（百分比，0 = 关）
+                'invite_first_order_discount' => (int) admin_setting('invite_first_order_discount', 0),
+                // 阶梯佣金比例（按付费被邀请人数取档）
+                'commission_tier_enable' => (bool) admin_setting('commission_tier_enable', 0),
+                'commission_tier_2_min' => (int) admin_setting('commission_tier_2_min', 10),
+                'commission_tier_2_rate' => (int) admin_setting('commission_tier_2_rate', 15),
+                'commission_tier_3_min' => (int) admin_setting('commission_tier_3_min', 30),
+                'commission_tier_3_rate' => (int) admin_setting('commission_tier_3_rate', 20),
+                'commission_period_auto_enable' => (bool) admin_setting('commission_period_auto_enable', 0),
+                'commission_period_auto_min_invitees' => (int) admin_setting('commission_period_auto_min_invitees', 50),
+                'commission_notify_enable' => (bool) admin_setting('commission_notify_enable', 1),
+                'commission_leaderboard_enable' => (bool) admin_setting('commission_leaderboard_enable', 0),
             ],
             'site' => [
                 'logo' => admin_setting('logo'),

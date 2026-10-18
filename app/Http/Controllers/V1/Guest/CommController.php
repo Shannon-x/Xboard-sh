@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\V1\Guest;
 
 use App\Http\Controllers\Controller;
+use App\Services\Commission\InviteDiscount;
 use App\Services\Plugin\HookManager;
 use App\Utils\Dict;
 use App\Utils\Helper;
@@ -32,6 +33,8 @@ class CommController extends Controller
             'google_login_url' => url('/api/v1/passport/auth/google/redirect'),
             // 增值节点组在用户端的区块标题（站点级）；空字符串 = 前端用 i18n 默认
             'addon_group_label' => (string) admin_setting('addon_group_label', ''),
+            // 被邀请人首单优惠百分比（0 = 关）：注册页 / 套餐页据此提示「通过邀请注册首单 x 折」
+            'invite_first_order_discount' => InviteDiscount::percent(),
             // 保持向后兼容
             'is_recaptcha' => (int) admin_setting('captcha_enable', 0) ? 1 : 0,
         ];

@@ -10,7 +10,12 @@ use App\Models\CommissionLog;
 use App\Models\InviteCode;
 use App\Models\Order;
 use App\Models\User;
+use App\Services\Commission\CommissionPolicy;
+use App\Services\Commission\EmailMask;
+use App\Services\Commission\InviteDiscount;
+use App\Services\Commission\InviteFunnel;
 use App\Services\Commission\InviteeStats;
+use App\Services\Commission\Leaderboard;
 use App\Services\Commission\WithdrawalConfig;
 use App\Support\InviteCodeRules;
 use App\Utils\Helper;
@@ -117,33 +122,14 @@ class InviteController extends Controller
     }
 
     /**
-     * 邮箱脱敏：ab****@e****.com。把被邀请人/买家邮箱展示给邀请人（aff 明细）时，
-     * 保留极弱辨识度但尽量降低撞库/社工价值（local 最多留 1-2 位、域名只露主域首字母 + 后缀）。
+     * 邮箱脱敏：ab****@e****.com，口径在 EmailMask（入账通知、榜单同一份）。
      *
-     * ⚠️ 刻意内联在本控制器，不调用 Helper::maskEmail：部分部署把旧版 app/Utils/Helper.php
-     *    bind-mount 覆盖了镜像版，旧 Helper 缺该方法会让本接口 500（Call to undefined method）。
-     *    本控制器走镜像版、不被覆盖，内联即可彻底规避该版本漂移。
+     * ⚠️ 刻意不调用 Helper::maskEmail：部分部署把旧版 app/Utils/Helper.php bind-mount 覆盖了镜像版，
+     *    旧 Helper 缺该方法会让本接口 500（Call to undefined method）。EmailMask 在 app/Services 下、走镜像版。
      */
     private static function maskEmail(?string $email): string
     {
-        if ($email === null || $email === '' || !str_contains($email, '@')) {
-            return '****';
-        }
-        [$local, $domain] = explode('@', $email, 2);
-
-        $localKeep = mb_strlen($local) <= 2 ? 1 : 2;
-        $maskedLocal = mb_substr($local, 0, $localKeep) . '****';
-
-        $parts = explode('.', $domain);
-        if (count($parts) >= 2) {
-            $host = $parts[0];
-            $suffix = implode('.', array_slice($parts, 1));
-            $maskedDomain = mb_substr($host, 0, 1) . '****.' . $suffix;
-        } else {
-            $maskedDomain = mb_substr($domain, 0, 1) . '****';
-        }
-
-        return $maskedLocal . '@' . $maskedDomain;
+        return EmailMask::mask($email);
     }
 
     /**
@@ -265,14 +251,11 @@ class InviteController extends Controller
 
     public function fetch(Request $request)
     {
-        $commission_rate = admin_setting('invite_commission', 10);
         $user = User::find($request->user()->id)
                 ->load(['codes' => fn($query) => $query->where('status', 0)]);
-        // 保持原 truthy 语义，与 OrderService::setInvite 一致：commission_rate 为 0/null 都回落全局默认。
-        // （详见 OrderService::setInvite 注释——避免破坏 XBoard-admin「清空=跟随默认」契约。）
-        if ($user->commission_rate) {
-            $commission_rate = $user->commission_rate;
-        }
+        // 当前生效的比例 / 方式与发佣同一份口径（用户单设 > 阶梯 / 自动周期 > 站点默认）
+        $commissionView = CommissionPolicy::view($user);
+        $commission_rate = $commissionView['rate'];
         $uncheck_commission_balance = (int)Order::where('status', 3)
             ->where('commission_status', 0)
             ->where('invite_user_id', $user->id)
@@ -301,6 +284,14 @@ class InviteController extends Controller
             'paid_invitee_count' => InviteeStats::paidInviteeCount($user->id),
             'withdraw_min_invitees' => $withdrawConfig->minInvitees,
             'transfer_require_invitees' => $withdrawConfig->transferRequireInvitees,
+            // 被邀请人首单优惠百分比（additive，0 = 关）：分享区角标用
+            'first_order_discount' => InviteDiscount::percent(),
+            // 当前生效的返佣规则 + 阶梯表 + 自动周期门槛（additive）
+            'commission' => $commissionView,
+            // 分渠道漏斗（additive）：每个码的 打开 → 注册 → 付费 → 佣金 + 近 30 天序列
+            'funnel' => InviteFunnel::forUser($user),
+            // 月度榜单（additive，可开关）：关着时只有 {enable:false}
+            'leaderboard' => Leaderboard::forUser($user),
         ];
         return $this->success($data);
     }

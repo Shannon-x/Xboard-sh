@@ -18,7 +18,7 @@
                             <td style="font-size:14px;color:#333;padding:24px 40px 0 40px;line-height:1.8">
                                 尊敬的用户您好！
                                 <br /><br />
-                                您的提现申请 <strong>#{{ $withdrawal_id }}</strong> 已于 {{ $settled_at }} 完成打款，请注意查收。
+                                您的提现申请（{{ $reference }}）已于 {{ $settled_at }} 完成打款，请注意查收。
                                 <table width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0;border-collapse:collapse;font-size:14px">
                                     <tr><td style="padding:8px 10px;color:#666;width:96px;border-bottom:1px solid #eee">金额</td><td style="padding:8px 10px;border-bottom:1px solid #eee"><strong>{{ $amount }}</strong>@if(!empty($usdt))&nbsp;<span style="color:#666">（{{ $usdt_is_actual ? '实付' : '约' }} {{ $usdt }} USDT）</span>@endif</td></tr>
                                     <tr><td style="padding:8px 10px;color:#666;border-bottom:1px solid #eee">收款链</td><td style="padding:8px 10px;border-bottom:1px solid #eee">{{ $chain }}</td></tr>

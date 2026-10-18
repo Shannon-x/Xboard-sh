@@ -182,6 +182,7 @@ class WithdrawController extends Controller
         }
         return [
             'id' => $w->id,
+            'reference' => $w->reference(),
             'user_id' => $w->user_id,
             'user_email' => $w->user->email ?? null,
             'ticket_id' => $w->ticket_id,

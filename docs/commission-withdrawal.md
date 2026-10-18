@@ -136,7 +136,7 @@ Base / Avalanche / Solana / TON / Aptos,外加 `custom`(全部手填)。每个�
 - `resources/views/mail/<theme>/withdrawCompleted.blade.php`
 - `resources/views/mail/<theme>/withdrawRejected.blade.php`
 
-可用变量:`name`、`url`、`withdrawal_id`、`amount`(带币种符号)、`usdt`、`usdt_is_actual`(实付还是预估)、
+可用变量:`name`、`url`、`reference`(申请编号 `WD-日期-8 位码`,与收据编号同一算法)、`withdrawal_id`(自增 id,仅为自定义模板保留,内置模板不展示——给用户看的文案里不要出现流水号,否则能推算站点打款总笔数)、`amount`(带币种符号)、`usdt`、`usdt_is_actual`(实付还是预估)、
 `usdt_fee`(通道费,无则为 null)、`usdt_rate`、`chain`、`address`、`txid`、`explorer_url`、`reason`、
 `thanks`、`settled_at`。自定义主题目录若没有这两个文件,自动回退到通用的 `notify` 模板。
 

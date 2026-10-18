@@ -365,13 +365,14 @@ class CommissionWithdrawalService
     private function ticketSubject(CommissionWithdrawal $w): string
     {
         $chain = $w->network ? "{$w->chain_name} · {$w->network}" : $w->chain_name;
-        return sprintf('[提现申请] #%d %s%s → %s', $w->id, $this->config->currencySymbol, number_format($w->amount / 100, 2, '.', ''), $chain);
+        // 主题里不带自增 id：用户工单列表 / 「工单有新回复」邮件都会原样展示主题
+        return sprintf('[提现申请] %s%s → %s', $this->config->currencySymbol, number_format($w->amount / 100, 2, '.', ''), $chain);
     }
 
     private function applyMessage(CommissionWithdrawal $w): string
     {
         $lines = [
-            "提现申请 #{$w->id}",
+            "提现申请 {$w->reference()}",
             "金额：{$this->config->currencySymbol}" . number_format($w->amount / 100, 2, '.', ''),
         ];
         if ($w->usdt_amount !== null) {
@@ -388,7 +389,7 @@ class CommissionWithdrawalService
     private function settleMessage(CommissionWithdrawal $w): string
     {
         $lines = [
-            "✅ 提现 #{$w->id} 已完成",
+            "✅ 提现已完成",
             "金额：{$this->config->currencySymbol}" . number_format($w->amount / 100, 2, '.', ''),
         ];
         if ($w->paid_usdt !== null) {
@@ -481,7 +482,8 @@ class CommissionWithdrawalService
                     'name' => admin_setting('app_name', 'XBoard'),
                     'url' => admin_setting('app_url'),
                     'content' => $content,
-                    // 专用模板用的结构化字段
+                    // 专用模板用的结构化字段。内置模板只展示 reference；withdrawal_id 仅为站长自定义模板保留
+                    'reference' => $w->reference(),
                     'withdrawal_id' => $w->id,
                     'amount' => $this->config->currencySymbol . number_format($w->amount / 100, 2, '.', ''),
                     'usdt' => $w->paid_usdt ?? $w->usdt_amount,

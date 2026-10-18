@@ -29,6 +29,7 @@ class CommissionWithdrawalResource extends JsonResource
 
         return [
             'id' => $w->id,
+            'reference' => $w->reference(),
             'ticket_id' => $w->ticket_id,
             'amount' => (int) $w->amount,
             'currency' => $w->currency,

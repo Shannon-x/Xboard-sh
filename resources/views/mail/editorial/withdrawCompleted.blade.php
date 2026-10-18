@@ -21,7 +21,7 @@
                     <tr>
                         <td style="padding:32px 44px 0 44px;">
                             <div style="font-family:'Noto Serif SC',Georgia,'Songti SC',serif;font-size:26px;font-weight:700;color:#2a2520;line-height:1.4;letter-spacing:0.5px;">佣金已打款</div>
-                            <div style="margin-top:8px;font-size:14px;color:#716a65;">提现申请 #{{ $withdrawal_id }} · {{ $settled_at }}</div>
+                            <div style="margin-top:8px;font-size:14px;color:#716a65;">{{ $reference }} · {{ $settled_at }}</div>
                         </td>
                     </tr>
                     <tr>

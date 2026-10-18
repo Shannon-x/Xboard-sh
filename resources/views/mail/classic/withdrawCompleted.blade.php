@@ -12,7 +12,7 @@
         <tr>
             <td style="padding: 24px 28px; color: #4a4a4a; font-size: 15px;">
                 <p style="margin: 0 0 12px; font-size: 22px; color: #111;">Dear Customer</p>
-                <p style="margin: 0 0 16px;">您的提现申请 <strong>#{{ $withdrawal_id }}</strong> 已于 {{ $settled_at }} 完成打款，请注意查收。</p>
+                <p style="margin: 0 0 16px;">您的提现申请（{{ $reference }}）已于 {{ $settled_at }} 完成打款，请注意查收。</p>
                 <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse; font-size: 14px; margin-bottom: 16px;">
                     <tr><td style="padding: 8px 10px; color: #757575; width: 96px; border-bottom: 1px solid #eee;">金额</td><td style="padding: 8px 10px; border-bottom: 1px solid #eee;"><strong>{{ $amount }}</strong>@if(!empty($usdt))&nbsp;<span style="color: #757575;">（{{ $usdt_is_actual ? '实付' : '约' }} {{ $usdt }} USDT）</span>@endif</td></tr>
                     <tr><td style="padding: 8px 10px; color: #757575; border-bottom: 1px solid #eee;">收款链</td><td style="padding: 8px 10px; border-bottom: 1px solid #eee;">{{ $chain }}</td></tr>

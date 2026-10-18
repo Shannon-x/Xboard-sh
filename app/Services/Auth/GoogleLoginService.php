@@ -219,6 +219,7 @@ class GoogleLoginService
             'email' => $email,
             'password' => Helper::guid(),
             'invite_user_id' => $inviteUserId,
+            'invite_code' => $inviteUserId ? RegisterService::storableInviteCode($inviteCode) : null,
         ]);
 
         if (!$user->save()) {

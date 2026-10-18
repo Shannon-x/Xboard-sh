@@ -3,6 +3,7 @@
 namespace App\Services\Commission;
 
 use App\Models\Order;
+use App\Models\User;
 
 /**
  * 「付费被邀请人」统计。
@@ -15,7 +16,7 @@ use App\Models\Order;
  *   · 同一个被邀请人买多次只算 1 人。
  *
  * 用途：提现（可选含佣金划转）的人数门槛，抬高自邀的成本——要先养出 N 个真实付费账号
- * 才能把佣金提成现金。
+ * 才能把佣金提成现金；阶梯佣金比例按同一口径取档。
  */
 final class InviteeStats
 {
@@ -24,10 +25,35 @@ final class InviteeStats
         if ($inviterId <= 0) {
             return 0;
         }
-        return (int) Order::where('invite_user_id', $inviterId)
-            ->where('status', Order::STATUS_COMPLETED)
-            ->where('total_amount', '>', 0)
+        return (int) self::paidOrders($inviterId)
             ->distinct()
             ->count('user_id');
+    }
+
+    /**
+     * 「有效付费被邀请人」：在上面的口径之上，再要求该被邀请人**当前订阅有效**
+     * （有套餐，且未到期或永久）。这个数会随被邀请人订阅到期而下降，
+     * 用于自动周期返佣的门槛——掉到门槛以下时自动恢复为首单返佣。
+     */
+    public static function activePaidInviteeCount(int $inviterId): int
+    {
+        if ($inviterId <= 0) {
+            return 0;
+        }
+        $now = time();
+        return (int) User::whereNotNull('plan_id')
+            ->where(function ($query) use ($now) {
+                $query->whereNull('expired_at')->orWhere('expired_at', '>', $now);
+            })
+            ->whereIn('id', self::paidOrders($inviterId)->select('user_id'))
+            ->count();
+    }
+
+    /** 已完成且实付 > 0、归属该邀请人的订单（未去重） */
+    public static function paidOrders(int $inviterId)
+    {
+        return Order::where('invite_user_id', $inviterId)
+            ->where('status', Order::STATUS_COMPLETED)
+            ->where('total_amount', '>', 0);
     }
 }

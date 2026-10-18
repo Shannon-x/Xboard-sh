@@ -10,6 +10,7 @@ use App\Models\CommissionLog;
 use App\Models\InviteCode;
 use App\Models\Order;
 use App\Models\User;
+use App\Services\Commission\InviteFunnel;
 use App\Services\Commission\InviteeStats;
 use App\Services\Commission\WithdrawalConfig;
 use App\Support\InviteCodeRules;
@@ -301,6 +302,8 @@ class InviteController extends Controller
             'paid_invitee_count' => InviteeStats::paidInviteeCount($user->id),
             'withdraw_min_invitees' => $withdrawConfig->minInvitees,
             'transfer_require_invitees' => $withdrawConfig->transferRequireInvitees,
+            // 分渠道漏斗（additive）：每个码的 打开 → 注册 → 付费 → 佣金 + 近 30 天序列
+            'funnel' => InviteFunnel::forUser($user),
         ];
         return $this->success($data);
     }

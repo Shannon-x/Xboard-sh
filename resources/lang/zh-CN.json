@@ -30,6 +30,7 @@
     "Close failed": "关闭失败",
     "Unsupported withdrawal method": "不支持的提现方式",
     "The current required minimum withdrawal commission is :limit": "当前系统要求的最少提现佣金为：¥:limitCNY",
+    "At least :min paying invitees are required, you currently have :count": "需要至少 :min 位付费被邀请人，你目前有 :count 位",
     "[Commission Withdrawal Request] This ticket is opened by the system": "[提现申请] 本工单由系统发出",
     "Withdrawal method": "提现方式",
     "Withdrawal account": "提现账号",

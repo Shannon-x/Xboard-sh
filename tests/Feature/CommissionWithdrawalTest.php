@@ -5,11 +5,13 @@ namespace Tests\Feature;
 use App\Jobs\SendBillingMailJob;
 use App\Jobs\SendEmailJob;
 use App\Models\CommissionWithdrawal;
+use App\Models\Order;
 use App\Models\Ticket;
 use App\Models\TicketAttachment;
 use App\Models\TicketMessage;
 use App\Models\User;
 use App\Support\Setting;
+use App\Utils\Helper;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
@@ -426,5 +428,95 @@ class CommissionWithdrawalTest extends TestCase
         $this->assertSame('支付宝', $withdrawal->chain_name);
         $this->assertSame(0, $user->fresh()->commission_balance);
         $this->assertNotNull($withdrawal->ticket_id);
+    }
+
+    // ───────────────────────── 付费被邀请人门槛 ─────────────────────────
+
+    /** 已完成、实付 2000 分、归属 $inviter 的订单；attrs 可覆盖金额 / 状态 */
+    private function paidOrder(User $buyer, User $inviter, array $attrs = []): Order
+    {
+        return Order::create($attrs + [
+            'user_id' => $buyer->id, 'plan_id' => 1, 'period' => 'monthly', 'type' => Order::TYPE_NEW_PURCHASE,
+            'trade_no' => Helper::generateOrderNo(), 'total_amount' => 2000, 'status' => Order::STATUS_COMPLETED,
+            'invite_user_id' => $inviter->id, 'paid_at' => time(),
+        ]);
+    }
+
+    public function test_withdraw_requires_paid_invitees_when_threshold_is_set(): void
+    {
+        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+        $this->settings['commission_withdraw_min_invitees'] = 2;
+        $inviter = $this->makeUser();
+        $a = $this->makeUser(['invite_user_id' => $inviter->id, 'commission_balance' => 0]);
+        $b = $this->makeUser(['invite_user_id' => $inviter->id, 'commission_balance' => 0]);
+        $c = $this->makeUser(['invite_user_id' => $inviter->id, 'commission_balance' => 0]);
+        // a 付了两单（去重只算 1 人）；b 只有 0 元单与待支付单（不算）；c 只有已取消单（不算）
+        $this->paidOrder($a, $inviter);
+        $this->paidOrder($a, $inviter, ['total_amount' => 500]);
+        $this->paidOrder($b, $inviter, ['total_amount' => 0]);
+        $this->paidOrder($b, $inviter, ['status' => Order::STATUS_PENDING]);
+        $this->paidOrder($c, $inviter, ['status' => Order::STATUS_CANCELLED]);
+
+        Sanctum::actingAs($inviter);
+        $this->getJson('/api/v1/user/withdraw/config')
+            ->assertStatus(200)
+            ->assertJsonPath('data.min_invitees', 2)
+            ->assertJsonPath('data.paid_invitee_count', 1)
+            ->assertJsonPath('data.transfer_require_invitees', false);
+        $this->getJson('/api/v1/user/invite/fetch')
+            ->assertStatus(200)
+            ->assertJsonPath('data.paid_invitee_count', 1)
+            ->assertJsonPath('data.withdraw_min_invitees', 2)
+            ->assertJsonPath('data.transfer_require_invitees', false);
+
+        $base = ['chain' => 'usdt_trc20', 'address' => self::TRON_ADDRESS, 'amount' => 5000];
+        $resp = $this->postJson('/api/v1/user/withdraw/apply', $base);
+        $resp->assertStatus(400);
+        $this->assertStringContainsString('2', (string) $resp->json('message'));
+        $this->assertStringContainsString('1', (string) $resp->json('message'));
+        $this->assertSame(0, CommissionWithdrawal::count());
+        $this->assertSame(20000, $inviter->fresh()->commission_balance, '不达标不得动余额');
+
+        // 第二位付费被邀请人到位后放行（b 真正付了一单）
+        $this->paidOrder($b, $inviter, ['total_amount' => 100]);
+        $this->getJson('/api/v1/user/withdraw/config')->assertJsonPath('data.paid_invitee_count', 2);
+        $this->postJson('/api/v1/user/withdraw/apply', $base)->assertStatus(200);
+        $this->assertSame(1, CommissionWithdrawal::count());
+    }
+
+    public function test_withdraw_threshold_zero_means_unlimited(): void
+    {
+        $this->settings['commission_withdraw_min_invitees'] = 0;
+        $user = $this->makeUser();
+        Sanctum::actingAs($user);
+        $this->getJson('/api/v1/user/withdraw/config')
+            ->assertJsonPath('data.min_invitees', 0)
+            ->assertJsonPath('data.paid_invitee_count', 0);
+        $this->postJson('/api/v1/user/withdraw/apply', ['chain' => 'usdt_trc20', 'address' => self::TRON_ADDRESS, 'amount' => 5000])
+            ->assertStatus(200);
+    }
+
+    public function test_transfer_gate_follows_its_own_switch(): void
+    {
+        $this->settings['commission_withdraw_min_invitees'] = 1;
+        $user = $this->makeUser();
+        Sanctum::actingAs($user);
+
+        // 默认只拦提现，划转照常
+        $this->postJson('/api/v1/user/transfer', ['transfer_amount' => 1000])->assertStatus(200);
+        $this->assertSame(1000, (int) $user->fresh()->balance);
+
+        // 开关打开后划转同样受限，余额与佣金都不得动
+        $this->settings['commission_transfer_require_invitees'] = 1;
+        $this->postJson('/api/v1/user/transfer', ['transfer_amount' => 1000])->assertStatus(400);
+        $this->assertSame(1000, (int) $user->fresh()->balance);
+        $this->assertSame(19000, (int) $user->fresh()->commission_balance);
+        $this->getJson('/api/v1/user/withdraw/config')->assertJsonPath('data.transfer_require_invitees', true);
+
+        // 有一位付费被邀请人后放行
+        $invitee = $this->makeUser(['invite_user_id' => $user->id, 'commission_balance' => 0]);
+        $this->paidOrder($invitee, $user);
+        $this->postJson('/api/v1/user/transfer', ['transfer_amount' => 1000])->assertStatus(200);
+        $this->assertSame(2000, (int) $user->fresh()->balance);
     }
 }

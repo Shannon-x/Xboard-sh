@@ -19,6 +19,24 @@
 | `commission_withdraw_require_qrcode` | 是否强制用户上传收款二维码 | 关 |
 | `commission_withdraw_thanks` | 结算成功邮件 / 工单回复里的感谢语(支持多行) | 内置文案 |
 | `commission_withdraw_method` | 旧版前端的提现方式列表(仅供旧主题使用) | — |
+| `commission_withdraw_min_invitees` | 提现所需的**不同付费被邀请人数**,与最低金额叠加;0 = 不限 | 0 |
+| `commission_transfer_require_invitees` | 佣金划转到余额是否同样受人数门槛 | 关 |
+
+### 付费被邀请人门槛(防自邀)
+
+「自己邀请自己」的玩法是:主号拿邀请码,注册小号买套餐,佣金回到主号再提成现金。`commission_withdraw_min_invitees`
+要求申请人名下的**不同付费被邀请人**达到 N 才能提现,自邀者得先养出 N 个真实付费账号,成本是 N × 最低套餐价。
+
+「付费被邀请人」的口径在 `App\Services\Commission\InviteeStats::paidInviteeCount()`:以订单上的 `invite_user_id`
+归属为准(与 `check:commission` 发佣用的是同一个字段),只算 `status = 已完成` 且 `total_amount > 0` 的订单,按下单人去重。
+0 元单(被余额 / 折扣抵光)、待支付、已取消、已折抵都不算;同一个被邀请人买多次只算 1 人。
+
+提现门槛只拦提现。自邀者还有一条绕路:不提现,把佣金划转成余额抵下一单。`commission_transfer_require_invitees`
+开启后,`POST /user/transfer` 也按同一门槛校验。下单、续费、付款永远不受这两项影响。
+
+用户端:`withdraw/config` 与 `invite/fetch` 都返回 `min_invitees`(或 `withdraw_min_invitees`)、`paid_invitee_count`、
+`transfer_require_invitees`,邀请页据此显示「已邀请 x/N 位付费用户」的进度,不达标时禁用提交并给出提示;
+服务端校验失败返回 `At least :min paying invitees are required, you currently have :count`。
 
 ### 链与网络目录
 

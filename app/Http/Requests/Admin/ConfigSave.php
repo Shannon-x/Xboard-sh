@@ -37,6 +37,8 @@ class ConfigSave extends FormRequest
         'commission_withdraw_usdt_rate' => 'nullable|numeric|min:0|max:100000',
         'commission_withdraw_require_qrcode' => 'boolean',
         'commission_withdraw_thanks' => 'nullable|string|max:1000',
+        'commission_withdraw_min_invitees' => 'nullable|integer|min:0|max:100000',
+        'commission_transfer_require_invitees' => '',
         // site
         'logo' => 'nullable|url',
         'force_https' => '',

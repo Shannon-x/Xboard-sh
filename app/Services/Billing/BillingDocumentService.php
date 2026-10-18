@@ -413,7 +413,8 @@ class BillingDocumentService
             'outcome' => $outcome,
             'doc_title' => __('billing.withdrawal.doc_title'),
             'doc_title_en' => __('billing.withdrawal.doc_title_en'),
-            'doc_no' => '#' . (int) $w->id,
+            'doc_no' => $w->reference(),
+            'reference' => $w->reference(),
             'stamp' => __('billing.withdrawal.stamp_' . $outcome),
             'stamp_soft' => !$completed,
             'has_pdf' => false,
@@ -432,14 +433,15 @@ class BillingDocumentService
             'bill_to' => ['email' => $user->email, 'id' => (int) $user->id],
             'headline' => __('billing.withdrawal.headline_' . $outcome),
             'intro' => $completed
-                ? __('billing.withdrawal.intro_completed', ['id' => $w->id, 'date' => $settledAt])
-                : __('billing.withdrawal.intro_rejected', ['id' => $w->id, 'reason' => $w->reject_reason ?: '—', 'amount' => $this->money((int) $w->amount)]),
+                ? __('billing.withdrawal.intro_completed', ['date' => $settledAt])
+                : __('billing.withdrawal.intro_rejected', ['reason' => $w->reject_reason ?: '—', 'amount' => $this->money((int) $w->amount)]),
             // 有交易哈希就把区块浏览器放在主按钮上，佣金记录退到下面的文字链接
             'cta_label' => $explorer ? __('billing.withdrawal.explorer') : __('billing.withdrawal.cta_' . $outcome),
             'cta_url' => $explorer ?: $historyUrl,
             'secondary_label' => $explorer ? __('billing.withdrawal.cta_completed') : null,
             'secondary_url' => $explorer ? $historyUrl : null,
-            'subject' => __('billing.withdrawal.subject_' . $outcome, ['id' => $w->id, 'app' => (string) admin_setting('app_name', 'XBoard')]),
+            // 主题不带编号：邮件列表里一眼能看懂结果就够了，流水号会暴露站点的打款笔数
+            'subject' => __('billing.withdrawal.subject_' . $outcome, ['app' => (string) admin_setting('app_name', 'XBoard')]),
             'meta' => [],
             'items' => [],
             'totals' => [],

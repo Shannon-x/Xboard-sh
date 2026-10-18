@@ -12,7 +12,7 @@
         <tr>
             <td style="padding: 24px 28px; color: #4a4a4a; font-size: 15px;">
                 <p style="margin: 0 0 12px; font-size: 22px; color: #111;">Dear Customer</p>
-                <p style="margin: 0 0 12px;">很抱歉，您的提现申请 <strong>#{{ $withdrawal_id }}</strong>（{{ $amount }} → {{ $chain }}）未能通过审核：</p>
+                <p style="margin: 0 0 12px;">很抱歉，您的提现申请（{{ $reference }}，{{ $amount }} → {{ $chain }}）未能通过审核：</p>
                 <div style="margin: 0 0 16px; padding: 12px 14px; background: #fffaf0; border-left: 3px solid #b7791f; color: #7b4f0a;">{{ $reason }}</div>
                 <p style="margin: 0 0 16px;">冻结的佣金 <strong>{{ $amount }}</strong> 已退回您的账户，您可以修改收款信息后重新申请。</p>
                 <p style="margin: 0 0 20px; font-size: 12px; color: #757575;">如有疑问，请回复站内工单联系我们。(本邮件由系统自动发出，请勿直接回复)</p>

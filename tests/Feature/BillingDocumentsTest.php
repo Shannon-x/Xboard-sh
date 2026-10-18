@@ -259,8 +259,10 @@ class BillingDocumentsTest extends TestCase
         $this->runJob(SendBillingMailJob::KIND_WITHDRAWAL, $paid->id);
         $this->assertCount(1, $this->sent());
         $message = $this->sent()->first()->getOriginalMessage();
-        $this->assertStringContainsString('#' . $paid->id, $message->getSubject());
+        $this->assertDoesNotMatchRegularExpression('/#\d+/', $message->getSubject(), '主题不带流水号，用户不能据此推算打款笔数');
         $html = $message->getHtmlBody();
+        $this->assertStringContainsString($paid->reference(), $html, '抬头用 WD- 申请编号');
+        $this->assertStringNotContainsString('#' . $paid->id . ' ', $html);
         $this->assertStringContainsString('¥50.00', $html);
         $this->assertStringContainsString('实付 5.90 USDT', $html, '库里的 5.9000（MySQL）或 5.9（sqlite）都整理成 5.90');
         $this->assertStringContainsString('已扣通道费 1.00 USDT', $html);
@@ -272,8 +274,10 @@ class BillingDocumentsTest extends TestCase
         $declined = $this->withdrawal($user, ['status' => CommissionWithdrawal::STATUS_REJECTED, 'reject_reason' => '地址与截图不一致', 'settled_at' => time()]);
         $this->runJob(SendBillingMailJob::KIND_WITHDRAWAL, $declined->id);
         $this->assertCount(2, $this->sent());
+        $this->assertDoesNotMatchRegularExpression('/#\d+/', $this->sent()->last()->getOriginalMessage()->getSubject());
         $html = $this->sent()->last()->getOriginalMessage()->getHtmlBody();
         $this->assertStringContainsString('地址与截图不一致', $html);
+        $this->assertStringContainsString($declined->reference(), $html);
         $this->assertStringContainsString('¥50.00', $html, '驳回邮件写明退回的金额');
 
         // 待处理 / 用户自己取消的申请没有结果可发

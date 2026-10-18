@@ -18,7 +18,7 @@
                             <td style="font-size:14px;color:#333;padding:24px 40px 0 40px;line-height:1.8">
                                 尊敬的用户您好！
                                 <br /><br />
-                                很抱歉，您的提现申请 <strong>#{{ $withdrawal_id }}</strong>（{{ $amount }} → {{ $chain }}）未能通过审核：
+                                很抱歉，您的提现申请（{{ $reference }}，{{ $amount }} → {{ $chain }}）未能通过审核：
                                 <div style="margin:14px 0;padding:12px 14px;background:#fffaf0;border-left:3px solid #b7791f;color:#7b4f0a">{{ $reason }}</div>
                                 冻结的佣金 <strong>{{ $amount }}</strong> 已退回您的账户，您可以修改收款信息后重新申请。
                                 <br /><br />

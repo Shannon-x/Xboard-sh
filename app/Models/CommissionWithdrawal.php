@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\Billing\BillingDocumentService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -78,5 +79,14 @@ class CommissionWithdrawal extends Model
     public function isPending(): bool
     {
         return $this->status === self::STATUS_PENDING;
+    }
+
+    /**
+     * 给用户看的申请编号：`WD-申请日期-8 位码`，与收据编号同一套算法（HMAC 派生，不可逆）。
+     * 自增 id 只在后台用——邮件、工单里一旦出现 #37 这种流水号，用户就能推算站点一共打过多少笔佣金。
+     */
+    public function reference(): string
+    {
+        return BillingDocumentService::documentNumber('WD', (int) ($this->created_at ?: time()), 'withdrawal:' . (int) $this->id);
     }
 }

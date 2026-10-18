@@ -138,6 +138,7 @@ class CommissionWithdrawalTest extends TestCase
         $this->assertSame($user->id, $ticket->user_id);
         $this->assertSame(2, (int) $ticket->level);
         $this->assertStringContainsString('[提现申请]', $ticket->subject);
+        $this->assertDoesNotMatchRegularExpression('/#\d+/', $ticket->subject, '工单主题不带自增 id');
         $message = TicketMessage::where('ticket_id', $ticket->id)->firstOrFail();
         $this->assertStringContainsString(self::TRON_ADDRESS, $message->message);
         $this->assertSame($message->id, TicketAttachment::findOrFail($attachmentId)->ticket_message_id, '二维码绑定到工单首条消息');
@@ -518,5 +519,80 @@ class CommissionWithdrawalTest extends TestCase
         $this->paidOrder($invitee, $user);
         $this->postJson('/api/v1/user/transfer', ['transfer_amount' => 1000])->assertStatus(200);
         $this->assertSame(2000, (int) $user->fresh()->balance);
+    }
+
+    /**
+     * 给用户看的所有文案都不带自增 id：工单主题 / 系统消息、邮件主题与模板变量只用 WD- 申请编号。
+     * 流水号一旦出现（#37），用户就能推算站点一共打过多少笔佣金。
+     */
+    public function test_user_facing_withdrawal_texts_never_expose_the_sequential_id(): void
+    {
+        config(['v2board.billing_receipt_enable' => 0]);
+        $user = $this->makeUser();
+        $admin = $this->makeUser(['is_admin' => 1]);
+        Sanctum::actingAs($user);
+        $resp = $this->postJson('/api/v1/user/withdraw/apply', ['amount' => 5000, 'chain' => 'usdt_trc20', 'address' => self::TRON_ADDRESS]);
+        $id = (int) $resp->json('data.id');
+        $reference = (string) $resp->json('data.reference');
+        $this->assertMatchesRegularExpression('/^WD-\d{8}-[0-9A-HJKMNP-TV-Z]{8}$/', $reference, '编号是日期 + 8 位码，不是自增 id');
+        $this->assertSame($reference, CommissionWithdrawal::findOrFail($id)->reference(), '编号由记录推导，稳定可复算');
+
+        (new \App\Services\CommissionWithdrawalService())->settle($id, $admin, 'abc123', '6.9');
+
+        $ticket = Ticket::findOrFail(CommissionWithdrawal::findOrFail($id)->ticket_id);
+        $this->assertSame('[提现申请] ¥50.00 → USDT · TRC20 (Tron)', $ticket->subject);
+        $messages = TicketMessage::where('ticket_id', $ticket->id)->orderBy('id')->pluck('message');
+        $this->assertCount(2, $messages);
+        $this->assertStringContainsString("提现申请 {$reference}", $messages[0]);
+        $this->assertStringContainsString('✅ 提现已完成', $messages[1]);
+        foreach ($messages as $message) {
+            $this->assertDoesNotMatchRegularExpression('/#\d+/', $message);
+        }
+
+        Queue::assertPushed(SendEmailJob::class, function (SendEmailJob $job) use ($reference) {
+            $p = (fn() => $this->params)->call($job);
+            if ($p['template_name'] !== 'withdrawCompleted') {
+                return false;
+            }
+            $this->assertDoesNotMatchRegularExpression('/#\d+/', $p['subject']);
+            $this->assertSame($reference, $p['template_value']['reference']);
+            // 三套主题的专用模板渲染出来都只带申请编号（先剥掉样式和标签，颜色值里的 # 不算）
+            foreach (['default', 'classic', 'editorial'] as $theme) {
+                foreach (['withdrawCompleted', 'withdrawRejected'] as $tpl) {
+                    $html = view("mail.{$theme}.{$tpl}", $p['template_value'] + ['reason' => '地址与截图不一致'])->render();
+                    $text = strip_tags(preg_replace('/<style\b.*?<\/style>/su', '', $html));
+                    $this->assertStringContainsString($reference, $text, "{$theme}/{$tpl}");
+                    $this->assertDoesNotMatchRegularExpression('/#\d+/', $text, "{$theme}/{$tpl}");
+                }
+            }
+            return true;
+        });
+    }
+
+    /** 历史提现工单（主题 / 首条消息 / 结算回复带 #id）由迁移改成新文案；用户自己写的内容不动，可重复执行。 */
+    public function test_migration_rewrites_legacy_withdraw_ticket_texts(): void
+    {
+        $user = $this->makeUser();
+        $w = CommissionWithdrawal::create([
+            'user_id' => $user->id, 'amount' => 5000, 'currency' => 'CNY', 'chain_code' => 'usdt_trc20', 'chain_name' => 'USDT', 'network' => 'TRC20',
+            'address' => self::TRON_ADDRESS, 'status' => CommissionWithdrawal::STATUS_COMPLETED, 'settled_at' => time(),
+        ]);
+        $ticket = Ticket::create(['user_id' => $user->id, 'subject' => "[提现申请] #{$w->id} ¥50.00 → USDT · TRC20", 'level' => 2, 'category' => 'withdraw', 'reply_status' => Ticket::REPLY_STATUS_REPLIED, 'status' => Ticket::STATUS_CLOSED]);
+        $w->ticket_id = $ticket->id;
+        $w->save();
+        $apply = TicketMessage::create(['user_id' => $user->id, 'ticket_id' => $ticket->id, 'message' => "提现申请 #{$w->id}\n金额：¥50.00\n链：USDT · TRC20"]);
+        $settle = TicketMessage::create(['user_id' => $user->id, 'ticket_id' => $ticket->id, 'message' => "✅ 提现 #{$w->id} 已完成\n金额：¥50.00"]);
+        $own = TicketMessage::create(['user_id' => $user->id, 'ticket_id' => $ticket->id, 'message' => "我的地址在 #{$w->id} 号楼，谢谢"]);
+        $other = Ticket::create(['user_id' => $user->id, 'subject' => "[提现申请] #{$w->id}0 别的", 'level' => 2, 'category' => 'withdraw', 'reply_status' => 0]);
+
+        $migration = require base_path('database/migrations/2026_10_18_000002_strip_ids_from_withdraw_ticket_texts.php');
+        $migration->up();
+        $migration->up();
+
+        $this->assertSame('[提现申请] ¥50.00 → USDT · TRC20', $ticket->fresh()->subject);
+        $this->assertSame("提现申请 {$w->reference()}\n金额：¥50.00\n链：USDT · TRC20", $apply->fresh()->message);
+        $this->assertSame("✅ 提现已完成\n金额：¥50.00", $settle->fresh()->message);
+        $this->assertSame("我的地址在 #{$w->id} 号楼，谢谢", $own->fresh()->message, '用户自己写的内容不动');
+        $this->assertSame("[提现申请] #{$w->id}0 别的", $other->fresh()->subject, '没挂在这笔申请上的工单不动');
     }
 }

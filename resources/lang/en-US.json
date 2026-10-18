@@ -208,5 +208,16 @@
     "Commission credited :amount": "Commission credited :amount",
     ":count commission payment(s) totalling :amount have been credited to your commission balance": ":count commission payment(s) totalling :amount have been credited to your commission balance",
     "Level :level": "Level :level",
-    "View commissions": "View commissions"
+    "View commissions": "View commissions",
+    "Periodic commission applications are not open": "Periodic commission applications are not open",
+    "Your commission mode is set by the administrator, no application is needed": "Your commission mode is set by the administrator, no application is needed",
+    "Your application is under review": "Your application is under review",
+    "Periodic commission is already enabled": "Periodic commission is already enabled",
+    "You can apply once you have :min active paying invitees, you currently have :count": "You can apply once you have :min active paying invitees, you currently have :count",
+    "Periodic commission enabled": "Periodic commission enabled",
+    "Your periodic commission application has been approved. From now on, every payment by the users you invited, renewals included, earns you commission. Keep at least :min active paying invitees; below that the qualification is cancelled automatically and you can apply again once you reach it.": "Your periodic commission application has been approved. From now on, every payment by the users you invited, renewals included, earns you commission. Keep at least :min active paying invitees; below that the qualification is cancelled automatically and you can apply again once you reach it.",
+    "Periodic commission application not approved": "Periodic commission application not approved",
+    "Sorry, your periodic commission application was not approved: :reason. You can apply again on the invite page.": "Sorry, your periodic commission application was not approved: :reason. You can apply again on the invite page.",
+    "Periodic commission qualification cancelled": "Periodic commission qualification cancelled",
+    "You now have :count active paying invitees, below the threshold of :min, so your periodic commission qualification has been cancelled and commission is back to the default rule. Once you reach :min again, you can reapply on the invite page.": "You now have :count active paying invitees, below the threshold of :min, so your periodic commission qualification has been cancelled and commission is back to the default rule. Once you reach :min again, you can reapply on the invite page."
 }

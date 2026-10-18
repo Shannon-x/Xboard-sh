@@ -3,6 +3,7 @@
 namespace App\Services\Commission;
 
 use App\Models\User;
+use Illuminate\Support\Facades\Log;
 
 /**
  * 某个邀请人**当前生效**的返佣规则：比例 + 返佣方式（首单 / 周期）+ 各自来源。
@@ -14,7 +15,7 @@ use App\Models\User;
  *   default 站点默认 invite_commission
  * 方式：
  *   user    管理员单独设了「周期 / 一次性」
- *   auto    自动周期返佣开着，且有效付费被邀请人 ≥ 门槛（掉下去自动恢复）
+ *   applied 用户申请了周期返佣且站长已通过，有效付费被邀请人仍 ≥ 门槛（掉下去自动取消资格，见 PeriodCommission）
  *   default commission_first_time_enable 决定
  */
 final class CommissionPolicy
@@ -41,7 +42,7 @@ final class CommissionPolicy
         ];
     }
 
-    /** 邀请页用的完整视图：生效规则 + 阶梯表 + 自动周期门槛 */
+    /** 邀请页用的完整视图：生效规则 + 阶梯表 + 周期返佣门槛与申请状态 */
     public static function view(User $inviter): array
     {
         $policy = self::forInviter($inviter);
@@ -66,10 +67,12 @@ final class CommissionPolicy
                 'levels' => $tiers['levels'],
                 'next' => $tiers['enable'] && $policy['rate_source'] !== 'user' ? $next : null,
             ],
+            // 键名沿用上一版（前端按它判断有没有这块）；enable 现在的意思是「开放申请」
             'period_auto' => [
                 'enable' => $auto['enable'],
                 'min_invitees' => $auto['min_invitees'],
                 'active_paid_invitee_count' => $policy['active_paid_invitee_count'],
+                'application' => PeriodCommission::state($inviter, $policy['active_paid_invitee_count']),
             ],
         ];
     }
@@ -127,14 +130,23 @@ final class CommissionPolicy
         if ($type === User::COMMISSION_TYPE_ONETIME) {
             return [self::MODE_FIRST_ORDER, 'user'];
         }
-        $auto = self::periodAuto();
-        if ($auto['enable'] && $activePaidInvitees >= $auto['min_invitees']) {
-            return [self::MODE_PERIOD, 'auto'];
+        // 申请制：通过且仍达标才是周期返佣。这条路径在下单时（OrderService::setInvite）也会走到，
+        // 查询或取消资格出任何错都只当「没开通」处理，绝不让它拦下单
+        try {
+            if (PeriodCommission::grants($inviter, $activePaidInvitees)) {
+                return [self::MODE_PERIOD, 'applied'];
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[commission] 周期返佣资格判断失败，按未开通处理', ['user_id' => $inviter->id, 'msg' => $e->getMessage()]);
         }
         return [(bool) admin_setting('commission_first_time_enable', true) ? self::MODE_FIRST_ORDER : self::MODE_PERIOD, 'default'];
     }
 
-    /** @return array{enable:bool, min_invitees:int} */
+    /**
+     * 周期返佣申请的开关与门槛。键名是上一版「达标自动开启」留下的，语义已改成「达标可申请」。
+     *
+     * @return array{enable:bool, min_invitees:int}
+     */
     public static function periodAuto(): array
     {
         return [

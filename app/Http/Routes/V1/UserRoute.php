@@ -68,6 +68,9 @@ class UserRoute
             $router->get('/invite/fetch', [InviteController::class, 'fetch']);
             $router->get('/invite/details', [InviteController::class, 'details']);
             $router->get('/invite/users', [InviteController::class, 'users']);
+            // 周期返佣申请（达标后申请、站长后台审核）；已登记进 sufe-middleware-rs 的 pathname.rs
+            $router->post('/invite/period/apply', [InviteController::class, 'applyPeriod'])
+                ->middleware('throttle:invite-save');
             // Notice
             $router->get('/notice/fetch', [NoticeController::class, 'fetch']);
             // Ticket

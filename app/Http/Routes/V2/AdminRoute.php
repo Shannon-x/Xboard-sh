@@ -22,6 +22,7 @@ use App\Http\Controllers\V2\Admin\PaymentController;
 use App\Http\Controllers\V2\Admin\SystemController;
 use App\Http\Controllers\V2\Admin\ThemeController;
 use App\Http\Controllers\V2\Admin\TrafficResetController;
+use App\Http\Controllers\V2\Admin\CommissionPeriodController;
 use App\Http\Controllers\V2\Admin\WithdrawController;
 use App\Http\Controllers\V2\Admin\BillingController;
 use App\Http\Controllers\V2\Admin\MailController;
@@ -205,6 +206,16 @@ class AdminRoute
                 $router->get('/rate', [WithdrawController::class, 'rate']);
                 $router->post('/settle', [WithdrawController::class, 'settle']);
                 $router->post('/reject', [WithdrawController::class, 'reject']);
+            });
+
+            // 周期返佣申请：大推广者达标后申请，这里审核
+            $router->group([
+                'prefix' => 'commission-period'
+            ], function ($router) {
+                $router->any('/fetch', [CommissionPeriodController::class, 'fetch']);
+                $router->get('/stats', [CommissionPeriodController::class, 'stats']);
+                $router->post('/approve', [CommissionPeriodController::class, 'approve']);
+                $router->post('/reject', [CommissionPeriodController::class, 'reject']);
             });
 
             // Billing：归档的收据 / 账单（查询、重发）与余额流水（查询、手工调整）

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Http\Requests\Admin\ConfigSave;
 use App\Models\CommissionLog;
 use App\Models\Coupon;
 use App\Models\InviteCode;
@@ -17,6 +18,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -357,5 +359,96 @@ class InviteGrowthTest extends TestCase
         $this->assertSame(['enable' => false, 'base_rate' => 10, 'levels' => [], 'next' => null], $resp->json('data.commission.tiers'));
         $this->assertSame('default', $resp->json('data.commission.rate_source'));
         $this->assertSame(10, $resp->json('data.commission.rate'));
+    }
+
+    // ---------------------------------------------------------------- B3 自动周期返佣
+
+    /** $buyer 的一张续费单会记多少佣金（下完随即取消，避免「有未付款订单」拦下一张） */
+    private function renewalCommission(User $buyer): int
+    {
+        $order = OrderService::createFromRequest($buyer->fresh(), $this->plan, 'monthly');
+        $this->assertSame(Order::TYPE_RENEWAL, (int) $order->type);
+        Order::where('id', $order->id)->update(['status' => Order::STATUS_CANCELLED]);
+        return (int) $order->commission_balance;
+    }
+
+    public function test_period_commission_switches_on_at_the_threshold_and_back_off_below(): void
+    {
+        $this->settings['commission_period_auto_enable'] = 1;
+        $this->settings['commission_period_auto_min_invitees'] = 3;
+        $inviter = $this->makeUser();
+        $a = $this->activeInvitee($inviter);
+        $this->paidOrder($a, $inviter);
+        $b = $this->activeInvitee($inviter);
+        $this->paidOrder($b, $inviter);
+
+        // 2 位有效付费：仍是首单返佣，老用户续费不返
+        $this->assertSame(0, $this->renewalCommission($a));
+        $this->assertSame($inviter->id, (int) Order::where('user_id', $a->id)->latest('id')->value('invite_user_id'));   // 邀请关系照记
+
+        // 第 3 位到位：自动升级为周期返佣，续费也返
+        $c = $this->activeInvitee($inviter);
+        $this->paidOrder($c, $inviter);
+        $this->assertSame(1000, $this->renewalCommission($a));
+
+        // 一位到期 → 有效人数掉回 2：自动恢复首单返佣
+        User::where('id', $c->id)->update(['expired_at' => time() - 10]);
+        $this->assertSame(0, $this->renewalCommission($a));
+
+        // 付过费但没套餐的不算「有效」
+        $d = $this->makeUser(['invite_user_id' => $inviter->id]);
+        $this->paidOrder($d, $inviter);
+        $this->assertSame(0, $this->renewalCommission($a));
+
+        // 管理员单设「周期」：门槛不参与
+        User::where('id', $inviter->id)->update(['commission_type' => User::COMMISSION_TYPE_PERIOD]);
+        $this->assertSame(1000, $this->renewalCommission($a));
+        // 管理员单设「一次性」：即使人数够也只返首单
+        User::where('id', $c->id)->update(['expired_at' => time() + 86400]);
+        User::where('id', $inviter->id)->update(['commission_type' => User::COMMISSION_TYPE_ONETIME]);
+        $this->assertSame(0, $this->renewalCommission($a));
+        // 开关关着：人数够也不自动开
+        User::where('id', $inviter->id)->update(['commission_type' => User::COMMISSION_TYPE_SYSTEM]);
+        $this->settings['commission_period_auto_enable'] = 0;
+        $this->assertSame(0, $this->renewalCommission($a));
+    }
+
+    public function test_invite_fetch_shows_the_period_auto_threshold_and_mode(): void
+    {
+        $this->settings['commission_period_auto_enable'] = 1;
+        $this->settings['commission_period_auto_min_invitees'] = 2;
+        $inviter = $this->makeUser();
+        $this->addPaidInvitees($inviter, 1, true);
+        Sanctum::actingAs($inviter);
+
+        $resp = $this->getJson('/api/v1/user/invite/fetch')->assertOk();
+        $this->assertSame('first_order', $resp->json('data.commission.mode'));
+        $this->assertSame('default', $resp->json('data.commission.mode_source'));
+        $this->assertSame(['enable' => true, 'min_invitees' => 2, 'active_paid_invitee_count' => 1], $resp->json('data.commission.period_auto'));
+
+        $this->addPaidInvitees($inviter, 1, true);
+        $resp = $this->getJson('/api/v1/user/invite/fetch')->assertOk();
+        $this->assertSame('period', $resp->json('data.commission.mode'));
+        $this->assertSame('auto', $resp->json('data.commission.mode_source'));
+        $this->assertSame(2, $resp->json('data.commission.period_auto.active_paid_invitee_count'));
+
+        User::where('id', $inviter->id)->update(['commission_type' => User::COMMISSION_TYPE_ONETIME]);
+        $resp = $this->getJson('/api/v1/user/invite/fetch')->assertOk();
+        $this->assertSame(['first_order', 'user'], [$resp->json('data.commission.mode'), $resp->json('data.commission.mode_source')]);
+    }
+
+    public function test_admin_config_rules_accept_the_invite_growth_settings(): void
+    {
+        $data = [
+            'invite_first_order_discount' => 12,
+            'commission_tier_enable' => 1, 'commission_tier_2_min' => 10, 'commission_tier_2_rate' => 15,
+            'commission_tier_3_min' => 30, 'commission_tier_3_rate' => 20,
+            'commission_period_auto_enable' => 1, 'commission_period_auto_min_invitees' => 50,
+            'commission_notify_enable' => 1, 'commission_leaderboard_enable' => 1,
+        ];
+        $this->assertTrue(Validator::make($data, ConfigSave::RULES)->passes());
+        $this->assertTrue(Validator::make(['invite_first_order_discount' => 101], ConfigSave::RULES)->fails());
+        $this->assertTrue(Validator::make(['commission_tier_2_rate' => -1], ConfigSave::RULES)->fails());
+        $this->assertTrue(Validator::make(['commission_period_auto_min_invitees' => 0], ConfigSave::RULES)->fails());
     }
 }

@@ -46,6 +46,8 @@ class ConfigSave extends FormRequest
         'commission_tier_2_rate' => 'nullable|integer|min:0|max:100',
         'commission_tier_3_min' => 'nullable|integer|min:1|max:100000',
         'commission_tier_3_rate' => 'nullable|integer|min:0|max:100',
+        'commission_period_auto_enable' => '',
+        'commission_period_auto_min_invitees' => 'nullable|integer|min:1|max:100000',
         // site
         'logo' => 'nullable|url',
         'force_https' => '',

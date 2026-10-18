@@ -152,6 +152,8 @@ class ConfigController extends Controller
                 'commission_tier_2_rate' => (int) admin_setting('commission_tier_2_rate', 15),
                 'commission_tier_3_min' => (int) admin_setting('commission_tier_3_min', 30),
                 'commission_tier_3_rate' => (int) admin_setting('commission_tier_3_rate', 20),
+                'commission_period_auto_enable' => (bool) admin_setting('commission_period_auto_enable', 0),
+                'commission_period_auto_min_invitees' => (int) admin_setting('commission_period_auto_min_invitees', 50),
             ],
             'site' => [
                 'logo' => admin_setting('logo'),

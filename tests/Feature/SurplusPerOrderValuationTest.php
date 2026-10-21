@@ -149,7 +149,14 @@ class SurplusPerOrderValuationTest extends TestCase
     {
         // 两张同价月付叠加：均价 = 单价，逐张计值与原公式相同。
         $now = time();
-        $oldEnd = $now + 10 * self::DAY;
+        // 旧到期日落在 29–31 号时 addMonth 会溢出（10-31 + 1 月 = 12-01），而实现按 subMonthsNoOverflow
+        // 反推新单覆盖期（11-01 起），中间多出的一天会算给旧单，断言在每月 19–21 号必挂。
+        // 把到期日压回 28 号以内，让这条测试与运行日期无关；期望值按实际剩余秒数计算。
+        $oldEndAt = Carbon::createFromTimestamp($now + 10 * self::DAY);
+        if ($oldEndAt->day > 28) {
+            $oldEndAt->setDay(28);
+        }
+        $oldEnd = $oldEndAt->timestamp;
         $expiredAt = $this->addMonth($oldEnd);
         $plan = $this->plan(40);
         $user = $this->user($plan, $expiredAt, $oldEnd, $oldEnd - self::MONTH);
@@ -158,9 +165,9 @@ class SurplusPerOrderValuationTest extends TestCase
 
         $order = $this->changeTo($user, $this->plan(10));
 
-        // 旧单剩 10/30 个周期；新单一天没用，按它实际覆盖的日历月折算 = 实付 ¥40（原公式按 30 天口径，
-        // 31 天的月份会算成 ¥41.33、2 月算成 ¥37.33）。
-        $this->assertEqualsWithDelta(4000 * (10 / 30) + 4000, $this->credit($order), 3);
+        // 旧单剩 (oldEnd-now)/30 天 个周期（通常 10/30）；新单一天没用，按它实际覆盖的日历月折算 = 实付 ¥40
+        //（原公式按 30 天口径，31 天的月份会算成 ¥41.33、2 月算成 ¥37.33）。
+        $this->assertEqualsWithDelta(4000 * (($oldEnd - $now) / self::MONTH) + 4000, $this->credit($order), 3);
     }
 
     public function test_restarted_renewal_gives_no_value_to_the_exhausted_old_order(): void

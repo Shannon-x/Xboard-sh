@@ -63,5 +63,7 @@ jobs:
         run: docker build --build-arg SOURCE_REVISION="$GITHUB_SHA" -t xboard-compatibility .
       - name: Validate production dependencies and legacy HTTP contracts
         run: |
+          docker run --rm --entrypoint php xboard-compatibility -v
+          docker run --rm --entrypoint php xboard-compatibility scripts/assert-runtime-extensions.php
           docker run --rm --entrypoint composer xboard-compatibility check-platform-reqs --no-dev
           docker run --rm --entrypoint php xboard-compatibility scripts/assert-api-contract.php

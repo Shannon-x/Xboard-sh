@@ -78,6 +78,8 @@ jobs:
         env:
           IMAGE_REF: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
         run: |
+          docker run --rm --entrypoint php "$IMAGE_REF" -v
+          docker run --rm --entrypoint php "$IMAGE_REF" scripts/assert-runtime-extensions.php
           docker run --rm --entrypoint composer "$IMAGE_REF" check-platform-reqs --no-dev
           docker run --rm --entrypoint php "$IMAGE_REF" scripts/assert-api-contract.php
 

@@ -4,6 +4,7 @@
 namespace App\Jobs;
 
 use App\Models\StatUser;
+use App\Support\JobReceipt;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -60,19 +61,23 @@ class StatUserJob implements ShouldQueue
         // 实测 26,145 事务/分钟 → v2_stat_user 独占 14.3 GB/天 binlog。
         // 同一个 chunk 里 TrafficFetchJob 早已用 CASE WHEN 批量化（3,082 事务/分钟），
         // StatServerJob 每次推送只写 1 行（312 事务/分钟），只有这里还是逐用户。
-        if (config('database.default') === 'mysql') {
-            $this->processChunk($recordAt);
-            return;
-        }
-
-        foreach ($this->data as $uid => $v) {
-            try {
-                $this->processUserStat($uid, $v, $recordAt);
-            } catch (\Exception $e) {
-                Log::error('StatUserJob failed for user ' . $uid . ': ' . $e->getMessage());
-                throw $e;
+        // 批量路径是「先 UPDATE 已有行、再 upsert 新行」两条语句：第二条失败时第一条已经生效，
+        // 裸重试会把那部分用户的统计加两遍。JobReceipt 把两条语句和回执放进同一个事务，重试才安全。
+        JobReceipt::applyOnce($this->job, 'stat_user', function () use ($recordAt) {
+            if (config('database.default') === 'mysql') {
+                $this->processChunk($recordAt);
+                return;
             }
-        }
+
+            foreach ($this->data as $uid => $v) {
+                try {
+                    $this->processUserStat($uid, $v, $recordAt);
+                } catch (\Exception $e) {
+                    Log::error('StatUserJob failed for user ' . $uid . ': ' . $e->getMessage());
+                    throw $e;
+                }
+            }
+        });
     }
 
     /**

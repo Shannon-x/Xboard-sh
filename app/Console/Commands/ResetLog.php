@@ -6,6 +6,7 @@ use App\Models\AdminAuditLog;
 use App\Models\MailLog;
 use App\Models\StatServer;
 use App\Models\StatUser;
+use App\Support\JobReceipt;
 use Illuminate\Console\Command;
 
 class ResetLog extends Command
@@ -45,6 +46,8 @@ class ResetLog extends Command
         StatUser::where('record_at', '<', strtotime('-2 month', time()))->delete();
         StatServer::where('record_at', '<', strtotime('-2 month', time()))->delete();
         AdminAuditLog::where('created_at', '<', strtotime('-3 month', time()))->delete();
+        // 队列任务落库回执：只在重试窗口内有意义，过期分批删
+        JobReceipt::prune();
 
         // 邮件投递日志：每天的到期 / 流量提醒都会记一行，按后台配置的保留期分批删（0 = 永久保留）
         $days = max(0, min(3650, (int) admin_setting('mail_log_retention_days', 180)));

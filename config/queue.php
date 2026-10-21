@@ -62,8 +62,14 @@ return [
             'driver' => 'redis',
             'connection' => 'default',
             'queue' => env('REDIS_QUEUE', 'default'),
-            'retry_after' => 90,
-            'block_for' => null,
+            // 必须大于最长的任务超时（SendTelegramAttachmentJob 120 s；tests/Unit/QueueConfigTest 把关）：
+            // 小于它时任务还在跑就被当作卡死重新投递，附件会发两遍。原值 90。
+            'retry_after' => 150,
+            // 空闲时用 BLPOP 阻塞等待，而不是每 sleep(3) 轮询一次：新任务落队即被捡起（验证码邮件、
+            // 节点同步不再平均多等 1.5 s），空闲 worker 也不再每 3 秒打一次 Redis。
+            // Horizon 的 balance=auto / simple 给每个队列独立的进程池、一个进程只守一个队列，
+            // 阻塞不会让列表里靠后的队列挨饿；balance=false 的单池模式才会（同样由 QueueConfigTest 把关）。
+            'block_for' => 5,
         ],
 
     ],

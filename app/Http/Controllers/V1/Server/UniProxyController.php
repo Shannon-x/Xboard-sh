@@ -31,21 +31,28 @@ class UniProxyController extends Controller
     // 后端获取用户
     public function user(Request $request)
     {
-        ini_set('memory_limit', -1);
-        $node = $this->getNodeInfo($request);
-        $nodeType = $node->type;
-        $nodeId = $node->id;
-        Cache::put(CacheKey::get('SERVER_' . strtoupper($nodeType) . '_LAST_CHECK_AT', $nodeId), time(), 3600);
-        $users = ServerService::getAvailableUsers($node);
+        // 名单大时放宽内存，但 Octane 常驻进程里 ini_set 不随请求结束复原：原先设成 -1 之后，
+        // 这个 worker 之后处理的所有请求都没有内存上限。用完必须还原。
+        $memoryLimit = (string) ini_get('memory_limit');
+        ini_set('memory_limit', '-1');
+        try {
+            $node = $this->getNodeInfo($request);
+            $nodeType = $node->type;
+            $nodeId = $node->id;
+            Cache::put(CacheKey::get('SERVER_' . strtoupper($nodeType) . '_LAST_CHECK_AT', $nodeId), time(), 3600);
+            $users = ServerService::getAvailableUsers($node);
 
-        $response['users'] = $users;
+            $response['users'] = $users;
 
-        $eTag = sha1(json_encode($response));
-        if (strpos($request->header('If-None-Match', ''), $eTag) !== false) {
-            return response(null, 304);
+            $eTag = sha1(json_encode($response));
+            if (strpos($request->header('If-None-Match', ''), $eTag) !== false) {
+                return response(null, 304);
+            }
+
+            return response($response)->header('ETag', "\"{$eTag}\"");
+        } finally {
+            ini_set('memory_limit', $memoryLimit);
         }
-
-        return response($response)->header('ETag', "\"{$eTag}\"");
     }
 
     // 后端提交数据

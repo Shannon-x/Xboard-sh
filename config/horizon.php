@@ -88,7 +88,17 @@ return [
     */
 
     'waits' => [
+        // 排队等待超过阈值（秒）时 Horizon 触发 LongWaitDetected、仪表盘把该队列标红。
+        // 订单开通与节点同步是秒级链路，邮件 / 统计类可以慢一些。
         'redis:default' => 60,
+        'redis:order_handle' => 30,
+        'redis:node_sync' => 30,
+        'redis:traffic_fetch' => 60,
+        'redis:user_alive_sync' => 60,
+        'redis:send_email' => 120,
+        'redis:send_telegram' => 120,
+        'redis:stat' => 300,
+        'redis:send_email_mass' => 600,
     ],
 
     /*
@@ -170,33 +180,47 @@ return [
 
     'environments' => [
         'production' => [
+            // 生产主机 56 核 / 256 GB，目标是队列快、准、不积压，不是省进程。
+            // balance=auto 下每个队列一个进程池，minProcesses 是「每个队列」的常驻下限，
+            // maxProcesses 是整个 supervisor 的上限；三组常驻 2×(3+2+4)=18 个 worker，
+            // 每个占一条 MySQL 连接，远在 max_connections 之内。
+            // 注意：生产机把 config/horizon.php 挂载进容器，改这里要在部署时同步主机上的那份。
             'data-pipeline' => [
                 'connection' => 'redis',
                 'queue' => ['traffic_fetch', 'stat', 'user_alive_sync'],
                 'balance' => 'auto',
                 'autoScalingStrategy' => 'time',
-                'minProcesses' => 1,
-                'maxProcesses' => 8,
+                'minProcesses' => 2,
+                'maxProcesses' => 16,
+                // 每轮最多加减 4 个进程、1 秒一轮：节点集中上报时几秒内就扩到位
+                'balanceMaxShift' => 4,
                 'balanceCooldown' => 1,
                 'tries' => 3,
                 'timeout' => 30,
             ],
             'business' => [
                 'connection' => 'redis',
-                'queue' => ['default', 'order_handle'],
-                'balance' => 'simple',
-                'minProcesses' => 1,
-                'maxProcesses' => 3,
+                // order_handle 在前：开通 / 取消订单比 default 队列的杂活优先
+                'queue' => ['order_handle', 'default'],
+                'balance' => 'auto',
+                'autoScalingStrategy' => 'size',
+                'minProcesses' => 2,
+                'maxProcesses' => 6,
+                'balanceCooldown' => 1,
                 'tries' => 3,
                 'timeout' => 30,
             ],
             'notification' => [
                 'connection' => 'redis',
-                'queue' => ['send_email', 'send_telegram', 'send_email_mass', 'node_sync'],
+                'queue' => ['node_sync', 'send_email', 'send_telegram', 'send_email_mass'],
                 'balance' => 'auto',
                 'autoScalingStrategy' => 'size',
-                'minProcesses' => 1,
-                'maxProcesses' => 3,
+                'minProcesses' => 2,
+                // 4 个队列 × minProcesses 2 = 8 个常驻；群发 / 日报堆上来时最多扩到 12
+                //（原来的上限 3 连 4 个队列各 1 个进程都装不下，AutoScaler 实际一直跑 4 个）
+                'maxProcesses' => 12,
+                'balanceMaxShift' => 2,
+                'balanceCooldown' => 1,
                 'tries' => 3,
                 'timeout' => 60,
                 'backoff' => [3, 10, 30],

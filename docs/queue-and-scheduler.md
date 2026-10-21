@@ -25,6 +25,8 @@ traffic_fetch 每 5 分钟约 2,100 个任务（单个 30–40 ms）、stat 约 
 始终有空闲 worker 阻塞等在队列上。4 组共 32 个 worker，各占一条 MySQL 连接（`max_connections=400`）。
 `memory=256`（worker 超过即重启，旧值 128 与 60–115 MB 的实际占用太近），`memory_limit=512`（master）。
 
+`'defaults' => []` 必须保留：Horizon 会把 `config('horizon.defaults')` 里的每个 supervisor 并进每个环境，不写时包自带的 config 会补一个 `supervisor-1`（`default` 队列、1 个进程、`tries` 1），2026-10-21 生产实测它在 32 个 worker 之外一直多跑一个。`tests/Unit/QueueConfigTest::horizon_defaults_do_not_add_a_stray_supervisor` 把关。
+
 `metrics.trim_snapshots` 288：`horizon:snapshot` 每 5 分钟一条，保留 24 小时（原值 24 只有 2 小时）。
 
 `config/queue.php` 的 redis 连接：

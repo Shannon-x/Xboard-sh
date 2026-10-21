@@ -230,6 +230,12 @@ return [
     |
     */
 
+    // Horizon 会把 config('horizon.defaults') 里的每个 supervisor 并进每个环境
+    //（ProvisioningPlan::applyDefaultOptions 用 array_replace_recursive）。这里不写 defaults 时，
+    // 包自带的 config 会补一个 supervisor-1（redis / default 队列 / 1 个进程 / tries 1），
+    // 2026-10-21 生产实测它一直在 32 个 worker 之外多跑一个。显式置空，进程池只来自下面的 $supervisors。
+    'defaults' => [],
+
     'environments' => [
         // 生产机 .env 是 APP_ENV=local（2026-10-21 只读采集确认），Horizon 按 APP_ENV 取块，
         // 原来的 production 块从来没有生效过，线上一直跑的是主机上手改的 local 块。

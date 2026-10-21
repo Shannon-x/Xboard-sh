@@ -241,6 +241,12 @@ return [
     'swoole' => [
         'options' => [
             'package_max_length' => 32 * 1024 * 1024,
+            // Octane 命令行默认 --max-requests=500：生产约 40 req/s、48 个 worker，每 11.7 秒就有一个 worker
+            // 回收重启（2026-10-21 采集：WorkerStarting 的日志一天 7,408 行），每次重新 boot 整个框架。
+            // 主机 256 GB、单 worker 几十 MB，10000 次再回收足够防泄漏。这里的值优先于命令行参数，
+            // 随镜像生效，不用改主机 compose。
+            'max_request' => 10000,
+            'task_max_request' => 10000,
         ],
     ],
 

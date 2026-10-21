@@ -51,17 +51,36 @@ class CheckCommission extends Command
         $this->autoPayCommission();
     }
 
-    public function autoCheck()
+    /** autoCheck 每批按主键更新的订单数 */
+    public const AUTO_CHECK_CHUNK = 200;
+
+    /**
+     * 把「已完成、有邀请人、满 3 天」的订单从待确认(0)推进到发放中(1)。
+     *
+     * 历史实现是一条整表 UPDATE：优化器走 status 索引（基数 3），把全部已完成订单逐行加排他锁。
+     * 2026-10-21 生产 InnoDB 的最近一次死锁记录里它持有 122,664 个行锁，对面是支付回调后的
+     * OrderHandleJob；同一天还有一次 plugin_payment_attempts 插入因此死锁失败（支付入口报错一次）。
+     * 现在先按 idx_order_commission_scan 只读选出候选 id，再按主键每 AUTO_CHECK_CHUNK 条一批
+     * UPDATE，并在 UPDATE 里重复全部条件：锁只落在真正要改的几十行上，候选在两步之间被改了也不会误推进。
+     */
+    public function autoCheck(): void
     {
-        if ((int)admin_setting('commission_auto_check_enable', 1)) {
-            Order::where('commission_status', 0)
-                ->where('invite_user_id', '!=', NULL)
-                ->where('status', 3)
-                ->where('updated_at', '<=', strtotime('-3 day', time()))
-                ->update([
-                    'commission_status' => 1
-                ]);
+        if (!(int) admin_setting('commission_auto_check_enable', 1)) {
+            return;
         }
+        $cutoff = strtotime('-3 day', time());
+        $eligible = fn ($query) => $query
+            ->where('commission_status', 0)
+            ->whereNotNull('invite_user_id')
+            ->where('status', Order::STATUS_COMPLETED)
+            ->where('updated_at', '<=', $cutoff);
+
+        $eligible(Order::query())
+            ->select('id')
+            ->chunkById(self::AUTO_CHECK_CHUNK, function ($orders) use ($eligible) {
+                $eligible(Order::whereIn('id', $orders->pluck('id')->all()))
+                    ->update(['commission_status' => 1]);
+            });
     }
 
     public function autoPayCommission()

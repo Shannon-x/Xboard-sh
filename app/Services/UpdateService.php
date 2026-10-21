@@ -36,24 +36,27 @@ class UpdateService
      */
     public function updateVersionCache(): void
     {
-        try {
-            $result = Process::run('git log -1 --format=%cd:%H --date=format:%Y%m%d');
-            if ($result->successful()) {
-                list($date, $hash) = explode(':', trim($result->output()));
-                Cache::forever(self::CACHE_VERSION_DATE, $date);
-                Cache::forever(self::CACHE_VERSION, substr($hash, 0, 7));
-                // Log::info('Version cache updated: ' . $date . '-' . substr($hash, 0, 7));
-                return;
+        // 每个 Octane worker 启动都会调用这里。生产镜像里没有 .git，原来每次都起一个注定失败的 git 子进程
+        // 再走 fallback，并刷一条 INFO（2026-10-21 采集：一天 7,408 行）。没有 .git 就直接走 fallback。
+        if (is_dir(base_path('.git'))) {
+            try {
+                $result = Process::run('git log -1 --format=%cd:%H --date=format:%Y%m%d');
+                if ($result->successful()) {
+                    list($date, $hash) = explode(':', trim($result->output()));
+                    Cache::forever(self::CACHE_VERSION_DATE, $date);
+                    Cache::forever(self::CACHE_VERSION, substr($hash, 0, 7));
+                    return;
+                }
+            } catch (\Exception $e) {
+                Log::error('Failed to get version with date: ' . $e->getMessage());
             }
-        } catch (\Exception $e) {
-            Log::error('Failed to get version with date: ' . $e->getMessage());
         }
 
         // Fallback
         Cache::forever(self::CACHE_VERSION_DATE, date('Ymd'));
         $fallbackHash = $this->getCurrentCommit();
         Cache::forever(self::CACHE_VERSION, $fallbackHash);
-        Log::info('Version cache updated (fallback): ' . date('Ymd') . '-' . $fallbackHash);
+        Log::debug('Version cache updated (fallback): ' . date('Ymd') . '-' . $fallbackHash);
     }
 
     public function checkForUpdates(): array

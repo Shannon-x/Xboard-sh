@@ -5,16 +5,27 @@
 `schedule:run`，每条到期的 artisan 命令各起一个子进程。生产主机 56 核 / 256 GB，配置按「快、准、不积压」取值，
 不按省进程取值。
 
-## 队列与 supervisor（`config/horizon.php` 的 `production`）
+## 队列与 supervisor（`config/horizon.php`）
 
-| supervisor | 队列（按优先级） | 常驻 / 上限 | 用途 |
+> 生产机 `.env` 是 `APP_ENV=local`（2026-10-21 只读采集确认）。Horizon 按 `APP_ENV` 取 `environments` 里的块，
+> 所以此前 `production` 块从来没有生效过，线上跑的是主机上手改的 `local` 块。现在 `production` 与 `local`
+> 两个键指向同一个 `$supervisors` 数组，改一处即可。生产机把 `config/horizon.php` 挂载进容器，部署时要把
+> 新文件同步到主机并重启 `horizon` 容器。
+
+| supervisor | 队列 | 固定进程 | 用途 |
 |---|---|---|---|
-| data-pipeline | traffic_fetch、stat、user_alive_sync | 每队列 2 / 共 16，按清空时间自动均衡，每秒最多加减 4 | 节点上报流量落库、每日统计 |
-| business | order_handle、default | 每队列 2 / 共 6 | 订单取消 / 补开通、杂项 |
-| notification | node_sync、send_email、send_telegram、send_email_mass | 每队列 2 / 共 12 | 节点名单增量推送、邮件、Telegram、群发 |
+| traffic | traffic_fetch | 8 | 节点上报流量累加到 `v2_user` |
+| stat | stat | 8 | 当天按用户 / 按节点的流量统计 |
+| business | order_handle、default | 各 4 | 订单取消 / 补开通；Chatwoot 推送等杂活 |
+| notification | node_sync、send_email、send_telegram、send_email_mass | 各 2 | 节点名单增量推送、邮件、Telegram、群发 |
 
-`balance=auto` 下 **每个队列一个独立进程池**，`minProcesses` 是每个队列的常驻下限，`maxProcesses` 是整个
-supervisor 的上限。三组常驻 2×(3+2+4)=18 个 worker，每个占一条 MySQL 连接。
+全部 `balance=simple`：进程数在 supervisor 的队列间平分、**不伸缩**，每个队列一个独立进程池。生产采集看到旧配置
+（`auto` + `balanceCooldown=1`）下 data-pipeline 的 worker 大多活不过 70 秒，自动伸缩在不停地杀 / 起进程；而
+traffic_fetch 每 5 分钟约 2,100 个任务（单个 30–40 ms）、stat 约 4,200 个（单个 25 ms），固定池足以让每个队列
+始终有空闲 worker 阻塞等在队列上。4 组共 32 个 worker，各占一条 MySQL 连接（`max_connections=400`）。
+`memory=256`（worker 超过即重启，旧值 128 与 60–115 MB 的实际占用太近），`memory_limit=512`（master）。
+
+`metrics.trim_snapshots` 288：`horizon:snapshot` 每 5 分钟一条，保留 24 小时（原值 24 只有 2 小时）。
 
 `config/queue.php` 的 redis 连接：
 

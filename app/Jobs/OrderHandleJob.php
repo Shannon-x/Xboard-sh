@@ -18,6 +18,9 @@ class OrderHandleJob implements ShouldQueue
     protected $order;
     protected $tradeNo;
 
+    /** 待支付订单超过这么多秒仍未支付就取消；check:order 用同一阈值筛选要派发的订单 */
+    public const PENDING_CANCEL_AFTER = 3600 * 2;
+
     public $tries = 3;
     public $timeout = 5;
 
@@ -58,7 +61,7 @@ class OrderHandleJob implements ShouldQueue
         $orderService = new OrderService($order);
         switch ($order->status) {
             case Order::STATUS_PENDING:
-                if ($order->created_at <= (time() - 3600 * 2)) {
+                if ($order->created_at <= (time() - self::PENDING_CANCEL_AFTER)) {
                     $orderService->cancel();
                 }
                 break;

@@ -33,8 +33,10 @@ class Kernel extends ConsoleKernel
         $schedule->command('xboard:statistics')->dailyAt('0:10')->onOneServer();
         // check
         $schedule->command('check:order')->everyMinute()->onOneServer()->withoutOverlapping(5);
-        $schedule->command('check:commission')->everyMinute()->onOneServer()->withoutOverlapping(5);
-        $schedule->command('check:ticket')->everyMinute()->onOneServer()->withoutOverlapping(5);
+        // 佣金在订单完成 3 天后才确认、结算；工单是 24 小时无回复才自动关闭：都不需要分钟级精度。
+        // 调度器里每条 artisan 命令都是一次子进程启动（≈ 0.25 s CPU），这两条从每分钟改为每 5 分钟。
+        $schedule->command('check:commission')->everyFiveMinutes()->onOneServer()->withoutOverlapping(5);
+        $schedule->command('check:ticket')->everyFiveMinutes()->onOneServer()->withoutOverlapping(5);
         // 自增主键耗尽前告警（v2_stat_user 曾被 upsert 烧满 int 上限，新数据被静默累加到同一行）
         $schedule->command('check:auto-increment')->hourly()->onOneServer()->withoutOverlapping(30);
         $schedule->command('check:traffic-exceeded')->everyMinute()->onOneServer()->withoutOverlapping(10)->runInBackground();

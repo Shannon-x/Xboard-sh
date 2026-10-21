@@ -128,6 +128,17 @@ class UserService
         return true;
     }
 
+    /**
+     * 节点上报流量 → 落库任务。
+     *
+     * 每 1000 个用户一块派 TrafficFetchJob（累加 v2_user 的 u/d/t）和 StatUserJob（当天按用户的统计）；
+     * StatServerJob（当天按节点的统计）只需要这次上报的总和，整次上报派一个就够。原先它也按块派发、
+     * 每块都带整份明细到 worker 里再求和：任务数和 Redis 写入量平白多出 1/3。
+     *
+     * 派给 worker 的节点信息只留任务真正读取的 id 与 rate。Server::toArray() 带着 protocol_settings、
+     * tags、route_ids 等几 KB 配置，以前三个任务各复制一份进 Redis。倍率在 hook 之后取：
+     * 分时倍率一类插件会在 traffic.process.before 里改写它。
+     */
     public function trafficFetch(Server $server, string $protocol, array $data)
     {
         $server->rate = $server->getCurrentRate();
@@ -137,12 +148,24 @@ class UserService
         // Compatible with legacy hook
         list($server, $protocol, $data) = HookManager::filter('traffic.before_process', [$server, $protocol, $data]);
 
+        if (empty($data)) {
+            return;
+        }
+
         $timestamp = strtotime(date('Y-m-d'));
-        collect($data)->chunk(1000)->each(function ($chunk) use ($timestamp, $server, $protocol) {
-            TrafficFetchJob::dispatch($server, $chunk->toArray(), $protocol, $timestamp);
-            StatUserJob::dispatch($server, $chunk->toArray(), $protocol, 'd');
-            StatServerJob::dispatch($server, $chunk->toArray(), $protocol, 'd');
-        });
+        $jobServer = ['id' => $server['id'], 'rate' => $server['rate']];
+        $totalU = 0;
+        $totalD = 0;
+        foreach (array_chunk($data, 1000, true) as $chunk) {
+            TrafficFetchJob::dispatch($jobServer, $chunk, $protocol, $timestamp);
+            StatUserJob::dispatch($jobServer, $chunk, $protocol, 'd');
+            foreach ($chunk as $traffic) {
+                $totalU += (int) $traffic[0];
+                $totalD += (int) $traffic[1];
+            }
+        }
+        // StatServerJob 只累加 $traffic[0] / [1]、不乘倍率（与原来逐块求和的结果完全一致），直接给它总和
+        StatServerJob::dispatch($jobServer, [[$totalU, $totalD]], $protocol, 'd');
     }
 
     /**

@@ -6,6 +6,58 @@ use Linfo\Linfo;
 // $lInfo = new Linfo();
 // $parser = $lInfo->getParser();
 
+// 生产主机 56 核 / 256 GB，目标是队列快、准、不积压，不是省进程。
+//
+// 2026-10-21 生产只读采集（旧配置 auto/time、balanceCooldown 1）看到：data-pipeline 的 worker 大多活不过
+// 70 秒，自动伸缩在不停地杀 / 起进程，每次重启都要重新 boot 框架、重连 MySQL / Redis；而 traffic_fetch
+// 每 5 分钟约 2,100 个任务、单个 30–40 ms，stat 约 4,200 个、单个 25 ms。这个量级用固定进程池即可让
+// 每个队列始终有空闲 worker 阻塞等在队列上（block_for），不需要伸缩，也就没有伸缩延迟和进程抖动。
+//
+// balance=simple：进程数在 supervisor 的队列间平分、不伸缩，每个队列一个独立进程池。
+// 每个 worker 占一条 MySQL 连接：4 组共 32 条，远在 max_connections=400 之内。
+$supervisors = [
+    'traffic' => [
+        'connection' => 'redis',
+        'queue' => ['traffic_fetch'],
+        'balance' => 'simple',
+        'maxProcesses' => 8,
+        'memory' => 256,
+        'tries' => 3,
+        'timeout' => 30,
+    ],
+    'stat' => [
+        'connection' => 'redis',
+        'queue' => ['stat'],
+        'balance' => 'simple',
+        'maxProcesses' => 8,
+        'memory' => 256,
+        'tries' => 3,
+        'timeout' => 30,
+    ],
+    'business' => [
+        'connection' => 'redis',
+        // order_handle 与 default 各 4 个固定 worker。default 上跑着 Chatwoot 推送（单个 300–700 ms）
+        // 这类杂活，分池后它们再慢也占不到订单开通 / 取消的进程。
+        'queue' => ['order_handle', 'default'],
+        'balance' => 'simple',
+        'maxProcesses' => 8,
+        'memory' => 256,
+        'tries' => 3,
+        'timeout' => 60,
+    ],
+    'notification' => [
+        'connection' => 'redis',
+        // 4 个队列各 2 个固定 worker；任务自己声明的 timeout（如 120 s 的附件任务）优先于这里的 60。
+        'queue' => ['node_sync', 'send_email', 'send_telegram', 'send_email_mass'],
+        'balance' => 'simple',
+        'maxProcesses' => 8,
+        'memory' => 256,
+        'tries' => 3,
+        'timeout' => 60,
+        'backoff' => [3, 10, 30],
+    ],
+];
+
 return [
 
     /*
@@ -88,7 +140,16 @@ return [
     */
 
     'waits' => [
+        // 排队等待超过阈值（秒）时 Horizon 触发 LongWaitDetected、仪表盘把该队列标红。
+        // 订单开通与节点同步是秒级链路，邮件 / 统计类可以慢一些。
         'redis:default' => 60,
+        'redis:order_handle' => 30,
+        'redis:node_sync' => 30,
+        'redis:traffic_fetch' => 60,
+        'redis:send_email' => 120,
+        'redis:send_telegram' => 120,
+        'redis:stat' => 300,
+        'redis:send_email_mass' => 600,
     ],
 
     /*
@@ -123,9 +184,10 @@ return [
     */
 
     'metrics' => [
+        // horizon:snapshot 每 5 分钟一条，288 条 = 24 小时；原值 24 只留 2 小时，排障时拿不到昨天的曲线。
         'trim_snapshots' => [
-            'job' => 24,
-            'queue' => 24,
+            'job' => 288,
+            'queue' => 288,
         ],
     ],
 
@@ -155,7 +217,7 @@ return [
     |
     */
 
-    'memory_limit' => 256,
+    'memory_limit' => 512,
 
     /*
     |--------------------------------------------------------------------------
@@ -169,60 +231,11 @@ return [
     */
 
     'environments' => [
-        'production' => [
-            'data-pipeline' => [
-                'connection' => 'redis',
-                'queue' => ['traffic_fetch', 'stat', 'user_alive_sync'],
-                'balance' => 'auto',
-                'autoScalingStrategy' => 'time',
-                'minProcesses' => 1,
-                'maxProcesses' => 8,
-                'balanceCooldown' => 1,
-                'tries' => 3,
-                'timeout' => 30,
-            ],
-            'business' => [
-                'connection' => 'redis',
-                'queue' => ['default', 'order_handle'],
-                'balance' => 'simple',
-                'minProcesses' => 1,
-                'maxProcesses' => 3,
-                'tries' => 3,
-                'timeout' => 30,
-            ],
-            'notification' => [
-                'connection' => 'redis',
-                'queue' => ['send_email', 'send_telegram', 'send_email_mass', 'node_sync'],
-                'balance' => 'auto',
-                'autoScalingStrategy' => 'size',
-                'minProcesses' => 1,
-                'maxProcesses' => 3,
-                'tries' => 3,
-                'timeout' => 60,
-                'backoff' => [3, 10, 30],
-            ],
-        ],
-        'local' => [
-            'Xboard' => [
-                'connection' => 'redis',
-                'queue' => [
-                    'default',
-                    'order_handle',
-                    'traffic_fetch',
-                    'stat',
-                    'send_email',
-                    'send_email_mass',
-                    'send_telegram',
-                    'user_alive_sync',
-                    'node_sync'
-                ],
-                'balance' => 'auto',
-                'minProcesses' => 1,
-                'maxProcesses' => 5,
-                'tries' => 1,
-                'timeout' => 60,
-                'balanceCooldown' => 3,
-            ],
-        ],
+        // 生产机 .env 是 APP_ENV=local（2026-10-21 只读采集确认），Horizon 按 APP_ENV 取块，
+        // 原来的 production 块从来没有生效过，线上一直跑的是主机上手改的 local 块。
+        // 两个键指向同一份定义，不再有「改了没生效」的可能。
+        // 生产机把 config/horizon.php 挂载进容器：改这里要在部署时同步主机上的那份并重启 horizon。
+        'production' => $supervisors,
+        'local' => $supervisors,
     ],
 ];

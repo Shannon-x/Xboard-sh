@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\User;
+use App\Support\JobReceipt;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -18,8 +19,17 @@ class TrafficFetchJob implements ShouldQueue
     protected $server;
     protected $protocol;
     protected $timestamp;
-    public $tries = 1;
+    /**
+     * 原先 tries=1：一次死锁 / 锁等待超时就把这一块用户的流量整个丢掉（只留在 failed_jobs 里）。
+     * 现在落库经过 JobReceipt（回执和 UPDATE 同一事务），重试不会重复累加，所以可以放心重试。
+     */
+    public $tries = 3;
     public $timeout = 20;
+
+    public function backoff(): array
+    {
+        return [1, 5, 10];
+    }
 
     public function __construct(array $server, array $data, $protocol, int $timestamp)
     {
@@ -83,8 +93,10 @@ class TrafficFetchJob implements ShouldQueue
             . "t = ? "
             . "WHERE id IN ({$idPlaceholders})";
 
-        DB::update($sql, $bindings);
+        JobReceipt::applyOnce($this->job, 'traffic_fetch', fn () => DB::update($sql, $bindings));
 
+        // 不管这次是真写入还是回执命中跳过，都把用户放进超量待检集合：集合语义，重复无害；
+        // 上一次若在写入提交后、sadd 之前被杀，这里正好补上。
         Redis::sadd('traffic:pending_check', ...$userIds);
     }
 }

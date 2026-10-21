@@ -278,14 +278,15 @@ RUN php -r 'exit(version_compare(PHP_VERSION, getenv("PHP_MIN_VERSION"), ">=") ?
 # Package "libucontext" provides the ucontext functions that musl does not implement; Swoole
 # needs them on architectures it has no context-switching assembly for.
 RUN set -ex && \
-    apk add --no-cache libstdc++ libpq libssh2 libucontext unixodbc zstd-libs && \
-    apk add --no-cache --virtual .build-deps $PHPIZE_DEPS curl-dev linux-headers brotli-dev postgresql-dev openssl-dev pcre-dev pcre2-dev sqlite-dev zlib-dev zstd-dev libssh2-dev libucontext-dev unixodbc-dev && \
+    apk add --no-cache libstdc++ libpq libssh2 libucontext unixodbc zstd-libs liblzf && \
+    apk add --no-cache --virtual .build-deps $PHPIZE_DEPS curl-dev linux-headers brotli-dev postgresql-dev openssl-dev pcre-dev pcre2-dev sqlite-dev zlib-dev zstd-dev liblzf-dev libssh2-dev libucontext-dev unixodbc-dev && \
     docker-php-ext-install pdo_mysql && \
     docker-php-ext-install sockets && \
     docker-php-source extract && \
 # phpredis from the GitHub release tarball with upstream's options (lzf + zstd, no igbinary /
 # msgpack / lz4). Upstream pulls it from pecl.php.net, which returned 504s on 2026-10-21 and
-# would have blocked the emergency rebuild; GitHub is the more dependable source.
+# would have blocked the emergency rebuild; GitHub is the more dependable source. The GitHub
+# archive lacks the bundled liblzf (a git submodule), so lzf links against Alpine's liblzf.
     mkdir /usr/src/php/ext/redis && \
     curl -sfL "https://github.com/phpredis/phpredis/archive/refs/tags/${PHPREDIS_VERSION}.tar.gz" -o phpredis.tar.gz && \
     sha256sum phpredis.tar.gz && \
@@ -293,6 +294,7 @@ RUN set -ex && \
     grep -rq "PHP_REDIS_VERSION \"${PHPREDIS_VERSION}\"" /usr/src/php/ext/redis/ && \
     docker-php-ext-configure redis \
         --enable-redis-lzf \
+        --with-liblzf=/usr \
         --enable-redis-zstd \
         --disable-redis-igbinary \
         --disable-redis-msgpack \

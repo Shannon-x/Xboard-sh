@@ -19,6 +19,13 @@ class OctaneConfigTest extends TestCase
     }
 
     #[Test]
+    public function requests_go_to_idle_workers_instead_of_being_pinned_to_a_connection(): void
+    {
+        // 中间件只有几条 keep-alive 长连接；按连接固定分配（默认 2）会让 48 个 worker 里只有几个在干活
+        $this->assertSame(3, config('octane.swoole.options.dispatch_mode'));
+    }
+
+    #[Test]
     public function database_connections_are_reused_but_leaked_transactions_are_rolled_back(): void
     {
         // 每请求断开重连是生产每秒约 50 次新建连接的来源；现在复用连接，

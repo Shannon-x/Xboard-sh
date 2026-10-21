@@ -248,6 +248,13 @@ return [
             // 随镜像生效，不用改主机 compose。
             'max_request' => 10000,
             'task_max_request' => 10000,
+            // Swoole 默认 dispatch_mode=2：按连接的 fd 固定分给某个 worker。生产所有流量经中间件
+            // xb-secure 进来，它只保持 5 条 keep-alive 长连接（2026-10-21 采集），于是同一时刻真正干活的
+            // worker 只有约 5 个：部署后 4 小时里 52 次 max_request 回收全落在 48 个 worker 中的 11 个上，
+            // CPU 时间前 10 个 worker 占 64%，另外 37 个从未跑满过一次；慢请求会堵住同一连接后面的请求。
+            // 3 = 抢占模式：主进程只把请求投给空闲的 worker，是 Swoole 文档对同步阻塞（Octane 关闭协程）
+            // 服务器的推荐值。HTTP 请求本身无状态，Octane 也不使用 onConnect / onClose，换模式没有语义变化。
+            'dispatch_mode' => 3,
         ],
     ],
 

@@ -27,6 +27,7 @@ $required = [
     'fileinfo',
     'dom',
     'xml',
+    'Zend OPcache', // required by the RFC since 8.5; before that enabled by docker-php-ext-enable
 ];
 
 $missing = array_values(array_filter($required, static fn (string $ext): bool => ! extension_loaded($ext)));

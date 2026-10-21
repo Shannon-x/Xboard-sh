@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.4'
+          php-version: '8.5'
           extensions: mbstring, xml, curl, zip, bcmath, gd, pdo_sqlite, redis
           tools: composer:v2
           coverage: none
@@ -48,7 +48,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.4'
+          php-version: '8.5'
           extensions: mbstring, xml, curl, zip, bcmath, gd, pdo_mysql, pdo_sqlite, redis
           tools: composer:v2
           coverage: none
@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Build the actual pinned PHP 8.2 Swoole image from this checkout
+      - name: Build the actual pinned PHP + Swoole image from this checkout
         run: docker build --build-arg SOURCE_REVISION="$GITHUB_SHA" -t xboard-compatibility .
       - name: Validate production dependencies and legacy HTTP contracts
         run: |

@@ -1,21 +1,30 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Stage 0: php-base — PHP compiled from the php.net source tarball.
 #
-# This is the official docker-library/php recipe (8.2/alpine3.23/cli/Dockerfile and its
-# docker-php-* helper scripts, vendored under scripts/php-base/) with only the version, URL and
-# checksum parameterised. It exists so a PHP security release can be built the minute php.net
-# publishes the tarball, without waiting for the official php image to be rebuilt.
+# This is the official docker-library/php recipe (<major.minor>/alpine3.23/cli/Dockerfile and
+# its docker-php-* helper scripts, vendored under scripts/php-base/) with only the version, URL,
+# checksum and signing keys parameterised. It exists so a PHP security release can be built the
+# minute php.net publishes the tarball, without waiting for the official php image to be rebuilt.
 #
 #   To take a PHP release: set PHP_BASE_VERSION and PHP_BASE_SHA256 (the tar.xz sha256 from
 #   https://www.php.net/releases/index.php?json&version=<ver>) and PHP_MIN_VERSION below.
-#   The tarball is additionally verified against the 8.2 release managers' GPG keys.
+#   The tarball is additionally verified against the release managers' GPG keys
+#   (PHP_BASE_GPG_KEYS — the GPG_KEYS line of the same docker-library/php Dockerfile; they
+#   change with every minor version, 8.5 ≠ 8.4 ≠ 8.2).
+#
+#   2026-10-21: 8.2.35 (CVE-2026-109618 / CVE-2026-109619 hotfix), then 8.5.12 the same day
+#   because 8.2 reaches end of life on 2026-12-31. Swoole 6.2.2 supports PHP 8.2–8.5
+#   (package.xml), and swoole/docker-swoole's php8.5 recipe is identical to the php8.2 one.
 # ──────────────────────────────────────────────────────────────────────────────
-ARG PHP_BASE_VERSION=8.2.35
-ARG PHP_BASE_SHA256=5737b98601fe5ab1b8c5db0c82ed3158acb9283ed3081ffe2faffb9ac81455e6
+ARG PHP_BASE_VERSION=8.5.12
+ARG PHP_BASE_SHA256=08bc2eba2a588654ade1357174aa646b761556c862dda0678345ee29ed481209
+# PHP 8.5 release managers (docker-library/php 8.5/alpine3.23/cli/Dockerfile).
+ARG PHP_BASE_GPG_KEYS="1198C0117593497A5EC5C199286AF1F9897469DC 49D9AF6BC72A80D6691719C8AA23F5BE9C7097D4 D95C03BC702BE9515344AE3374E44BC9067701A5"
 
 FROM alpine:3.23@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 AS php-base
 ARG PHP_BASE_VERSION
 ARG PHP_BASE_SHA256
+ARG PHP_BASE_GPG_KEYS
 
 # dependencies required for running "phpize"
 # these get automatically installed and removed by "docker-php-ext-*" (unless they're already installed)
@@ -65,7 +74,7 @@ ENV PHP_CFLAGS="-fstack-protector-strong -fpic -fpie -O2 -D_LARGEFILE_SOURCE -D_
 ENV PHP_CPPFLAGS="$PHP_CFLAGS"
 ENV PHP_LDFLAGS="-Wl,-O1 -pie"
 
-ENV GPG_KEYS 39B641343D8C104B2B146DC3F9C39DC0B9698544 E60913E4DF209907D8E30D96659A97C9CF2A795A 1198C0117593497A5EC5C199286AF1F9897469DC
+ENV GPG_KEYS="$PHP_BASE_GPG_KEYS"
 
 ENV PHP_VERSION=$PHP_BASE_VERSION
 ENV PHP_URL="https://www.php.net/distributions/php-${PHP_VERSION}.tar.xz" PHP_ASC_URL="https://www.php.net/distributions/php-${PHP_VERSION}.tar.xz.asc"
@@ -178,11 +187,6 @@ RUN set -eux; \
 		\
 # in PHP 7.4+, the pecl/pear installers are officially deprecated (requiring an explicit "--with-pear")
 		--with-pear \
-		\
-# bundled pcre does not support JIT on riscv64 until 10.41 (php 8.3+)
-# https://github.com/PCRE2Project/pcre2/commits/pcre2-10.41/src/sljit/sljitNativeRISCV_64.c
-# https://github.com/php/php-src/tree/php-8.3.0/ext/pcre/pcre2lib
-		$(test "$gnuArch" = 'riscv64-linux-musl' && echo '--without-pcre-jit') \
 	; \
 	make -j "$(nproc)"; \
 	find -type f -name '*.a' -delete; \
@@ -222,8 +226,11 @@ RUN set -eux; \
 
 COPY scripts/php-base/docker-php-ext-* scripts/php-base/docker-php-entrypoint /usr/local/bin/
 
-# enable OPcache by default (https://wiki.php.net/rfc/make_opcache_required)
-RUN docker-php-ext-enable opcache
+# enable OPcache by default (https://wiki.php.net/rfc/make_opcache_required).
+# From PHP 8.5 OPcache is compiled in statically (no opcache.so to enable), so only run the
+# enable step when the shared module exists; scripts/assert-runtime-extensions.php asserts
+# that OPcache is loaded either way.
+RUN if [ -e "$(php -r 'echo ini_get("extension_dir");')/opcache.so" ]; then docker-php-ext-enable opcache; fi
 
 # sodium was built as a shared module (so that it can be replaced later if so desired), so let's enable it too (https://github.com/docker-library/php/issues/598)
 RUN docker-php-ext-enable sodium
@@ -234,9 +241,10 @@ ENTRYPOINT ["docker-php-entrypoint"]
 # Stage 1: PHP application
 # Ship the source and admin assets from the tested build context, never a moving branch.
 #
-# Base image is the OFFICIAL php image, PINNED BY DIGEST, with Swoole compiled here from the
-# swoole-src release tarball using the exact recipe of the upstream phpswoole/swoole image
-# (dockerfiles/<swoole>/php8.2/alpine/Dockerfile in swoole/docker-swoole).
+# Base image is the OFFICIAL php image, PINNED BY DIGEST (or the php-base stage above, which
+# builds the same thing from source), with Swoole compiled here from the swoole-src release
+# tarball using the exact recipe of the upstream phpswoole/swoole image
+# (dockerfiles/<swoole>/php<major.minor>/alpine/Dockerfile in swoole/docker-swoole).
 #
 # Why we no longer start FROM phpswoole/swoole (2026-10-21, CVE-2026-109618 / CVE-2026-109619):
 # that image freezes the PHP patch release at Swoole release time (6.2.2 == PHP 8.2.32) and is
@@ -250,15 +258,17 @@ ENTRYPOINT ["docker-php-entrypoint"]
 #
 # Digest pinning stays mandatory. On 2026-08-02 the floating `phpswoole/swoole:php8.2-alpine`
 # tag was re-pushed with a Swoole rebuild whose embedded swoole_library defines
-# CURLOPT_PREREQFUNCTION. On PHP 8.2 native curl_setopt() rejects that option, so Guzzle's
+# CURLOPT_PREREQFUNCTION. On PHP < 8.4 native curl_setopt() rejects that option, so Guzzle's
 # defined()-guarded teardown threw on EVERY outbound request and took down payments, Telegram
 # and Chatwoot. Both builds self-reported "Swoole 6.2.1", so a version tag is not enough.
+# PHP 8.4+ implements the option natively, but the guard stays: it is cheap and the next
+# "defined but unusable" constant will not announce itself either.
 # See scripts/assert-curl-contract.php for the build-time guard; it still gates this build.
 FROM php-base
 
 # Security floor: the build fails if the base image is older than this, so a stale digest can
 # never ship silently. Bump it together with the FROM line above.
-ARG PHP_MIN_VERSION=8.2.35
+ARG PHP_MIN_VERSION=8.5.12
 # Swoole release tag built below. 6.2.2 is what production has run since 2026-08-02 and is
 # verified free of the CURLOPT_PREREQFUNCTION define (see above).
 ARG SWOOLE_VERSION=6.2.2

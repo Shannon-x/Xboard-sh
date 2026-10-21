@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use Laravel\Octane\Contracts\OperationTerminated;
+use App\Listeners\Octane\RollBackLeakedTransactions;
 use Laravel\Octane\Listeners\DisconnectFromDatabases;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
@@ -18,10 +19,12 @@ class OctaneConfigTest extends TestCase
     }
 
     #[Test]
-    public function database_connections_are_still_dropped_after_each_operation(): void
+    public function database_connections_are_reused_but_leaked_transactions_are_rolled_back(): void
     {
-        // 有意保留：代码里有手写的 DB::beginTransaction()，每请求重连保证未提交事务不会带进下一个请求。
-        // 代价是每秒几十次新建连接（0.1 ms 一次），换的是「不出错」。
-        $this->assertContains(DisconnectFromDatabases::class, config('octane.listeners')[OperationTerminated::class]);
+        // 每请求断开重连是生产每秒约 50 次新建连接的来源；现在复用连接，
+        // 只有连接上还挂着未提交事务（手写 beginTransaction 漏了 rollBack）时才回滚并断开。
+        $listeners = config('octane.listeners')[OperationTerminated::class];
+        $this->assertNotContains(DisconnectFromDatabases::class, $listeners);
+        $this->assertContains(RollBackLeakedTransactions::class, $listeners);
     }
 }

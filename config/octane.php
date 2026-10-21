@@ -12,7 +12,6 @@ use Laravel\Octane\Events\WorkerErrorOccurred;
 use Laravel\Octane\Events\WorkerStarting;
 use Laravel\Octane\Events\WorkerStopping;
 use Laravel\Octane\Listeners\CollectGarbage;
-use Laravel\Octane\Listeners\DisconnectFromDatabases;
 use Laravel\Octane\Listeners\EnsureUploadedFilesAreValid;
 use Laravel\Octane\Listeners\EnsureUploadedFilesCanBeMoved;
 use Laravel\Octane\Listeners\FlushTemporaryContainerInstances;
@@ -102,7 +101,9 @@ return [
 
         OperationTerminated::class => [
             FlushTemporaryContainerInstances::class,
-            DisconnectFromDatabases::class,
+            // 原来是 DisconnectFromDatabases：每个请求结束都断开 MySQL，生产每秒约 50 次新建连接。
+            // 现在保留连接复用，只在连接上还挂着未提交事务时回滚并断开（见类注释）。
+            \App\Listeners\Octane\RollBackLeakedTransactions::class,
             CollectGarbage::class,
         ],
 

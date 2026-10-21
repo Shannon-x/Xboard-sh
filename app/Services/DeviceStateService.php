@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Server;
 use App\Models\User;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Redis;
@@ -307,6 +308,15 @@ class DeviceStateService
 
     /**
      * get user device count (for alivelist interface)
+     *
+     * 节点每分钟拉一次 alivelist，名单是本节点所有设了设备数限制的可用用户（上万人），
+     * 原来对每个人都 HGETALL user_devices:{id}。绝大多数人此刻不在线，key 不存在，
+     * 生产 Redis 因此每秒约 2 万次 miss、命中率只有 13.7%。
+     *
+     * 现在先取「此刻在任一节点上有设备记录」的用户（各节点反向索引的并集），只对名单里的这些人 HGETALL。
+     * 结果与逐个查完全相同：任何一条还在 TTL 内的设备记录，都是 setDevices 写入的，
+     * 写入时同一个用户也被 SADD 进了该节点的反向索引，且索引 TTL（TTL+60）长于记录的有效期（TTL）；
+     * 索引只在该节点上这个用户的记录被删掉时才 SREM。不在并集里的用户必然计数为 0，本来也不会出现在结果里。
      */
     public function getAliveList(Collection $users): array
     {
@@ -314,8 +324,18 @@ class DeviceStateService
             return [];
         }
 
+        $userIds = $users->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $online = $this->onlineUserIds();
+        if ($online !== null) {
+            $onlineSet = array_flip($online);
+            $userIds = array_values(array_filter($userIds, fn (int $id) => isset($onlineSet[$id])));
+            if ($userIds === []) {
+                return [];
+            }
+        }
+
         $result = [];
-        $counts = $this->getDeviceCounts($users->pluck('id')->all());
+        $counts = $this->getDeviceCounts($userIds);
         foreach ($counts as $userId => $count) {
             if ($count > 0) {
                 $result[$userId] = $count;
@@ -323,6 +343,30 @@ class DeviceStateService
         }
 
         return $result;
+    }
+
+    /**
+     * 此刻在任一节点上有设备记录的用户 id：所有节点反向索引 user_devices:node:{id} 的并集。
+     * 可能多出记录已过期、还没被清出索引的用户（HGETALL 后计为 0），但不会漏掉在线用户。
+     *
+     * @return int[]|null 没有任何节点时返回 null，调用方按原逻辑全量查询
+     */
+    public function onlineUserIds(): ?array
+    {
+        $nodeIds = $this->nodeIds();
+        if ($nodeIds === []) {
+            return null;
+        }
+        $keys = array_map(fn ($id) => self::NODE_INDEX_PREFIX . (int) $id, $nodeIds);
+        $members = Redis::sunion(...$keys);
+
+        return array_map('intval', is_array($members) ? $members : []);
+    }
+
+    /** @return int[] 所有节点 id（设备上报里的 nodeId 就是 v2_server.id） */
+    protected function nodeIds(): array
+    {
+        return array_map('intval', Server::query()->toBase()->pluck('id')->all());
     }
 
     /**

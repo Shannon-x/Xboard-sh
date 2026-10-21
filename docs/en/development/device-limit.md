@@ -67,6 +67,24 @@ A missing `alive` field in a combined report means "no device data was included"
 and does not clear state. An explicitly empty object or array is a full empty
 snapshot and clears the reporting node's state.
 
+## `/alivelist` reads only users who are online somewhere
+
+`/alivelist` returns counts for every available user on the node with a
+`device_limit`, often thousands of users per pull. Reading
+`user_devices:{userId}` for each of them made Redis answer about 32,000
+lookups per second for keys that did not exist (production, 2026-10-21: 96% of
+all Redis commands, 92.6% of them misses).
+
+`DeviceStateService::getAliveList()` now first takes the union of the per-node
+indexes `user_devices:node:{nodeId}` (one `SUNION` over all server ids) and
+reads hashes only for listed users found in that union. The result is identical
+to reading every user: a field that is still inside the TTL was written by
+`setDevices()`, which added the user to that node's index in the same call; the
+index outlives the field (TTL + 60 s) and only loses the user when that node's
+fields for the user are deleted. Users outside the union would count zero and
+were never part of the response. With no servers at all the method falls back
+to reading the full list.
+
 ## Database snapshot convergence
 
 Redis expiration is passive: when a key reaches its TTL, Redis does not execute

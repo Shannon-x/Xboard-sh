@@ -38,6 +38,17 @@ class QueueConfigTest extends TestCase
     }
 
     #[Test]
+    public function horizon_defaults_do_not_add_a_stray_supervisor(): void
+    {
+        // 不写 defaults 时 Horizon 包自带的 supervisor-1 会被并进每个环境（生产 2026-10-21 实测多跑一个 worker）
+        $this->assertSame([], config('horizon.defaults'));
+        $plan = new \Laravel\Horizon\ProvisioningPlan('test', config('horizon.environments'), config('horizon.defaults', []));
+        foreach ($plan->toSupervisorOptions() as $env => $supervisors) {
+            $this->assertSame(['traffic', 'stat', 'business', 'notification'], collect($supervisors)->keys()->all(), "horizon {$env} 的进程池应只来自 \$supervisors");
+        }
+    }
+
+    #[Test]
     public function blocking_pop_is_only_used_with_per_queue_process_pools(): void
     {
         if (config('queue.connections.redis.block_for') === null) {

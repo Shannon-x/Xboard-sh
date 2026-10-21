@@ -26,10 +26,12 @@ class TicketController extends Controller
     public function fetch(Request $request)
     {
         if ($request->input('id')) {
+            // 先判空再用：查不到（别人的工单 / 已删除的 id）时原来会在 null 上调用 load()，
+            // 给用户返回 500，并在日志里留下 "Call to a member function load() on null"。
+            // 下面会用 TicketMessage 重新查一遍消息，所以不需要 load('message')。
             $ticket = Ticket::where('id', $request->input('id'))
                 ->where('user_id', $request->user()->id)
-                ->first()
-                ->load('message');
+                ->first();
             if (!$ticket) {
                 return $this->fail([400, __('Ticket does not exist')]);
             }

@@ -262,6 +262,8 @@ ARG PHP_MIN_VERSION=8.2.34
 # Swoole release tag built below. 6.2.2 is what production has run since 2026-08-02 and is
 # verified free of the CURLOPT_PREREQFUNCTION define (see above).
 ARG SWOOLE_VERSION=6.2.2
+# phpredis release tag, same version upstream installs from PECL.
+ARG PHPREDIS_VERSION=6.3.0
 
 COPY --from=composer:2.10.2@sha256:d020706319701a44468968321dccd0fce6620190159a7a9ec195d78e6e971c71 /usr/bin/composer /usr/bin/composer
 COPY --from=mlocati/php-extension-installer:latest@sha256:b6d3fa381b9ba5cf051117c1c601d6a523b590e534bf3d56eb4fbe352949c138 /usr/bin/install-php-extensions /usr/local/bin/
@@ -270,20 +272,33 @@ COPY --from=mlocati/php-extension-installer:latest@sha256:b6d3fa381b9ba5cf051117
 RUN php -r 'exit(version_compare(PHP_VERSION, getenv("PHP_MIN_VERSION"), ">=") ? 0 : 1);' \
     || { echo "FATAL: PHP $(php -r 'echo PHP_VERSION;') is below the required ${PHP_MIN_VERSION} — update the FROM digest"; exit 1; }
 
-# Swoole, pdo_mysql, sockets and redis exactly as phpswoole/swoole builds them (comments kept
-# from upstream). Keep only the runtime shared libraries in the final image; the matching "-dev"
+# Swoole, pdo_mysql, sockets and redis as phpswoole/swoole builds them (same versions and
+# configure options; comments kept from upstream). Keep only the runtime shared libraries in the final image; the matching "-dev"
 # packages are installed as the temporary ".build-deps" virtual package and removed afterwards.
 # Package "libucontext" provides the ucontext functions that musl does not implement; Swoole
 # needs them on architectures it has no context-switching assembly for.
 RUN set -ex && \
-    apk add --no-cache libstdc++ libpq libssh2 libucontext unixodbc && \
-    apk add --no-cache --virtual .build-deps $PHPIZE_DEPS curl-dev linux-headers brotli-dev postgresql-dev openssl-dev pcre-dev pcre2-dev sqlite-dev zlib-dev libssh2-dev libucontext-dev unixodbc-dev && \
+    apk add --no-cache libstdc++ libpq libssh2 libucontext unixodbc zstd-libs && \
+    apk add --no-cache --virtual .build-deps $PHPIZE_DEPS curl-dev linux-headers brotli-dev postgresql-dev openssl-dev pcre-dev pcre2-dev sqlite-dev zlib-dev zstd-dev libssh2-dev libucontext-dev unixodbc-dev && \
     docker-php-ext-install pdo_mysql && \
-    pecl channel-update pecl.php.net && \
-    pecl install --configureoptions 'enable-redis-igbinary="no" enable-redis-lzf="yes" enable-redis-zstd="yes" enable-redis-msgpack="no" enable-redis-lz4="no" with-liblz4="yes"' redis-6.3.0 && \
-    docker-php-ext-enable redis && \
     docker-php-ext-install sockets && \
     docker-php-source extract && \
+# phpredis from the GitHub release tarball with upstream's options (lzf + zstd, no igbinary /
+# msgpack / lz4). Upstream pulls it from pecl.php.net, which returned 504s on 2026-10-21 and
+# would have blocked the emergency rebuild; GitHub is the more dependable source.
+    mkdir /usr/src/php/ext/redis && \
+    curl -sfL "https://github.com/phpredis/phpredis/archive/refs/tags/${PHPREDIS_VERSION}.tar.gz" -o phpredis.tar.gz && \
+    sha256sum phpredis.tar.gz && \
+    tar xfz phpredis.tar.gz --strip-components=1 -C /usr/src/php/ext/redis && \
+    grep -rq "PHP_REDIS_VERSION \"${PHPREDIS_VERSION}\"" /usr/src/php/ext/redis/ && \
+    docker-php-ext-configure redis \
+        --enable-redis-lzf \
+        --enable-redis-zstd \
+        --disable-redis-igbinary \
+        --disable-redis-msgpack \
+        --disable-redis-lz4 && \
+    docker-php-ext-install -j$(nproc) redis && \
+    rm -f phpredis.tar.gz && \
     mkdir /usr/src/php/ext/swoole && \
     curl -sfL "https://github.com/swoole/swoole-src/archive/v${SWOOLE_VERSION}.tar.gz" -o swoole.tar.gz && \
     sha256sum swoole.tar.gz && \

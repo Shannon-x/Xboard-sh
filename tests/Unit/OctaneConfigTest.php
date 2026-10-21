@@ -23,6 +23,8 @@ class OctaneConfigTest extends TestCase
     {
         // 中间件只有几条 keep-alive 长连接；按连接固定分配（默认 2）会让 48 个 worker 里只有几个在干活
         $this->assertSame(3, config('octane.swoole.options.dispatch_mode'));
+        // Swoole 只在模式 2/4 下接受 send_yield；不显式关掉，Octane 的默认 true 会在每次启动时打告警
+        $this->assertFalse(config('octane.swoole.options.send_yield'));
     }
 
     #[Test]

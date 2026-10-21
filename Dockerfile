@@ -10,8 +10,8 @@
 #   https://www.php.net/releases/index.php?json&version=<ver>) and PHP_MIN_VERSION below.
 #   The tarball is additionally verified against the 8.2 release managers' GPG keys.
 # ──────────────────────────────────────────────────────────────────────────────
-ARG PHP_BASE_VERSION=8.2.34
-ARG PHP_BASE_SHA256=5351330c54de240f54f7527c26ef292e239749e6fe11db0330acb5317e02bb39
+ARG PHP_BASE_VERSION=8.2.35
+ARG PHP_BASE_SHA256=5737b98601fe5ab1b8c5db0c82ed3158acb9283ed3081ffe2faffb9ac81455e6
 
 FROM alpine:3.23@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 AS php-base
 ARG PHP_BASE_VERSION
@@ -258,7 +258,7 @@ FROM php-base
 
 # Security floor: the build fails if the base image is older than this, so a stale digest can
 # never ship silently. Bump it together with the FROM line above.
-ARG PHP_MIN_VERSION=8.2.34
+ARG PHP_MIN_VERSION=8.2.35
 # Swoole release tag built below. 6.2.2 is what production has run since 2026-08-02 and is
 # verified free of the CURLOPT_PREREQFUNCTION define (see above).
 ARG SWOOLE_VERSION=6.2.2

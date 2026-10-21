@@ -255,6 +255,10 @@ return [
             // 3 = 抢占模式：主进程只把请求投给空闲的 worker，是 Swoole 文档对同步阻塞（Octane 关闭协程）
             // 服务器的推荐值。HTTP 请求本身无状态，Octane 也不使用 onConnect / onClose，换模式没有语义变化。
             'dispatch_mode' => 3,
+            // Octane 默认带 send_yield=true，但 Swoole 只在 dispatch_mode 2/4 下接受它，模式 3 启动时会打一条
+            // 「'send_yield' option can only be set when using dispatch_mode=2/4」告警并忽略。Octane 关闭了协程，
+            // send_yield 本来就不起作用，这里显式关掉以消除告警。
+            'send_yield' => false,
         ],
     ],
 

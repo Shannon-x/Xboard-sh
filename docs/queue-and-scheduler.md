@@ -88,9 +88,9 @@ order_handle / node_sync 30、traffic_fetch 60、send_email 120、stat 300、sen
 ## Octane / Swoole（`config/octane.php`）
 
 - `swoole.options.max_request` / `task_max_request` = 10000：命令行默认 500 会让 worker 每十几秒就重新 boot 一次框架。
-- `swoole.options.dispatch_mode` = 3（抢占模式，只投给空闲 worker）。默认 2 按 fd 取模固定分配；节点流量经
-  openresty → docker-proxy 走短连接，内核总复用最小 fd，结果 48 个 worker 里只有连号的十来个在干活
-  （2026-10-21 生产：4 小时 52 次回收全在 11 个 worker 上）。
+- `swoole.options.dispatch_mode` = 3（抢占模式，只投给空闲 worker）。默认 2 按连接的 fd 固定分配；生产约 94%
+  的请求（含节点 UniProxy 流量）经中间件 xb-secure 的 5 条 keep-alive 长连接进来，于是只有约 5 个 worker
+  在干活（2026-10-21 生产：60 秒采样前 5 个 worker 占 71% CPU，4 小时 52 次回收全在 11 个 worker 上）。
 - `OperationTerminated` 用 `App\Listeners\Octane\RollBackLeakedTransactions` 代替 `DisconnectFromDatabases`：
   MySQL 连接跨请求复用（原来每个请求重连一次，约 48 次/秒），只在连接上还挂着未提交事务时回滚并断开、记 warning。
   日志里出现「transaction left open at end of operation」说明某个手写 `beginTransaction()` 的异常路径漏了

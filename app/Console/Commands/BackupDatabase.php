@@ -38,6 +38,10 @@ class BackupDatabase extends Command
                     ->setDbName(config('database.connections.mysql.database'))
                     ->setUserName(config('database.connections.mysql.username'))
                     ->setPassword(config('database.connections.mysql.password'))
+                    // InnoDB 一致性快照代替 LOCK TABLES：mysqldump 默认的 --lock-tables 会在整库导出期间
+                    // 锁住 v2_user / v2_order 的写入（2026-10-21 生产采集：LOCK TABLES … READ LOCAL 最长 43 秒）。
+                    ->useSingleTransaction()
+                    ->skipLockTables()
                     ->dumpToFile($databaseBackupPath);
                 $this->info("2️⃣：Mysql备份完成");
             }elseif(config('database.default') === 'sqlite'){

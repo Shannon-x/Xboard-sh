@@ -12,6 +12,7 @@ use App\Http\Controllers\V2\Admin\Server\ManageController;
 use App\Http\Controllers\V2\Admin\OrderController;
 use App\Http\Controllers\V2\Admin\UserController;
 use App\Http\Controllers\V2\Admin\StatController;
+use App\Http\Controllers\V2\Admin\DashboardController;
 use App\Http\Controllers\V2\Admin\NoticeController;
 use App\Http\Controllers\V2\Admin\TicketAttachmentController;
 use App\Http\Controllers\V2\Admin\TicketController;
@@ -162,8 +163,8 @@ class AdminRoute
             ], function ($router) {
                 $router->get('/getOverride', [StatController::class, 'getOverride']);
                 $router->get('/getStats', [StatController::class, 'getStats']);
-                $router->get('/getDashboard', [StatController::class, 'getDashboard']);
-                $router->get('/getIncome', [StatController::class, 'getIncome']);
+                $router->get('/getDashboard', [DashboardController::class, 'getDashboard']);
+                $router->get('/getIncome', [DashboardController::class, 'getIncome']);
                 $router->get('/getServerLastRank', [StatController::class, 'getServerLastRank']);
                 $router->get('/getServerYesterdayRank', [StatController::class, 'getServerYesterdayRank']);
                 $router->get('/getOrder', [StatController::class, 'getOrder']);

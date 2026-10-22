@@ -29,6 +29,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Laravel\Sanctum\PersonalAccessToken;
 
 class UserController extends Controller
 {
@@ -857,9 +858,16 @@ class UserController extends Controller
         } // all: ignore filter/sort
 
         try {
+            $bannedIds = (clone $builder)->pluck('id');
             $builder->update([
                 'banned' => 1
             ]);
+            // 与单个封禁（update 里的 removeAllSessions）一致：吊销已签发的会话
+            foreach ($bannedIds->chunk(1000) as $chunk) {
+                PersonalAccessToken::where('tokenable_type', User::class)
+                    ->whereIn('tokenable_id', $chunk->all())
+                    ->delete();
+            }
         } catch (\Exception $e) {
             Log::error($e);
             return $this->fail([500, '处理失败']);

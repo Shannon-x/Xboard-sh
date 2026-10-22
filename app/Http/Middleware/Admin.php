@@ -27,7 +27,7 @@ class Admin
         /** @var User|null $user */
         $user = Auth::guard('sanctum')->user();
         
-        if (!$user || !$user->is_admin) {
+        if (!$user || !$user->is_admin || $user->banned) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 

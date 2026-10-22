@@ -50,6 +50,7 @@ class SystemController extends Controller
 
     public function getQueueStats()
     {
+        $failedByJob = $this->failedJobsByName();
         $data = [
             'failedJobs' => app(JobRepository::class)->countRecentlyFailed(),
             'jobsPerMinute' => app(MetricsRepository::class)->jobsProcessedPerMinute(),
@@ -62,10 +63,58 @@ class SystemController extends Controller
             'queueWithMaxRuntime' => app(MetricsRepository::class)->queueWithMaximumRuntime(),
             'queueWithMaxThroughput' => app(MetricsRepository::class)->queueWithMaximumThroughput(),
             'recentJobs' => app(JobRepository::class)->countRecent(),
+            // 失败窗口内按任务类名分组的前 5 名：后台一眼看出是哪类任务在挂（periods.failedJobs 是窗口分钟数，不是数量）。
+            // failedByJobScanned 是实际翻看的失败条数，小于 failedJobs 时说明只按最近这么多条统计
+            'failedByJob' => $failedByJob['groups'],
+            'failedByJobScanned' => $failedByJob['scanned'],
             'status' => $this->getHorizonStatus(),
             'wait' => collect(app(WaitTimeCalculator::class)->calculate())->take(1),
         ];
         return $this->success($data);
+    }
+
+    /**
+     * 失败窗口（horizon.trim.recent_failed 分钟）内的失败任务按类名计数，取前 5。
+     * Horizon 只给分页（每页 50，最新的在前），最多翻 10 页，翻到窗口外就停。
+     *
+     * @return array{groups: array<int, array{name: string, total: int, last_failed_at: int}>, scanned: int}
+     */
+    protected function failedJobsByName(): array
+    {
+        $repository = app(JobRepository::class);
+        $minutes = (int) config('horizon.trim.recent_failed', config('horizon.trim.failed', 10080));
+        $cutoff = time() - $minutes * 60;
+        $groups = [];
+        $scanned = 0;
+        $afterIndex = null;
+        for ($page = 0; $page < 10; $page++) {
+            $jobs = $repository->getFailed($afterIndex);
+            if ($jobs->isEmpty()) {
+                break;
+            }
+            $reachedCutoff = false;
+            foreach ($jobs as $job) {
+                $failedAt = (int) ($job->failed_at ?? 0);
+                if ($failedAt && $failedAt < $cutoff) {
+                    $reachedCutoff = true;
+                    break;
+                }
+                $scanned++;
+                $name = (string) ($job->name ?? 'unknown');
+                $groups[$name] ??= ['name' => $name, 'total' => 0, 'last_failed_at' => 0];
+                $groups[$name]['total']++;
+                $groups[$name]['last_failed_at'] = max($groups[$name]['last_failed_at'], $failedAt);
+            }
+            if ($reachedCutoff || $jobs->count() < 50) {
+                break;
+            }
+            $afterIndex = $jobs->last()->index ?? null;
+            if ($afterIndex === null) {
+                break;
+            }
+        }
+        usort($groups, fn ($a, $b) => $b['total'] <=> $a['total']);
+        return ['groups' => array_slice(array_values($groups), 0, 5), 'scanned' => $scanned];
     }
 
     /**

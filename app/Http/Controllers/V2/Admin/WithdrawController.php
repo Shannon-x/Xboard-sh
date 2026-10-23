@@ -8,6 +8,7 @@ use App\Models\TicketMessage;
 use App\Services\Commission\UsdtRateService;
 use App\Services\Commission\WithdrawalConfig;
 use App\Services\CommissionWithdrawalService;
+use App\Services\PaymentVerificationService;
 use Illuminate\Http\Request;
 
 /**
@@ -134,6 +135,8 @@ class WithdrawController extends Controller
             ->where('status', CommissionWithdrawal::STATUS_COMPLETED)
             ->where('id', '!=', $withdrawal->id)
             ->count();
+        // 佣金来源订单的付款核验：blocking 为网关核验未通过的订单号（有则不能打款），unverified 为尚未核验的笔数
+        $data['payment_verification'] = (new PaymentVerificationService())->withdrawalIssues((int) $withdrawal->user_id);
         return $this->success($data);
     }
 

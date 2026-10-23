@@ -4,6 +4,7 @@ namespace Plugin\Epay;
 
 use App\Services\Plugin\AbstractPlugin;
 use App\Contracts\PaymentInterface;
+use App\Support\EpayOrderQuery;
 use App\Support\FeatureFlag;
 use App\Support\PaymentGuard;
 use App\Support\PaymentMetrics;
@@ -224,5 +225,14 @@ class Plugin extends AbstractPlugin implements PaymentInterface
         }
 
         return true;
+    }
+
+    /**
+     * 向网关查询一笔交易（只读，付款事后核验用）。逻辑在 App\Support\EpayOrderQuery，
+     * 这里按当前配置转调；返回结构见那边的说明。
+     */
+    public function queryOrder(string $gatewayTradeNo): array
+    {
+        return EpayOrderQuery::query((array) $this->getConfig(), $gatewayTradeNo);
     }
 }

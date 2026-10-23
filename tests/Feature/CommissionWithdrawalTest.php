@@ -4,12 +4,17 @@ namespace Tests\Feature;
 
 use App\Jobs\SendBillingMailJob;
 use App\Jobs\SendEmailJob;
+use App\Exceptions\ApiException;
+use App\Models\CommissionLog;
 use App\Models\CommissionWithdrawal;
 use App\Models\Order;
+use App\Models\Payment;
+use App\Models\PaymentVerification;
 use App\Models\Ticket;
 use App\Models\TicketAttachment;
 use App\Models\TicketMessage;
 use App\Models\User;
+use App\Services\PaymentVerificationService;
 use App\Support\Setting;
 use App\Utils\Helper;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -594,5 +599,72 @@ class CommissionWithdrawalTest extends TestCase
         $this->assertSame("✅ 提现已完成\n金额：¥50.00", $settle->fresh()->message);
         $this->assertSame("我的地址在 #{$w->id} 号楼，谢谢", $own->fresh()->message, '用户自己写的内容不动');
         $this->assertSame("[提现申请] #{$w->id}0 别的", $other->fresh()->subject, '没挂在这笔申请上的工单不动');
+    }
+
+    // ───────────────────────── 付款核验把关 ─────────────────────────
+
+    /** 邀请人 $inviter 名下一笔走 EPay、已产生佣金的被邀请人订单；返回订单 */
+    private function commissionSource(User $inviter, ?string $verdict): Order
+    {
+        $payment = Payment::create([
+            'uuid' => Str::random(8), 'payment' => 'EPay', 'name' => '测试通道',
+            'config' => ['url' => 'https://gateway.test', 'pid' => '1000', 'key' => 'fake-key-alpha'], 'enable' => true,
+        ]);
+        $order = $this->paidOrder($this->makeUser(['commission_balance' => 0]), $inviter,
+            ['payment_id' => $payment->id, 'callback_no' => 'GW-' . Str::random(8)]);
+        CommissionLog::create([
+            'invite_user_id' => $inviter->id, 'user_id' => $order->user_id, 'trade_no' => $order->trade_no,
+            'order_amount' => 2000, 'get_amount' => 600,
+        ]);
+        if ($verdict !== null) {
+            PaymentVerification::create([
+                'subject_type' => 'order', 'subject_id' => $order->id, 'user_id' => $order->user_id,
+                'payment_id' => $payment->id, 'callback_no' => $order->callback_no, 'expected_amount' => 2000,
+                'verdict' => $verdict, 'checked_at' => time(),
+            ]);
+        }
+        return $order;
+    }
+
+    private function applyWithdrawal(User $user): int
+    {
+        Sanctum::actingAs($user);
+        return (int) $this->postJson('/api/v1/user/withdraw/apply', ['amount' => 5000, 'chain' => 'usdt_bep20', 'address' => '0x' . str_repeat('ab', 20)])->json('data.id');
+    }
+
+    public function test_settle_is_blocked_while_a_commission_source_payment_failed_verification(): void
+    {
+        $user = $this->makeUser();
+        $admin = $this->makeUser(['is_admin' => 1]);
+        $bad = $this->commissionSource($user, PaymentVerification::VERDICT_NOT_FOUND);
+        $this->commissionSource($user, PaymentVerification::VERDICT_OK);
+        $id = $this->applyWithdrawal($user);
+
+        $this->assertSame(['blocking' => [$bad->trade_no], 'unverified' => 0], (new PaymentVerificationService())->withdrawalIssues($user->id));
+        try {
+            (new \App\Services\CommissionWithdrawalService())->settle($id, $admin, 'tx-1');
+            $this->fail('核验未通过的佣金不能打款');
+        } catch (ApiException $e) {
+            $this->assertStringContainsString($bad->trade_no, $e->getMessage());
+        }
+        $this->assertSame(CommissionWithdrawal::STATUS_PENDING, CommissionWithdrawal::find($id)->status);
+
+        // 人工核实后把记录改为一致，就能打款
+        PaymentVerification::where('subject_id', $bad->id)->update(['verdict' => PaymentVerification::VERDICT_OK]);
+        $withdrawal = (new \App\Services\CommissionWithdrawalService())->settle($id, $admin, 'tx-1');
+        $this->assertSame(CommissionWithdrawal::STATUS_COMPLETED, $withdrawal->status);
+    }
+
+    public function test_unverified_history_does_not_block_settle(): void
+    {
+        $user = $this->makeUser();
+        $admin = $this->makeUser(['is_admin' => 1]);
+        $this->commissionSource($user, null);                                   // 核验上线前的历史单：没有记录
+        $this->commissionSource($user, PaymentVerification::VERDICT_PENDING);   // 正在重试
+        $id = $this->applyWithdrawal($user);
+
+        $this->assertSame(['blocking' => [], 'unverified' => 2], (new PaymentVerificationService())->withdrawalIssues($user->id));
+        $withdrawal = (new \App\Services\CommissionWithdrawalService())->settle($id, $admin, 'tx-2');
+        $this->assertSame(CommissionWithdrawal::STATUS_COMPLETED, $withdrawal->status);
     }
 }

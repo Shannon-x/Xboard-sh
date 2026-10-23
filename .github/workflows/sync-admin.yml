@@ -32,8 +32,11 @@ jobs:
           node-version: '20'
 
       - name: Build Admin Frontend
+        env:
+          # XBoard-admin 为私有仓库时匿名 clone 会失败，带 token 拉；DISPATCH_TOKEN 需对它有 Contents 读权限
+          ADMIN_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
         run: |
-          git clone --depth 1 https://github.com/Shannon-x/XBoard-admin.git /tmp/admin
+          git clone --depth 1 "https://x-access-token:${ADMIN_TOKEN}@github.com/Shannon-x/XBoard-admin.git" /tmp/admin
           cd /tmp/admin
           bash $GITHUB_WORKSPACE/scripts/patch-admin.sh
           npm install

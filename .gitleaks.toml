@@ -37,6 +37,11 @@ regexes = [
   # Real secrets never contain these words; test data should.
   '''(?i)(fake|dummy|example|sample|placeholder|changeme|not[-_]?real|for[-_]?tests?|test[-_]?(key|secret|token)|x{6,})''',
   '''AKIAIOSFODNN7EXAMPLE''',
+  # Letters-only values are identifiers / i18n keys (`key: "commissionNoticeEnabled"`),
+  # not random credentials.
+  '''^[A-Za-z_]+$''',
+  # camelCase setting names with digits (`ticketAttachmentS3AccessKey`, `commissionTier2Rate`)
+  '''^[a-z]+(?:[A-Z][a-z]+|[A-Z]?[0-9]+)+$''',
   # Google's public reCAPTCHA test site keys
   '''^6LeIxAcTAAAAA[A-Za-z0-9_-]+$''',
   # Throwaway account used by scripts/assert-api-contract.php

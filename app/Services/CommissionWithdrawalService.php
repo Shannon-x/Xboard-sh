@@ -242,6 +242,14 @@ class CommissionWithdrawalService
             if (!$withdrawal->isPending()) {
                 throw new ApiException('该申请已处理过（' . (CommissionWithdrawal::$statusMap[$withdrawal->status] ?? $withdrawal->status) . '）');
             }
+            // 佣金来源订单的付款在网关上核验不通过（网关查不到 / 金额不符 / 未付或已退款）就不能打款：
+            // 这类佣金可能来自并不存在的付款。只拦有明确异常结论的，尚未核验的历史单不拦。
+            $blocking = (new PaymentVerificationService())->withdrawalIssues((int) $withdrawal->user_id)['blocking'];
+            if ($blocking !== []) {
+                $shown = implode('、', array_slice($blocking, 0, 5)) . (count($blocking) > 5 ? ' 等' : '');
+                throw new ApiException('该用户有 ' . count($blocking) . ' 笔佣金来源订单付款核验未通过（订单号 ' . $shown
+                    . '），已阻止打款。请先核实这些付款；确认无误后可把对应核验记录改为一致再打款。');
+            }
 
             // 打款那一刻重新按实时汇率折算：申请可能是几小时前提的，行情早就变了。
             // 管理员手填了实付金额就以手填为准（比如他在交易所看到的真实扣费）。

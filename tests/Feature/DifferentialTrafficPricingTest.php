@@ -195,9 +195,11 @@ class DifferentialTrafficPricingTest extends TestCase
         $user = $this->user();
         $order = OrderService::createFromRequest($user, $this->plan, 'traffic_topup', null, ['topup_gb' => 100]);
         $user->update(['plan_id' => null]);
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('订阅状态已变化');
+        // 开通不了的加购单不再抛异常卡在「开通中」（#3866 死循环）：取消订单、已付款退回余额，流量不加。
         $this->open($order);
+        $this->assertSame(Order::STATUS_CANCELLED, (int) $order->fresh()->status);
+        $this->assertSame(250 * self::GB, (int) $user->fresh()->transfer_enable);
+        $this->assertSame((int) $order->total_amount, (int) $user->fresh()->balance);
     }
 
     public function test_price_changes_alone_do_not_reprice_an_existing_order_or_subscription(): void

@@ -23,7 +23,7 @@ use Illuminate\Database\Eloquent\Model;
 class BalanceLog extends Model
 {
     public const TYPE_ORDER_PAY = 'order_pay';                      // 余额支付订单（出账）
-    public const TYPE_ORDER_CANCEL = 'order_cancel';                // 取消待付订单，退回已抵扣的余额（入账）
+    public const TYPE_ORDER_CANCEL = 'order_cancel';                // 取消订单退回（入账）：待付单退余额抵扣；开通不了的已付加购单退全部已付款
     public const TYPE_ORDER_REFUND = 'order_refund';                // 套餐变更折抵超出订单金额的部分退回（入账）
     public const TYPE_GIFT_CARD = 'gift_card';                      // 礼品卡奖励，含邀请人奖励（入账）
     public const TYPE_COMMISSION_TRANSFER = 'commission_transfer';  // 佣金划转到余额（入账）

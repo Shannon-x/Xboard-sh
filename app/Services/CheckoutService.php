@@ -5,6 +5,8 @@ namespace App\Services;
 use App\Exceptions\ApiException;
 use App\Models\Order;
 use App\Models\Payment;
+use App\Models\Plan;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -22,6 +24,8 @@ class CheckoutService
      */
     public function checkout(Order $order, ?Payment $payment, array $extra = []): array
     {
+        $this->rejectUndeliverableTopup($order);
+
         $order = DB::transaction(function () use ($order, $payment) {
             $locked = Order::where('id', $order->id)->lockForUpdate()->first();
             if (!$locked || (int) $locked->status !== Order::STATUS_PENDING) {
@@ -81,6 +85,24 @@ class CheckoutService
             'return_url' => $extra['return_url'] ?? null,
         ]);
         return ['type' => $result['type'], 'data' => $result['data']];
+    }
+
+    /**
+     * 加购单下单时订阅还有效，到点付款时可能已经到期 / 换了套餐 / 被停用——这时付了钱也加不上流量。
+     * 在要收款地址（或余额全额抵扣直接开通）之前拦下：把这张待付单取消（余额抵扣随之退回），让用户先续费。
+     * 已经拿到收款链接、在网关页面上跨过到期才付的，由 OrderService::open() 退回余额兜底。
+     */
+    private function rejectUndeliverableTopup(Order $order): void
+    {
+        if ((string) $order->period !== Plan::PERIOD_TRAFFIC_TOPUP || (int) $order->status !== Order::STATUS_PENDING) {
+            return;
+        }
+        $problem = OrderService::topupSubscriptionProblem(User::find($order->user_id), $order);
+        if ($problem === null) {
+            return;
+        }
+        (new OrderService($order))->cancel();
+        throw new ApiException("{$problem}，流量包已无法加到当前订阅。这张订单已自动取消，余额抵扣（如有）已退回；请先续费订阅，再重新购买流量包");
     }
 
     /** Stripe / PayPal 的订阅式网关：每单都会在网关那边开一个周期扣款，自选套餐和一次性账单都不能用 */

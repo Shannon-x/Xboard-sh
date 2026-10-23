@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Exceptions\ApiException;
+use App\Exceptions\OrderNeedsManualReview;
 use App\Jobs\OrderHandleJob;
 use App\Jobs\SendBillingMailJob;
 use App\Models\Coupon;
@@ -16,6 +17,7 @@ use App\Services\EmailVerification;
 use App\Services\Commission\CommissionPolicy;
 use App\Services\Commission\InviteDiscount;
 use App\Services\Plugin\HookManager;
+use App\Support\AdminAlert;
 use App\Support\PaymentGatewayBinding;
 use App\Support\PaymentMetrics;
 use App\Utils\Helper;
@@ -173,15 +175,26 @@ class OrderService
         HookManager::call('order.open.before', $order);
 
 
-        DB::transaction(function () use ($order, $plan) {
+        $undeliverable = DB::transaction(function () use ($order, $plan) {
             $this->user = User::lockForUpdate()->find($order->user_id);
+            // 加购包要在任何副作用（checkAndReset、折抵标记）之前判断订阅还在不在：
+            // 付款晚于到期 / 期间换了套餐 / 被封，这份流量已经没有可加的订阅，等多久都不会好。
+            if ((string) $order->period === Plan::PERIOD_TRAFFIC_TOPUP) {
+                if (!$this->user) {
+                    throw new OrderNeedsManualReview('流量加购的用户不存在，中止自动开通转人工处理');
+                }
+                $problem = self::topupSubscriptionProblem($this->user, $order);
+                if ($problem !== null) {
+                    return $this->refundUndeliverableTopup($order, $problem);
+                }
+            }
             if (isset($order->plan_snapshot['options'], $order->plan_snapshot['pricing_context'])) {
                 $currentPlan = Plan::find($order->plan_id);
                 $groups = $currentPlan ? app(PlanCustomizationService::class)->purchaseTrafficGroups(
                     $currentPlan, $order->plan_snapshot['options'], $this->user
                 ) : null;
                 if ($groups !== ($order->plan_snapshot['pricing_context']['addon_group_ids'] ?? null)) {
-                    throw new \RuntimeException('套餐加量的线路权限已变化，中止自动开通转人工处理');
+                    throw new OrderNeedsManualReview('套餐加量的线路权限已变化，中止自动开通转人工处理');
                 }
             }
             // 已报价的旧订单按原金额履约，但不能冲掉迁移后为本周期补的授权。
@@ -222,7 +235,7 @@ class OrderService
                         'expected' => count($surplusIds),
                         'marked' => (int) $marked,
                     ]);
-                    throw new \RuntimeException('折抵源订单状态已变化（疑似重复折抵），中止自动开通转人工');
+                    throw new OrderNeedsManualReview('折抵源订单状态已变化（疑似重复折抵），中止自动开通转人工');
                 }
             }
 
@@ -274,7 +287,21 @@ class OrderService
             if (!$order->save()) {
                 throw new \RuntimeException('订单信息保存失败');
             }
+            return null;
         });
+
+        // 加购单没开通、钱退回了余额（或已被别处处理）：开通后的事件 / 钩子 / 收据一概不做。
+        if ($undeliverable !== null) {
+            if ($undeliverable['refunded']) {
+                $message = "↩️ 流量加购单无法开通，已自动取消并把已付款项退回余额\n"
+                    . "订单号：{$order->trade_no}\n"
+                    . "用户ID：{$order->user_id}\n"
+                    . '退回余额：¥' . number_format($undeliverable['amount'] / 100, 2) . "\n"
+                    . "原因：{$undeliverable['problem']}";
+                DB::afterCommit(fn () => AdminAlert::send($message));
+            }
+            return;
+        }
 
         $eventId = $this->getOpenEventId($order);
 
@@ -851,6 +878,12 @@ class OrderService
                 if ((int) $locked->status !== Order::STATUS_CANCELLED) {
                     return 'unexpected';
                 }
+                // 收过款之后才被取消的单（目前只有开通不了、已把钱退回余额的加购单）：
+                // 同一笔回调重投是重复通知；换一笔新流水是重复付款。两种都不能重开——
+                // 重开会把同一笔钱再开通或再退一次。超时自动取消的单从没付过款，callback_no 为空，不受影响。
+                if ((string) ($locked->callback_no ?? '') !== '') {
+                    return hash_equals((string) $locked->callback_no, $callbackNo) ? 'duplicate' : 'manual';
+                }
 
                 // 网关绑定必须在持有订单行锁时复核，避免 controller 预读后 checkout
                 // 并发改写 payment_id 形成 TOCTOU。同源判定只认「插件类 + 商户凭证指纹」，
@@ -1106,18 +1139,18 @@ class OrderService
     {
         $gb = (int) ($order->plan_snapshot['topup_gb'] ?? 0);
         if ($gb < 1) {
-            throw new \RuntimeException('流量加购包开通失败：订单快照缺少加购数量');
+            throw new OrderNeedsManualReview('流量加购包开通失败：订单快照缺少加购数量');
         }
-        if ((int) $this->user->plan_id !== (int) $order->plan_id
-            || $this->user->banned
-            || ($this->user->expired_at !== null && (int) $this->user->expired_at <= time())) {
-            throw new \RuntimeException('流量加购的订阅状态已变化，中止自动开通转人工处理');
+        // open() 顶部已先判过一次并把这种单退款取消；这里只防同一事务里恰好跨过到期那一秒。
+        // 不退款、只转人工：下一轮 check:order 会在 open() 顶部走退款分支。
+        if (self::topupSubscriptionProblem($this->user, $order) !== null) {
+            throw new OrderNeedsManualReview('流量加购的订阅状态已变化，中止自动开通转人工处理');
         }
         $customizer = app(PlanCustomizationService::class);
         $context = $order->plan_snapshot['pricing_context'] ?? null;
         if (is_array($context)) {
             if (($context['addon_group_ids'] ?? null) !== $customizer->purchaseTopupGroups($this->user)) {
-                throw new \RuntimeException('流量加购的线路权限已变化，中止自动开通转人工处理');
+                throw new OrderNeedsManualReview('流量加购的线路权限已变化，中止自动开通转人工处理');
             }
         } else {
             // Legacy pending orders have no entitlement snapshot. Do not silently
@@ -1128,13 +1161,78 @@ class OrderService
             if ($rule && ($rule['addon_surcharge_per_gb'] > 0 || !empty($rule['price_overridden']))) {
                 $quote = $customizer->quoteTopup($plan, $this->user, ['topup_gb' => $gb]);
                 if ($quote['amount'] > (int) ($order->plan_snapshot['amount'] ?? 0)) {
-                    throw new \RuntimeException('旧流量加购订单与当前线路价格不匹配，中止自动开通转人工处理');
+                    throw new OrderNeedsManualReview('旧流量加购订单与当前线路价格不匹配，中止自动开通转人工处理');
                 }
             }
         }
         $bytes = $gb * self::BYTES_PER_GB;
         $this->user->transfer_enable = (int) ($this->user->transfer_enable ?? 0) + $bytes;
         $this->user->transfer_topup = (int) ($this->user->transfer_topup ?? 0) + $bytes;
+    }
+
+    /**
+     * 加购包只能加进下单时那份、此刻仍然有效的订阅。null = 可以开通，否则返回失效原因（会写进流水备注和用户提示）。
+     * 收银台发起支付前和 open() 开通前用的是同一个判断。
+     */
+    public static function topupSubscriptionProblem(?User $user, Order $order): ?string
+    {
+        if (!$user) {
+            return '用户不存在';
+        }
+        if ((int) $user->plan_id !== (int) $order->plan_id) {
+            return '订阅已更换套餐';
+        }
+        if ($user->banned) {
+            return '账户已被停用';
+        }
+        if ($user->expired_at !== null && (int) $user->expired_at <= time()) {
+            return '订阅已到期';
+        }
+        return null;
+    }
+
+    /**
+     * 已付款的加购单开通不了（付款晚于到期、期间换了套餐、被封）：取消订单，把这单实际付出的钱
+     * ——在线付款（含手续费）+ 下单时扣的余额——全部记回余额，优惠券用量恢复。
+     *
+     * 在 open() 的事务里、对已锁的用户行操作，且必须在 checkAndReset 等任何副作用之前调用：
+     * 这条分支只改订单状态和余额，到期 / 流量 / 套餐一概不动。
+     * 状态用条件更新从「开通中」翻成「已取消」：同一订单被并发或重复处理时只有一次能翻成功，钱只退一次。
+     * paid_at / callback_no 保留作对账；之后同一笔回调重投由 reopenFromCancelled 认成重复通知。
+     *
+     * @return array{refunded: bool, amount: int, problem: string}
+     */
+    private function refundUndeliverableTopup(Order $order, string $problem): array
+    {
+        $affected = Order::where('id', $order->id)
+            ->where('status', Order::STATUS_PROCESSING)
+            ->update(['status' => Order::STATUS_CANCELLED, 'updated_at' => time()]);
+        if ($affected !== 1) {
+            return ['refunded' => false, 'amount' => 0, 'problem' => $problem];
+        }
+        $order->status = Order::STATUS_CANCELLED;
+
+        $online = (int) $order->total_amount + (int) ($order->handling_amount ?? 0);
+        $fromBalance = (int) ($order->balance_amount ?? 0);
+        $amount = $online + $fromBalance;
+        if ($amount > 0) {
+            $this->user->balance = (int) ($this->user->balance ?? 0) + $amount;
+            if (!$this->user->save()) {
+                throw new \RuntimeException('用户信息保存失败');
+            }
+            BalanceLedger::record($this->user, BalanceLog::TYPE_ORDER_CANCEL, $amount, BalanceLedger::orderCtx($order,
+                "流量加购付款时{$problem}，无法开通，已付款项退回余额（在线 ¥" . number_format($online / 100, 2)
+                . ' + 余额 ¥' . number_format($fromBalance / 100, 2) . '）'));
+        }
+        $this->restoreCouponUsage($order);
+
+        PaymentMetrics::warn('order.open.topup_refunded', [
+            'trade_no' => (string) $order->trade_no,
+            'user_id' => (int) $order->user_id,
+            'amount' => $amount,
+            'problem' => $problem,
+        ]);
+        return ['refunded' => true, 'amount' => $amount, 'problem' => $problem];
     }
 
     private function buyByPeriod(Order $order, Plan $plan)

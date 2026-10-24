@@ -2,6 +2,7 @@
 
 namespace App\Services\TicketAttachment\Storage;
 
+use App\Services\TicketAttachment\AttachmentConfig;
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
 use Illuminate\Support\Str;
@@ -80,7 +81,12 @@ final class S3AttachmentStorage implements AttachmentStorage
             throw new RuntimeException('无法读取上传的临时文件');
         }
         try {
-            $response = $this->send('PUT', $key, ['content-type' => $mime], hash_file('sha256', $localPath), $stream);
+            $headers = ['content-type' => $mime];
+            if (!in_array($mime, AttachmentConfig::INLINE_IMAGE_MIMES, true)) {
+                // 对象自带下载头：即使桶被设成公开读、有人绕过预签名直接访问，浏览器也只会下载
+                $headers['content-disposition'] = 'attachment';
+            }
+            $response = $this->send('PUT', $key, $headers, hash_file('sha256', $localPath), $stream);
         } finally {
             if (is_resource($stream)) {
                 fclose($stream);

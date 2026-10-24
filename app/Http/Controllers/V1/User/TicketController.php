@@ -2,13 +2,11 @@
 
 namespace App\Http\Controllers\V1\User;
 
-use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Services\EmailVerification;
 use App\Http\Requests\User\TicketSave;
 use App\Http\Requests\User\TicketWithdraw;
 use App\Http\Resources\TicketResource;
-use App\Models\Order;
 use App\Models\Ticket;
 use App\Models\TicketMessage;
 use App\Models\User;
@@ -52,7 +50,7 @@ class TicketController extends Controller
         // 邮箱软验证受限时只放行「支付与订单」类工单
         $category = $request->input('category');
         EmailVerification::assertTicketAllowed(User::findOrFail($request->user()->id), is_string($category) ? $category : null);
-        if ((int) admin_setting('ticket_active_subscription_required', 0) && !$this->canOpenTicket($request)) {
+        if ((int) admin_setting('ticket_active_subscription_required', 0) && !(new TicketService())->canOpenTicket($request->user())) {
             return $this->fail([400, __('Please purchase a subscription, earn affiliate commission, or place an order before opening a ticket')]);
         }
 
@@ -144,30 +142,6 @@ class TicketController extends Controller
         return TicketMessage::where('ticket_id', $ticketId)
             ->orderBy('id', 'DESC')
             ->first();
-    }
-
-    private function canOpenTicket(Request $request): bool
-    {
-        $user = $request->user();
-
-        if ($user->isActive()) {
-            return true;
-        }
-
-        if ((int) ($user->balance ?? 0) > 0 || (int) ($user->commission_balance ?? 0) > 0) {
-            return true;
-        }
-
-        // 没有有效订阅的：下过单（没付成的也算，付款出问题的人要能来问）且邮箱已验证。
-        // 只认订单拦不住批量注册的小号——随手下一单就过了，但假邮箱收不到验证邮件
-        if (!Order::query()->where('user_id', $user->id)->exists()) {
-            return false;
-        }
-        if (!EmailVerification::isVerified($user)) {
-            // 与 EmailVerification::assertAllowed 同一个 reason，前端据此直接弹验证面板
-            throw new ApiException(__('Please verify your email address first'), 403, ['reason' => 'email_unverified']);
-        }
-        return true;
     }
 
     public function withdraw(TicketWithdraw $request)

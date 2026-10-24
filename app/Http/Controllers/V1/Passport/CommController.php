@@ -8,6 +8,7 @@ use App\Jobs\SendEmailJob;
 use App\Models\InviteCode;
 use App\Models\User;
 use App\Services\CaptchaService;
+use App\Services\EmailVerification;
 use App\Utils\CacheKey;
 use App\Utils\Helper;
 use Illuminate\Http\Request;
@@ -39,6 +40,11 @@ class CommController extends Controller
                     return $this->fail([400, __('Email suffix is not in whitelist')]);
                 }
             }
+        }
+
+        // 注册验证码不发给示例域名 / 本站域名 / 一次性邮箱；已注册的老用户找回密码不受影响
+        if (EmailVerification::domainBlocked($email) && !User::byEmail($email)->exists()) {
+            return $this->fail([400, __('This email domain is not supported, please use another email address')]);
         }
 
         if (Cache::get(CacheKey::get('LAST_SEND_EMAIL_VERIFY_TIMESTAMP', $email))) {

@@ -203,6 +203,7 @@
     "The new email address is the same as the current one": "新邮箱与当前邮箱相同",
     "Invalid email address": "邮箱地址格式不正确",
     "This email domain cannot receive mail, please check the address": "这个邮箱的域名无法收信，请检查地址是否写错",
+    "This email domain is not supported, please use another email address": "不支持该邮箱域名，请换一个常用邮箱",
     "Your email address is already verified": "您的邮箱已经验证过了",
     "Email verification is not enabled": "邮箱验证未启用",
     "Commission credited :amount": "佣金入账 :amount",

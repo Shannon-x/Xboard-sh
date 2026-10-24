@@ -19,6 +19,13 @@ class Plugin extends AbstractPlugin
   /** 通知里工单正文的展示上限（Telegram 单条 4096 字符，还要给账号信息留位置） */
   private const NOTIFY_CONTENT_LIMIT = 2500;
 
+  /**
+   * 回复哪条消息就写进哪张工单：匹配通知首行「📮 工单提醒 #12」/「📮 工单回复 #12」或附件 caption 末行「工单ID: 12」。
+   * 只认行首——以前不锚定、取最左匹配，附件文件名起成「工单ID: 1234.png」，管理员回复这张图就会写进别人的 1234 号工单。
+   * 第 2 个分组是工单 ID（handleTicketReply 读 $matches[2]）。
+   */
+  public const TICKET_REPLY_PATTERN = '/^(📮\s*工单(?:提醒|回复)\s*#?|工单ID: ?)(\d+)/mu';
+
   protected array $commands = [];
   protected TelegramService $telegramService;
 
@@ -164,7 +171,8 @@ class Plugin extends AbstractPlugin
           $ticket->id,
           $index + 1,
           $attachments->count(),
-          $attachment->original_name,
+          // 文件名是用户起的：去掉能冒充工单标记的字样，回复路由只认 caption 末行的「工单ID」
+          preg_replace('/工单\s*ID|📮/u', '', $attachment->original_name),
           $this->formatBytes((int) $attachment->size),
           $ticket->id
         );
@@ -179,8 +187,7 @@ class Plugin extends AbstractPlugin
       $this->registerTelegramCommand($command, [$this, $config['handler']]);
     }
 
-    // 既匹配通知正文「📮 工单提醒 #12」/「📮 工单回复 #12」，也匹配附件 caption 里的「工单ID: 12」
-    $this->registerReplyHandler('/(📮.*?工单(?:提醒|回复).*?#?|工单ID: ?)(\\d+)/u', [$this, 'handleTicketReply']);
+    $this->registerReplyHandler(self::TICKET_REPLY_PATTERN, [$this, 'handleTicketReply']);
   }
 
   public function registerTelegramCommand(string $command, callable $handler): void

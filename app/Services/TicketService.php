@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Exceptions\ApiException;
 use App\Jobs\SendEmailJob;
+use App\Models\Order;
 use App\Models\Ticket;
 use App\Models\TicketMessage;
 use App\Models\User;
@@ -14,6 +15,34 @@ use App\Services\Plugin\HookManager;
 
 class TicketService
 {
+    /**
+     * 「需有效订阅才能开工单」的放行口径（开关 ticket_active_subscription_required）。
+     * 有效订阅 / 余额 / 佣金随时可开；其余用户要下过单（没付成的也算，付款出问题的人要能来问）且邮箱已验证。
+     * 只认订单拦不住批量注册的小号——随手下一单就过了，所以还要验证邮箱。
+     * 上传附件与开工单共用这道门槛，见 V1\User\TicketAttachmentController::upload。
+     *
+     * @throws ApiException 下过单但邮箱未验证（reason=email_unverified，前端据此弹验证面板）
+     */
+    public function canOpenTicket(User $user): bool
+    {
+        if ($user->isActive()) {
+            return true;
+        }
+
+        if ((int) ($user->balance ?? 0) > 0 || (int) ($user->commission_balance ?? 0) > 0) {
+            return true;
+        }
+
+        if (!Order::query()->where('user_id', $user->id)->exists()) {
+            return false;
+        }
+        if (!EmailVerification::isVerified($user)) {
+            // 与 EmailVerification::assertAllowed 同一个 reason，前端据此直接弹验证面板
+            throw new ApiException(__('Please verify your email address first'), 403, ['reason' => 'email_unverified']);
+        }
+        return true;
+    }
+
     /**
      * @param int[] $attachmentIds 已上传、待绑定的附件 id（调用方需先经 TicketAttachmentService::validatePendingIds 校验）
      */

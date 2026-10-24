@@ -64,6 +64,11 @@ class RegisterService
             }
         }
 
+        // 示例域名 / 本站域名 / 一次性邮箱一律不收（见 EmailVerification::domainBlocked）
+        if (EmailVerification::domainBlocked($email)) {
+            return [false, [400, __('This email domain is not supported, please use another email address')]];
+        }
+
         // 域名连收信服务器都没有的邮箱直接拒绝（DNS 查不到结果时放行，见 EmailVerification::domainAcceptsMail）
         if (EmailVerification::mxCheckEnabled() && EmailVerification::domainAcceptsMail($email) === false) {
             return [false, [400, __('This email domain cannot receive mail, please check the address')]];

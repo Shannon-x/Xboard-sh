@@ -64,6 +64,23 @@ final class EmailVerification
     /** 测试里替换 DNS 查询：fn(string $domain): ?bool（true 有记录 / false 没有 / null 查不到） */
     public static $dnsResolver = null;
 
+    /** 测试里替换 MX 查询：fn(string $domain): ?array（收信主机名，小写、去掉末尾的点；null = 查不到） */
+    public static $mxResolver = null;
+
+    /**
+     * 注册 / 换邮箱一律不收的域名（含子域名）：有 DNS 记录的示例域名、一次性邮箱 mail.tm 本身。
+     * .test / .invalid 这类根本不存在的域名不用列，domainAcceptsMail 会拦。
+     * 另外自动加上本站域名（app_url 去掉 www.），防止注册 admin@本站域名 冒充客服；
+     * 后台设置 email_blocked_domains 可追加（逗号分隔）。
+     */
+    private const BLOCKED_DOMAINS = ['example.com', 'example.net', 'example.org', 'mail.tm'];
+
+    /**
+     * 收信服务器落在这些主机上的域名视为一次性邮箱：mail.tm 一个 MX 挂着几十个轮换域名（如 maxxspace.com），按域名封不完。
+     * 后台设置 email_blocked_mx_hosts 可追加（逗号分隔）。
+     */
+    private const BLOCKED_MX_HOSTS = ['mail.tm'];
+
     // ---------------------------------------------------------------- 后台设置
 
     public static function enabled(): bool
@@ -450,6 +467,9 @@ final class EmailVerification
             && !Helper::emailSuffixVerify($email, admin_setting('email_whitelist_suffix', Dict::EMAIL_WHITELIST_SUFFIX_DEFAULT))) {
             throw new ApiException(__('Email suffix is not in the Whitelist'), 422);
         }
+        if (self::domainBlocked($email)) {
+            throw new ApiException(__('This email domain is not supported, please use another email address'), 422);
+        }
         if (self::mxCheckEnabled() && self::domainAcceptsMail($email) === false) {
             throw new ApiException(__('This email domain cannot receive mail, please check the address'), 422);
         }
@@ -549,6 +569,84 @@ final class EmailVerification
     }
 
     // ---------------------------------------------------------------- MX
+
+    /**
+     * 注册 / 换邮箱时拒收的邮箱：示例域名、本站域名、一次性邮箱（按收信服务器识别），
+     * 以及声明了 null MX（RFC 7505，「.」）的域名——example.com 就是这样，它有 A 记录，domainAcceptsMail 拦不住。
+     * 2026-10 的渗透号就是用 admin@本站域名、*@example.com、mail.tm 系列批量注册的。
+     * MX 部分受 email_verify_mx_check 开关控制，DNS 查不到结果时放行。已注册的老用户不受影响（只在注册 / 换邮箱时查）。
+     */
+    public static function domainBlocked(string $email): bool
+    {
+        $at = strrpos($email, '@');
+        $domain = $at === false ? '' : rtrim(strtolower(substr($email, $at + 1)), '.');
+        if ($domain === '') {
+            return false;
+        }
+
+        $blockedDomains = self::BLOCKED_DOMAINS;
+        $siteHost = strtolower((string) parse_url((string) admin_setting('app_url', ''), PHP_URL_HOST));
+        if ($siteHost !== '') {
+            $blockedDomains[] = preg_replace('/^www\./', '', $siteHost);
+        }
+        foreach (array_merge($blockedDomains, self::listSetting('email_blocked_domains')) as $blocked) {
+            if ($domain === $blocked || str_ends_with($domain, '.' . $blocked)) {
+                return true;
+            }
+        }
+
+        if (!self::mxCheckEnabled()) {
+            return false;
+        }
+        $mxHosts = self::mxHosts($domain);
+        if ($mxHosts === null) {
+            return false;
+        }
+        $blockedHosts = array_merge(self::BLOCKED_MX_HOSTS, self::listSetting('email_blocked_mx_hosts'));
+        foreach ($mxHosts as $host) {
+            if ($host === '') {
+                return true;
+            }
+            foreach ($blockedHosts as $blocked) {
+                if ($host === $blocked || str_ends_with($host, '.' . $blocked)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** @return string[]|null 收信主机名；没有 MX 记录或查询失败返回 null（是否收信由 domainAcceptsMail 判断） */
+    private static function mxHosts(string $domain): ?array
+    {
+        if (self::$mxResolver !== null) {
+            return (self::$mxResolver)($domain);
+        }
+        try {
+            $records = @dns_get_record($domain . '.', DNS_MX);
+        } catch (\Throwable) {
+            return null;
+        }
+        if (!is_array($records) || !$records) {
+            return null;
+        }
+        return array_map(static fn (array $r) => rtrim(strtolower((string) ($r['target'] ?? '')), '.'), $records);
+    }
+
+    /** @return string[] 后台逗号分隔 / 数组形态的域名列表，统一成小写、去掉前导 @ 与点 */
+    private static function listSetting(string $key): array
+    {
+        $raw = admin_setting($key, []);
+        $items = is_array($raw) ? $raw : preg_split('/[\s,，;]+/u', (string) $raw);
+        $list = [];
+        foreach ($items ?: [] as $item) {
+            $item = trim(strtolower((string) $item), " \t\n\r@.");
+            if ($item !== '') {
+                $list[] = $item;
+            }
+        }
+        return $list;
+    }
 
     /**
      * 域名收不收信：有 MX 记录、或退而求其次有 A / AAAA 记录就算收。

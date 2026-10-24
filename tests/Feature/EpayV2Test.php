@@ -231,12 +231,32 @@ class EpayV2Test extends TestCase
             $this->assertStringContainsString('更换支付方式', $e->getMessage());
         }
 
-        // 应答签名不对（被篡改或平台公钥填错）：不能把来路不明的链接给用户
+        // 带了签名但签名不对（被篡改或平台公钥填错）：拒绝
         $tampered = self::platformSign(['code' => 0, 'pay_type' => 'jump', 'pay_info' => 'https://gateway.test/pay/x']);
-        $tampered['pay_info'] = 'https://evil.test/phish';
+        $tampered['pay_info'] = 'https://gateway.test/pay/y';
         $this->gateway['/api/pay/create'] = Http::response($tampered);
+        try {
+            $this->plugin($payment)->pay(['trade_no' => 'T2'] + $order);
+            $this->fail('签名不对的应答应拒绝');
+        } catch (ApiException) {
+        }
+
+        // 下单应答不带签名（网关实际行为）时，支付链接只认网关自己的域名
+        $this->gateway['/api/pay/create'] = Http::response(['code' => 0, 'pay_type' => 'jump', 'pay_info' => 'https://evil.test/phish']);
         $this->expectException(ApiException::class);
-        $this->plugin($payment)->pay(['trade_no' => 'T2'] + $order);
+        $this->plugin($payment)->pay(['trade_no' => 'T3'] + $order);
+    }
+
+    public function test_v2_create_accepts_unsigned_answer_pointing_at_the_gateway(): void
+    {
+        // 实测：统一下单的应答不带 sign / timestamp（与文档示例一致）
+        $payment = $this->payment($this->v2Config());
+        $this->gateway['/api/pay/create'] = Http::response([
+            'code' => 0, 'trade_no' => '2026102412141389866', 'pay_type' => 'jump', 'pay_info' => self::URL . '/pay/submit/2026102412141389866/',
+        ]);
+
+        $result = $this->plugin($payment)->pay(['trade_no' => 'T4', 'total_amount' => 100, 'notify_url' => 'n', 'return_url' => 'r']);
+        $this->assertSame(self::URL . '/pay/submit/2026102412141389866/', $result['data']);
     }
 
     public function test_v2_cashier_mode_builds_signed_submit_link(): void

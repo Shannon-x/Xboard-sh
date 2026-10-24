@@ -219,7 +219,8 @@ class Plugin extends AbstractPlugin implements PaymentInterface
 
         $response = $client->create($params + ['method' => 'jump', 'clientip' => $this->clientIp()]);
         $payInfo = (string) ($response['data']['pay_info'] ?? '');
-        if (!$response['ok'] || !preg_match('#^https?://#i', $payInfo)) {
+        // 下单应答网关不签名：支付链接只认网关自己的域名，防止把来路不明的地址交给用户
+        if (!$response['ok'] || !$client->isGatewayUrl($payInfo)) {
             PaymentMetrics::warn('pay.create_failed', [
                 'gateway' => 'EPay',
                 'out_trade_no' => $params['out_trade_no'],

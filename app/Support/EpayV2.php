@@ -124,9 +124,12 @@ final class EpayV2
      * error 非 null 表示这次回答不可用（网络错误、非 JSON、验签或时间戳不过），与网关明确拒绝
      * （code≠0，msg 里是原因）区分开，调用方据此决定是重试还是放弃。
      *
+     * $signedResponse=false：网关这个接口的应答不带签名（实测统一下单就是这样）。应答里只要带了
+     * sign 仍然严格验；没带则放行，由调用方自行校验关键字段。
+     *
      * @return array{ok: bool, code: mixed, msg: string, data: array, error: ?string}
      */
-    public function call(string $path, array $params): array
+    public function call(string $path, array $params, bool $signedResponse = true): array
     {
         $result = ['ok' => false, 'code' => null, 'msg' => '', 'data' => [], 'error' => null];
         try {
@@ -152,23 +155,38 @@ final class EpayV2
             // 明确拒绝：失败的回答不一定带签名，不验
             return $result;
         }
-        if (!$this->verify($json)) {
-            $result['error'] = '网关返回验签失败（平台公钥不对，或回答被篡改）';
-            return $result;
-        }
-        $timestamp = $json['timestamp'] ?? null;
-        if (!is_numeric($timestamp) || abs(time() - (int) $timestamp) > self::RESPONSE_MAX_SKEW) {
-            $result['error'] = '网关返回的时间戳超出允许范围';
-            return $result;
+        $hasSign = isset($json['sign']) && $json['sign'] !== '';
+        if ($hasSign || $signedResponse) {
+            if (!$this->verify($json)) {
+                $result['error'] = '网关返回验签失败（平台公钥不对，或回答被篡改）';
+                return $result;
+            }
+            $timestamp = $json['timestamp'] ?? null;
+            if (!is_numeric($timestamp) || abs(time() - (int) $timestamp) > self::RESPONSE_MAX_SKEW) {
+                $result['error'] = '网关返回的时间戳超出允许范围';
+                return $result;
+            }
         }
         $result['ok'] = true;
         return $result;
     }
 
-    /** 统一下单（/api/pay/create）。$params 至少含 method / type / out_trade_no / notify_url / name / money / clientip */
+    /**
+     * 统一下单（/api/pay/create）。$params 至少含 method / type / out_trade_no / notify_url / name / money / clientip。
+     * 网关的下单应答不带签名（文档示例同样没有 sign，2026-10 实测）：调用方必须校验 pay_info 只指向网关自己的域名。
+     */
     public function create(array $params): array
     {
-        return $this->call('/api/pay/create', $params);
+        return $this->call('/api/pay/create', $params, false);
+    }
+
+    /** $url 是否就在网关自己的域名上（统一下单应答不签名，支付链接只认网关域名） */
+    public function isGatewayUrl(string $url): bool
+    {
+        $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+        return $host !== ''
+            && strtolower((string) parse_url($url, PHP_URL_SCHEME)) === strtolower((string) parse_url($this->baseUrl, PHP_URL_SCHEME))
+            && $host === strtolower((string) parse_url($this->baseUrl, PHP_URL_HOST));
     }
 
     /** 订单查询（/api/pay/query），平台订单号与商户订单号二选一 */

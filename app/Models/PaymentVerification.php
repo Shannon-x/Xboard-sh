@@ -44,6 +44,10 @@ class PaymentVerification extends Model
         'checked_at' => 'integer',
         'next_check_at' => 'integer',
         'alerted_at' => 'integer',
+        'recheck_stage' => 'integer',
+        'recheck_at' => 'integer',
+        'refunded_at' => 'integer',
+        'enforce_snapshot' => 'array',
     ];
 
     public const SUBJECT_ORDER = 'order';

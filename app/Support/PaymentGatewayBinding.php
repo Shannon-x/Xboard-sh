@@ -37,6 +37,11 @@ class PaymentGatewayBinding
     private const NON_IDENTITY_KEYS = [
         'type',       // EPay：收银台预选通道（alipay / wxpay），商户与密钥不变
         'trade_type', // BEpusdt：预选链（trc20 / erc20），商户与密钥不变
+        // EPay 的行为开关：同一商户的两条配置（支付宝 / 微信入口）只改了其中一条时不能被判成不同源，
+        // 否则用户在收银台切换按钮后的合法回调会被拒（2026-07 出过 155 单）
+        'api_version',
+        'v2_pay_mode',
+        'verify_before_fulfil',
     ];
 
     /**
@@ -107,6 +112,9 @@ class PaymentGatewayBinding
         foreach (self::NON_IDENTITY_KEYS as $key) {
             unset($config[$key]);
         }
+        // 空值不携带任何身份信息：后台保存时会把表单里没填的新字段写成空串，
+        // 只保存过其中一条配置时，两条同商户配置不能因为多了几个空字段就判成不同源
+        $config = array_filter($config, static fn ($value) => $value !== null && $value !== '');
         if ($config === []) {
             return null;
         }

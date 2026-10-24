@@ -48,6 +48,10 @@ class Kernel extends ConsoleKernel
         // 付款事后核验：已付 EPay 订单 / 充值单入账 5 分钟后向网关复核一次，异常推管理员；只读网关，不碰开通
         $schedule->command('payment:verify')->everyFiveMinutes()->onOneServer()->withoutOverlapping(30)->runInBackground();
         $schedule->command('payment:verify-report')->dailyAt('23:30')->onOneServer();
+        // 易支付 V2 投诉巡检：没有 V2 配置时不访问网关
+        $schedule->command('payment:epay-complaints')->everyTenMinutes()->onOneServer()->withoutOverlapping(10)->runInBackground();
+        // 退款回查：用户通过投诉等途径退了款就自动封号（见 RefundWatchService）
+        $schedule->command('payment:refund-watch')->everyTenMinutes()->onOneServer()->withoutOverlapping(30)->runInBackground();
         // 提现估算用的 USDT 实时汇率：定时焐热缓存，用户端请求就不必等行情接口
         $schedule->command('commission:refresh-usdt-rate')->everyTenMinutes()->onOneServer()->withoutOverlapping(5);
 

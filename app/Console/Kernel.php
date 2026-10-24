@@ -52,6 +52,8 @@ class Kernel extends ConsoleKernel
         $schedule->command('payment:epay-complaints')->everyTenMinutes()->onOneServer()->withoutOverlapping(10)->runInBackground();
         // 退款回查：用户通过投诉等途径退了款就自动封号（见 RefundWatchService）
         $schedule->command('payment:refund-watch')->everyTenMinutes()->onOneServer()->withoutOverlapping(30)->runInBackground();
+        // 支付异常每日邮件：管理员不常看 Telegram，自动处置结果与待确认删号每天汇总一次
+        $schedule->command('payment:alert-digest')->dailyAt('9:00')->onOneServer();
         // 提现估算用的 USDT 实时汇率：定时焐热缓存，用户端请求就不必等行情接口
         $schedule->command('commission:refresh-usdt-rate')->everyTenMinutes()->onOneServer()->withoutOverlapping(5);
 

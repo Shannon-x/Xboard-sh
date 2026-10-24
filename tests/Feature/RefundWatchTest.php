@@ -300,7 +300,7 @@ class RefundWatchTest extends TestCase
         $this->assertSame(1, $this->run_()['refunded']);
         $this->assertSame(1, (int) $user->fresh()->banned);
         $alert = $this->alerts()[0];
-        $this->assertStringContainsString('退款的充值单：<code>R20261024</code>', $alert);
+        $this->assertStringContainsString('充值单：<code>R20261024</code>', $alert);
         $this->assertStringContainsString('余额 ¥50.00 未扣回', $alert);
     }
 

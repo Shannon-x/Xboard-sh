@@ -9,11 +9,9 @@ use App\Models\User;
 use App\Support\AdminAlert;
 use App\Support\EpayOrderQuery;
 use App\Support\EpayV2;
-use App\Utils\Helper;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
-use Laravel\Sanctum\PersonalAccessToken;
 
 /**
  * 退款回查与处置。
@@ -49,9 +47,12 @@ final class RefundWatchService
     /** @var callable(array, string): array */
     private $query;
 
+    private PaymentEnforcement $enforcement;
+
     public function __construct(?callable $query = null)
     {
         $this->query = $query ?? [EpayOrderQuery::class, 'query'];
+        $this->enforcement = new PaymentEnforcement();
     }
 
     /**
@@ -193,101 +194,29 @@ final class RefundWatchService
     }
 
     /**
-     * 封号、收回套餐、重置订阅、踢下线，并告警。删号留给管理员确认（后台「用户」里删除）。
+     * 封号、收回套餐、重置订阅、踢下线，并告警（见 PaymentEnforcement）。删号留给管理员确认。
      */
     private function enforce(PaymentVerification $row, array $result, string $source): void
     {
-        $user = $row->user_id ? User::find($row->user_id) : null;
-        $snapshot = null;
-        $done = DB::transaction(function () use ($user, $row, $result, $source, &$snapshot) {
-            // 投诉触发与定时回查可能同时处置同一笔：锁住核验行，已处置过的不再动（否则快照会被「已封禁」覆盖）
-            $locked = PaymentVerification::lockForUpdate()->find($row->id);
-            if (!$locked || $locked->refunded_at !== null) {
-                return false;
-            }
-            if ($user) {
-                $snapshot = $this->suspend($user, $row);
-            }
+        $outcome = $this->enforcement->enforce($row, '网关退款', function (PaymentVerification $locked) use ($result, $source) {
             $locked->verdict = PaymentVerification::VERDICT_REFUNDED;
             $locked->gateway_status = $result['status'] ?? $locked->gateway_status;
             $locked->refunded_at = time();
             $locked->recheck_at = null;
             $locked->recheck_stage = count(self::RECHECK_OFFSETS);
-            $locked->enforce_snapshot = $snapshot;
             $locked->last_error = mb_substr($source . '：网关已退款', 0, 255);
-            $locked->save();
-            $row->setRawAttributes($locked->getAttributes(), true);
-            return true;
         });
-        if (!$done) {
+        if ($outcome === null) {
             return;
         }
 
         Log::warning('[refund-watch] 网关退款，已自动封号', ['subject' => $row->subject_type . ':' . $row->subject_id, 'user_id' => $row->user_id]);
-        $this->alertRefunded($row, $user, $snapshot, $result, $source);
-    }
-
-    /** 封号、收回套餐、重置订阅、踢下线；返回处置前的状态快照。须在事务里调用 */
-    private function suspend(User $user, PaymentVerification $row): array
-    {
-        $locked = User::lockForUpdate()->find($user->id);
-        $snapshot = [
-            'banned' => (int) $locked->banned, 'plan_id' => $locked->plan_id, 'expired_at' => $locked->expired_at,
-            'transfer_enable' => $locked->transfer_enable, 'balance' => $locked->balance,
-        ];
-        $locked->banned = 1;
-        $locked->plan_id = null;
-        $locked->expired_at = time();
-        $locked->transfer_enable = 0;
-        // 旧订阅链接与节点凭据立即作废
-        $locked->token = Helper::guid();
-        $locked->uuid = Helper::guid(true);
-        $locked->remarks = trim(((string) $locked->remarks) . "\n" . sprintf(
-            '[%s 网关退款自动封禁：%s %s，待确认删号]',
-            date('Y-m-d H:i'), $row->subject_type === PaymentVerification::SUBJECT_RECHARGE ? '充值单' : '订单', $this->tradeNoOf($row)
-        ));
-        $locked->save();
-        PersonalAccessToken::where('tokenable_type', User::class)->where('tokenable_id', $locked->id)->delete();
-        return $snapshot;
-    }
-
-    private function alertRefunded(PaymentVerification $row, ?User $user, ?array $snapshot, array $result, string $source): void
-    {
         $esc = [TelegramService::class, 'escapeHtml'];
-        $isRecharge = $row->subject_type === PaymentVerification::SUBJECT_RECHARGE;
-        $lines = ['🚨 <b>用户通过网关退款，已自动封号</b>'];
-
-        if ($user) {
-            $paid = Order::where('user_id', $user->id)->whereIn('status', [Order::STATUS_COMPLETED, Order::STATUS_DISCOUNTED]);
-            $lines[] = sprintf(
-                '用户：%s（#%d）· 注册 %s · 累计已付 %d 单 ¥%s',
-                $esc((string) $user->email), $user->id, date('Y-m-d', (int) $user->created_at),
-                (clone $paid)->count(), self::yuan((int) (clone $paid)->sum('total_amount'))
-            );
-        } else {
-            $lines[] = '用户：已不存在';
+        $details = ['发现途径：' . $esc($source) . ' · 网关状态 ' . ($result['status'] ?? '?')];
+        if ((int) ($result['refund_money'] ?? 0) > 0) {
+            $details[] = '部分退款 ¥' . PaymentEnforcement::yuan((int) $result['refund_money']);
         }
-
-        $lines[] = ($isRecharge ? '退款的充值单：' : '退款的订单：') . '<code>' . $esc($this->tradeNoOf($row)) . '</code> ¥'
-            . self::yuan((int) $row->expected_amount)
-            . ((int) ($result['refund_money'] ?? 0) > 0 ? '（部分退款 ¥' . self::yuan((int) $result['refund_money']) . '）' : '');
-        $lines[] = '发现途径：' . $esc($source) . ' · 网关状态 ' . ($result['status'] ?? '?');
-
-        $commission = $this->commissionOf($row);
-        if ($commission !== null) {
-            $lines[] = $commission;
-        }
-        if ($snapshot !== null) {
-            $lines[] = sprintf(
-                '已处理：封号、收回套餐（原套餐 #%s，到期 %s）、重置订阅、踢下线%s',
-                $snapshot['plan_id'] ?? '无',
-                $snapshot['expired_at'] ? date('Y-m-d', (int) $snapshot['expired_at']) : '长期',
-                $isRecharge ? '；充值进去的余额 ¥' . self::yuan((int) $snapshot['balance']) . ' 未扣回' : ''
-            );
-            $lines[] = '确认删号：到后台「用户」里删除 #' . $user->id . '，或回复「执行删号 ' . $user->id . '」。'
-                . '若属误判：解封并按上面的原值恢复套餐。';
-        }
-        AdminAlert::send(implode("\n", $lines), 'html');
+        $this->enforcement->alert($row, $outcome['user'], $outcome['snapshot'], '🚨 <b>用户通过网关退款，已自动封号</b>', $details);
     }
 
     private function alertFrozen(PaymentVerification $row, string $source): void
@@ -296,36 +225,10 @@ final class RefundWatchService
         $user = $row->user_id ? User::find($row->user_id) : null;
         AdminAlert::send(implode("\n", [
             '🧊 <b>网关冻结了一笔已付款</b>（多半有投诉在处理），暂不处置',
-            ($row->subject_type === PaymentVerification::SUBJECT_RECHARGE ? '充值单：' : '订单：') . '<code>' . $esc($this->tradeNoOf($row)) . '</code> ¥' . self::yuan((int) $row->expected_amount),
+            PaymentEnforcement::kindOf($row) . '：<code>' . $esc(PaymentEnforcement::tradeNoOf($row)) . '</code> ¥' . self::yuan((int) $row->expected_amount),
             '用户：' . ($user ? $esc((string) $user->email) . '（#' . $user->id . '）' : '—'),
             '发现途径：' . $esc($source) . '。转成退款后会自动封号。',
-        ]), 'html');
-    }
-
-    /** 这张单给邀请人发的佣金（订单表 / 充值表都有 commission_balance、invite_user_id） */
-    private function commissionOf(PaymentVerification $row): ?string
-    {
-        $subject = $row->subject_type === PaymentVerification::SUBJECT_RECHARGE
-            ? (Schema::hasTable('plugin_recharge_orders') ? DB::table('plugin_recharge_orders')->where('id', $row->subject_id)->first() : null)
-            : Order::find($row->subject_id);
-        if (!$subject || (int) ($subject->commission_balance ?? 0) <= 0 || !$subject->invite_user_id) {
-            return null;
-        }
-        $inviter = User::find($subject->invite_user_id);
-        $esc = [TelegramService::class, 'escapeHtml'];
-        return '该单佣金：¥' . self::yuan((int) $subject->commission_balance) . ' → 邀请人 '
-            . ($inviter ? $esc((string) $inviter->email) . '（#' . $inviter->id . '）' : '#' . $subject->invite_user_id)
-            . '，是否扣回请自行决定';
-    }
-
-    private function tradeNoOf(PaymentVerification $row): string
-    {
-        if ($row->subject_type === PaymentVerification::SUBJECT_RECHARGE) {
-            return Schema::hasTable('plugin_recharge_orders')
-                ? (string) DB::table('plugin_recharge_orders')->where('id', $row->subject_id)->value('trade_no')
-                : '';
-        }
-        return (string) Order::where('id', $row->subject_id)->value('trade_no');
+        ]), 'html', true);
     }
 
     /** @return array{type: string, id: int, paid_at: int}|null */

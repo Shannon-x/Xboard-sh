@@ -82,7 +82,8 @@ final class EpayGatewayMonitor
                         // 第一次见到就已处理完的（历史投诉）只记下，不刷屏
                         Cache::put($cacheKey, $state, self::SEEN_TTL);
                     } elseif ($stats['alerted'] < self::MAX_ALERTS_PER_RUN) {
-                        AdminAlert::send($this->formatComplaint($row, $previous !== null), 'html');
+                        AdminAlert::send($this->formatComplaint($row, $previous !== null), 'html', true);
+                        PaymentAlertDigest::recordComplaint($row);
                         Cache::put($cacheKey, $state, self::SEEN_TTL);
                         $stats['alerted']++;
                     } else {

@@ -148,36 +148,37 @@ class PaymentVerificationTest extends TestCase
         $this->assertSame(PaymentVerification::VERDICT_OK, $this->verdict($order)->verdict);
     }
 
-    public function test_not_found_retries_after_30min_and_2h_then_alerts_once(): void
+    public function test_not_found_twice_10min_apart_suspends_user_and_alerts_once(): void
     {
         $order = $this->paidOrder();   // 网关没有这笔
+        $user = User::find($order->user_id);
+        $user->forceFill(['plan_id' => 1, 'expired_at' => Carbon::now()->getTimestamp() + 30 * 86400])->save();
 
         $this->verifyDue();
         $row = $this->verdict($order);
         $this->assertSame([PaymentVerification::VERDICT_PENDING, 1], [$row->verdict, $row->miss_count]);
-        $this->assertSame(Carbon::now()->getTimestamp() + 1800, $row->next_check_at);
+        $this->assertSame(Carbon::now()->getTimestamp() + 600, $row->next_check_at);
 
-        Carbon::setTestNow(Carbon::now()->addMinutes(29));
+        Carbon::setTestNow(Carbon::now()->addMinutes(9));
         $this->verifyDue();
         $this->assertCount(1, $this->queries, '未到重试时间不查');
+        Bus::assertNotDispatched(SendTelegramJob::class);
 
         Carbon::setTestNow(Carbon::now()->addMinutes(2));
         $this->verifyDue();
         $row->refresh();
-        $this->assertSame([PaymentVerification::VERDICT_PENDING, 2], [$row->verdict, $row->miss_count]);
-        Bus::assertNotDispatched(SendTelegramJob::class);
-
-        Carbon::setTestNow(Carbon::now()->addHours(2)->addMinute());
-        $this->verifyDue();
-        $row->refresh();
-        $this->assertSame([PaymentVerification::VERDICT_NOT_FOUND, 3, 3], [$row->verdict, $row->miss_count, $row->attempts]);
+        $this->assertSame([PaymentVerification::VERDICT_NOT_FOUND, 2, 2], [$row->verdict, $row->miss_count, $row->attempts]);
         $this->assertNotNull($row->alerted_at);
+        $this->assertSame(1, $row->enforce_snapshot['plan_id'], '处置前的套餐留在快照里');
+        $user->refresh();
+        $this->assertSame([1, null], [(int) $user->banned, $user->plan_id], '确认查无此单 → 自动封号收回套餐');
         Bus::assertDispatchedTimes(SendTelegramJob::class, 1);
-        Bus::assertDispatched(SendTelegramJob::class, fn ($job) => str_contains((fn () => $this->text)->call($job), $order->trade_no));
+        Bus::assertDispatched(SendTelegramJob::class, fn ($job) => str_contains((fn () => $this->text)->call($job), '已自动封号')
+            && str_contains((fn () => $this->text)->call($job), $order->trade_no));
 
         Carbon::setTestNow(Carbon::now()->addDay());
         $this->verifyDue();
-        $this->assertCount(3, $this->queries);
+        $this->assertCount(2, $this->queries);
         Bus::assertDispatchedTimes(SendTelegramJob::class, 1);
     }
 
@@ -190,6 +191,8 @@ class PaymentVerificationTest extends TestCase
         $this->verifyDue();
         $this->assertSame(PaymentVerification::VERDICT_REFUNDED, $this->verdict($order)->verdict);
         Bus::assertDispatchedTimes(SendTelegramJob::class, 1);
+        // 「未付或已退款」交给退款回查复核两次再处置，这里不封
+        $this->assertSame(0, (int) User::find($order->user_id)->banned);
     }
 
     public function test_amount_or_out_trade_no_mismatch(): void
@@ -207,6 +210,28 @@ class PaymentVerificationTest extends TestCase
         $this->assertSame(PaymentVerification::VERDICT_MISMATCH, $this->verdict($foreign)->verdict);
         $this->assertSame(PaymentVerification::VERDICT_OK, $this->verdict($session)->verdict);
         Bus::assertDispatchedTimes(SendTelegramJob::class, 2);
+        $this->assertSame(1, (int) User::find($cheaper->user_id)->banned, '金额不符复查确认 → 自动封号');
+        $this->assertSame(1, (int) User::find($foreign->user_id)->banned);
+        $this->assertSame(0, (int) User::find($session->user_id)->banned);
+        $cheaperQueries = array_filter($this->queries, fn ($q) => ($q['trade_no'] ?? null) === $cheaper->callback_no);
+        $this->assertCount(2, $cheaperQueries, '封号前复查一次');
+    }
+
+    public function test_mismatch_that_clears_on_recheck_is_ok_and_not_enforced(): void
+    {
+        $order = $this->paidOrder();
+        $answers = [
+            ['code' => 1, 'trade_no' => $order->callback_no, 'out_trade_no' => $order->trade_no . '-ab12cd34', 'type' => 'wxpay', 'money' => '0.01', 'status' => 1],
+            ['code' => 1, 'trade_no' => $order->callback_no, 'out_trade_no' => $order->trade_no . '-ab12cd34', 'type' => 'wxpay', 'money' => '10.00', 'status' => 1],
+        ];
+        $this->gateway[$order->callback_no] = function () use (&$answers) {
+            return Http::response(array_shift($answers));
+        };
+
+        $this->verifyDue();
+        $this->assertSame(PaymentVerification::VERDICT_OK, $this->verdict($order)->verdict);
+        $this->assertSame(0, (int) User::find($order->user_id)->banned, '复查对得上：网关偶发脏数据，不处置');
+        Bus::assertNotDispatched(SendTelegramJob::class);
     }
 
     public function test_network_error_backs_off_and_never_stores_the_key(): void

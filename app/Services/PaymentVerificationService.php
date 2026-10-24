@@ -15,13 +15,14 @@ use Illuminate\Support\Facades\Schema;
 /**
  * 付款事后核验：已付的订单 / 充值单入账几分钟后，向支付网关查一次这笔交易，核对「网关上真有
  * 这笔、已付、金额与单号一致」。只由定时任务 payment:verify 驱动，不碰回调与开通路径，
- * 不影响用户开通速度；发现异常只告警，处置交给管理员。
+ * 不影响用户开通速度（先开通、后核验）。
  *
  * 每张单查到有结论就不再查：
- *   ok / mismatch / refunded / skipped —— 终态；
- *   网关回答「没有这笔」 —— 30 分钟、2 小时后各重试一次，三次都没有才定为 not_found；
+ *   ok / mismatch / refunded / skipped —— 终态；mismatch 定论前再复查一次，两次一致才算；
+ *   网关回答「没有这笔」 —— 10 分钟后再查一次，两次都没有才定为 not_found；
  *   网络 / 网关 / 鉴权出错 —— 按 5 分钟、30 分钟、2 小时退避重试，不当成异常。
- * not_found / mismatch / refunded 立即推送管理员（每张单只推一次）。
+ * not_found / mismatch 确认后自动封号、收回套餐（PaymentEnforcement，管理员不常看 Telegram，不能等人处理）；
+ * refunded 交给退款回查复核两次后处置。异常都推送管理员与客服（每张单只推一次），并进每日邮件汇总。
  */
 class PaymentVerificationService
 {
@@ -34,11 +35,14 @@ class PaymentVerificationService
     /** 默认只看最近这么多天已付的单 */
     public const DEFAULT_WINDOW_DAYS = 7;
 
-    /** 网关回答「没有这笔」的次数达到这个数就定为 not_found */
-    public const MAX_MISSES = 3;
+    /** 网关回答「没有这笔」的次数达到这个数就定为 not_found（随后自动封号，所以两次就定：伪造的单越早处置越好） */
+    public const MAX_MISSES = 2;
 
     /** 第 N 次「没有这笔」之后，隔多久再查（秒） */
-    public const MISS_RETRY_DELAYS = [1 => 1800, 2 => 7200];
+    public const MISS_RETRY_DELAYS = [1 => 600];
+
+    /** 这些结论确认后自动封号；refunded 由退款回查复核后处置 */
+    private const ENFORCED_VERDICTS = [PaymentVerification::VERDICT_NOT_FOUND, PaymentVerification::VERDICT_MISMATCH];
 
     /** 出错后的退避（秒），超出后一直按最后一档 */
     public const ERROR_BACKOFF = [300, 1800, 7200];
@@ -53,9 +57,12 @@ class PaymentVerificationService
 
     private ?bool $hasRechargeTable = null;
 
+    private PaymentEnforcement $enforcement;
+
     public function __construct(?callable $query = null)
     {
         $this->query = $query ?? [EpayOrderQuery::class, 'query'];
+        $this->enforcement = new PaymentEnforcement();
     }
 
     /**
@@ -152,20 +159,24 @@ class PaymentVerificationService
 
         switch ($result['outcome'] ?? EpayOrderQuery::ERROR) {
             case EpayOrderQuery::FOUND:
+                $issue = self::issueOf($result, $subject);
+                if ($issue !== null && $issue[0] === PaymentVerification::VERDICT_MISMATCH) {
+                    // 金额 / 单号不符会自动封号：先复查一次，网关偶发返回脏数据不能凭一次就处置
+                    $again = ($this->query)((array) $payment->config, (string) $subject['callback_no']);
+                    $row->attempts = (int) $row->attempts + 1;
+                    if (($again['outcome'] ?? null) !== EpayOrderQuery::FOUND) {
+                        return $this->retryLater($row, '金额或单号不符，复查失败：' . ($again['msg'] ?? ''), $now);
+                    }
+                    $result = $again;
+                    $issue = self::issueOf($again, $subject);
+                }
                 $row->gateway_status = $result['status'];
                 $row->gateway_money = $result['money'];
                 $row->gateway_type = $result['type'];
-                if ($result['status'] !== 1) {
-                    return $this->conclude($row, PaymentVerification::VERDICT_REFUNDED, '网关状态 ' . ($result['status'] ?? '未知') . '（未付或已退款）', $now);
+                if ($issue === null) {
+                    return $this->conclude($row, PaymentVerification::VERDICT_OK, null, $now);
                 }
-                if ($result['money'] !== $subject['expected']) {
-                    return $this->conclude($row, PaymentVerification::VERDICT_MISMATCH,
-                        '网关金额 ' . self::yuan($result['money']) . '，应付 ' . self::yuan($subject['expected']), $now);
-                }
-                if (!self::outTradeNoMatches($result['out_trade_no'], $subject['trade_no'])) {
-                    return $this->conclude($row, PaymentVerification::VERDICT_MISMATCH, '网关商户单号与本单不符', $now);
-                }
-                return $this->conclude($row, PaymentVerification::VERDICT_OK, null, $now);
+                return $this->conclude($row, $issue[0], $issue[1], $now);
 
             case EpayOrderQuery::NOT_FOUND:
                 $row->miss_count = (int) $row->miss_count + 1;
@@ -376,15 +387,48 @@ class PaymentVerificationService
         $row->next_check_at = null;
         $row->save();
 
+        $outcome = in_array($verdict, self::ENFORCED_VERDICTS, true)
+            ? $this->enforcement->enforce($row, '付款核验异常', static function () {
+            })
+            : null;
+
         if (in_array($verdict, PaymentVerification::ANOMALIES, true) && $row->alerted_at === null) {
             // 条件更新抢到告警权，避免并发重复推送
             $claimed = PaymentVerification::where('id', $row->id)->whereNull('alerted_at')->update(['alerted_at' => $now]);
             if ($claimed === 1) {
                 $row->alerted_at = $now;
-                AdminAlert::send("⚠️ 付款核验异常\n" . $this->describe($row) . "\n订单已照常开通，请人工核实；核验不会自动收回服务。");
+                if ($outcome !== null) {
+                    $label = (PaymentVerification::LABELS[$verdict] ?? $verdict) . ($note ? '（' . $note . '）' : '');
+                    $this->enforcement->alert($row, $outcome['user'], $outcome['snapshot'], '🚨 <b>付款核验异常，已自动封号</b>',
+                        ['核验结论：' . TelegramService::escapeHtml($label) . '。订单是先开通的，现已收回。']);
+                } else {
+                    AdminAlert::send("⚠️ 付款核验异常\n" . $this->describe($row) . "\n"
+                        . ($verdict === PaymentVerification::VERDICT_REFUNDED
+                            ? '退款回查会再复核两次，确认是退款就自动封号。'
+                            : '该用户此前已处置过（或已不存在），本次未重复处置。'), 'markdown', true);
+                }
             }
         }
         return $row;
+    }
+
+    /**
+     * 网关查到的这笔与本单对不对得上；对得上返回 null。
+     *
+     * @return array{0: string, 1: string}|null [结论, 说明]
+     */
+    private static function issueOf(array $result, array $subject): ?array
+    {
+        if ($result['status'] !== 1) {
+            return [PaymentVerification::VERDICT_REFUNDED, '网关状态 ' . ($result['status'] ?? '未知') . '（未付或已退款）'];
+        }
+        if ($result['money'] !== $subject['expected']) {
+            return [PaymentVerification::VERDICT_MISMATCH, '网关金额 ' . self::yuan($result['money']) . '，应付 ' . self::yuan($subject['expected'])];
+        }
+        if (!self::outTradeNoMatches($result['out_trade_no'], $subject['trade_no'])) {
+            return [PaymentVerification::VERDICT_MISMATCH, '网关商户单号与本单不符'];
+        }
+        return null;
     }
 
     private function retryLater(PaymentVerification $row, string $error, int $now): PaymentVerification

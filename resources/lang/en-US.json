@@ -203,6 +203,7 @@
     "The new email address is the same as the current one": "The new email address is the same as the current one",
     "Invalid email address": "Invalid email address",
     "This email domain cannot receive mail, please check the address": "This email domain cannot receive mail, please check the address",
+    "This email domain is not supported, please use another email address": "This email domain is not supported, please use another email address",
     "Your email address is already verified": "Your email address is already verified",
     "Email verification is not enabled": "Email verification is not enabled",
     "Commission credited :amount": "Commission credited :amount",

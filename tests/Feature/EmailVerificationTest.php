@@ -53,6 +53,7 @@ class EmailVerificationTest extends TestCase
     protected function tearDown(): void
     {
         EmailVerification::$dnsResolver = null;
+        EmailVerification::$mxResolver = null;
         parent::tearDown();
     }
 
@@ -375,6 +376,18 @@ class EmailVerificationTest extends TestCase
 
         config(['v2board.email_verify_mx_check' => 0]);
         $this->postJson('/api/v1/passport/auth/register', ['email' => 'b@nomx.example', 'password' => 'secret-pass'])->assertOk();
+    }
+
+    public function test_register_rejects_example_own_site_and_disposable_domains(): void
+    {
+        // 2026-10 渗透号：*@example.com、admin@本站域名、mail.tm 轮换域名（maxxspace.com 的 MX 是 in.mail.tm）
+        EmailVerification::$mxResolver = fn (string $domain) => $domain === 'maxxspace.com' ? ['in.mail.tm'] : null;
+        foreach (['a@example.com', 'admin@panel.example.test', 'x@maxxspace.com'] as $email) {
+            $this->postJson('/api/v1/passport/auth/register', ['email' => $email, 'password' => 'secret-pass'])
+                ->assertStatus(400)->assertJsonPath('message', '不支持该邮箱域名，请换一个常用邮箱');
+        }
+        $this->assertSame(0, User::whereIn('email', ['a@example.com', 'admin@panel.example.test', 'x@maxxspace.com'])->count());
+        $this->postJson('/api/v1/passport/auth/register', ['email' => 'student@sjtu.edu.cn', 'password' => 'secret-pass'])->assertOk();
     }
 
     // ---------------------------------------------------------------- 上线前的老用户

@@ -30,8 +30,8 @@ final class AttachmentConfig
      */
     public const PENDING_QUOTA_WINDOW = 600;
     /** 只有这几类图片才会以 inline 方式输出，其余一律 attachment 下载（防 SVG / HTML 型 XSS） */
-    public const INLINE_IMAGE_MIMES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-    public const DEFAULT_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif,webp,pdf,txt,log,zip';
+    public const INLINE_IMAGE_MIMES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/avif'];
+    public const DEFAULT_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif,webp,bmp,avif,pdf,txt,log,zip';
 
     public const DEFAULTS = [
         'ticket_attachment_enable' => 0,

@@ -203,7 +203,7 @@ class TelegramTicketAttachmentTest extends TestCase
             'reply_text' => "📮 工单提醒 #{$ticket->id}",
             'attachments' => [['kind' => 'photo', 'file_id' => 'PHOTO1', 'file_name' => null, 'mime' => 'image/jpeg', 'size' => 70]],
         ];
-        preg_match('/(📮.*?工单(?:提醒|回复).*?#?|工单ID: ?)(\d+)/u', $msg->reply_text, $matches);
+        preg_match(TelegramPlugin::TICKET_REPLY_PATTERN, $msg->reply_text, $matches);
 
         $this->plugin()->handleTicketReply($msg, $matches);
 
@@ -241,7 +241,7 @@ class TelegramTicketAttachmentTest extends TestCase
             'reply_text' => "工单ID: {$ticket->id}",
             'attachments' => [],
         ];
-        preg_match('/(📮.*?工单(?:提醒|回复).*?#?|工单ID: ?)(\d+)/u', $msg->reply_text, $matches);
+        preg_match(TelegramPlugin::TICKET_REPLY_PATTERN, $msg->reply_text, $matches);
 
         $this->plugin()->handleTicketReply($msg, $matches);
 
@@ -285,5 +285,21 @@ class TelegramTicketAttachmentTest extends TestCase
         $this->assertStringContainsString('工单ID: 9', $captured->reply_text);
         $this->assertCount(1, $captured->attachments);
         $this->assertSame('LARGE', $captured->attachments[0]['file_id']);
+    }
+
+    public function test_reply_pattern_ignores_ticket_markers_inside_user_text(): void
+    {
+        // 附件文件名 / 工单内容都是用户写的：以前取最左匹配，文件名起成「工单ID: 1234.png」，
+        // 管理员在 TG 回复这张图就会写进别人的 1234 号工单
+        $cases = [
+            "📎 工单 #9 附件 1/1：工单ID: 1234.png（70B）\n工单ID: 9" => '9',
+            "📎 工单 #9 附件 1/1：📮 工单提醒 #77.png（70B）\n工单ID: 9" => '9',
+            "📮 工单提醒 #12\n━━━━\n📝 主题: 工单ID: 99\n💬 内容:\n📮 工单回复 #98\n工单ID: 97" => '12',
+            "📮 工单回复 #34\n━━━━" => '34',
+        ];
+        foreach ($cases as $text => $expected) {
+            $this->assertSame(1, preg_match(TelegramPlugin::TICKET_REPLY_PATTERN, $text, $matches), $text);
+            $this->assertSame($expected, $matches[2], $text);
+        }
     }
 }

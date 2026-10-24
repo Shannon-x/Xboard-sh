@@ -31,16 +31,17 @@ class TicketAttachmentService
      * 扩展名 → 允许的 MIME（finfo 按内容探测的结果必须命中，否则视为伪装类型）。
      * 以 "/" 结尾的条目按前缀匹配。不在表里的扩展名只要后台允许就按探测结果收下，
      * 反正非图片一律以 attachment 方式下发，不会被浏览器当页面渲染。
+     * 文本类只认 text/plain：以前写的是 "text/" 前缀，HTML 改名 .txt / .log 也能过（2026-10-23 渗透样本）。
      */
     private const MIME_BY_EXTENSION = [
         'pdf' => ['application/pdf'],
-        'txt' => ['text/', 'application/x-empty'],
-        'log' => ['text/', 'application/octet-stream'],
-        'conf' => ['text/'],
-        'json' => ['application/json', 'text/'],
-        'yaml' => ['text/', 'application/yaml', 'application/x-yaml'],
-        'yml' => ['text/', 'application/yaml', 'application/x-yaml'],
-        'csv' => ['text/'],
+        'txt' => ['text/plain', 'application/x-empty'],
+        'log' => ['text/plain', 'application/octet-stream'],
+        'conf' => ['text/plain'],
+        'json' => ['application/json', 'text/plain'],
+        'yaml' => ['text/plain', 'application/yaml', 'application/x-yaml'],
+        'yml' => ['text/plain', 'application/yaml', 'application/x-yaml'],
+        'csv' => ['text/plain', 'text/csv'],
         'zip' => ['application/zip', 'application/x-zip-compressed', 'application/x-zip'],
         'rar' => ['application/vnd.rar', 'application/x-rar-compressed', 'application/x-rar'],
         '7z' => ['application/x-7z-compressed'],
@@ -54,7 +55,40 @@ class TicketAttachmentService
         'image/png' => 'png',
         'image/gif' => 'gif',
         'image/webp' => 'webp',
+        'image/bmp' => 'bmp',
+        'image/avif' => 'avif',
     ];
+
+    /** finfo 与 getimagesize 对同一种图片给出的不同写法，统一成后者 */
+    private const MIME_ALIASES = [
+        'image/x-ms-bmp' => 'image/bmp',
+        'image/x-bmp' => 'image/bmp',
+    ];
+
+    /**
+     * 按内容探测出这些类型的一律拒收，不管扩展名是什么、后台允许了什么：
+     * 浏览器会执行的页面 / 脚本、服务端脚本、可执行文件。
+     */
+    private const FORBIDDEN_MIMES = [
+        'text/html', 'application/xhtml+xml', 'image/svg+xml', 'text/xml', 'application/xml',
+        'text/javascript', 'application/javascript', 'application/x-javascript', 'text/ecmascript',
+        'text/x-php', 'application/x-php', 'application/x-httpd-php',
+        'text/x-shellscript', 'application/x-sh', 'text/x-python', 'text/x-perl',
+        'application/x-executable', 'application/x-dosexec', 'application/x-msdownload',
+        'application/x-mach-binary', 'application/x-elf', 'application/java-archive',
+    ];
+
+    /**
+     * 文件名里出现这些扩展名段就视为双扩展名伪装（a.php.txt、shell.php.png）。
+     * 非图片直接拒收；图片的扩展名本来就按内容改写，只把展示名里的这一段去掉。
+     */
+    private const DANGEROUS_NAME_SEGMENT = '/\.(php\d?|phtml|phar|pht|s?html?|xhtml|svgz?|m?js|jsp|aspx?|cgi|pl|py|sh|bat|cmd|exe|htaccess)(?=\.|$)/i';
+
+    /**
+     * 图片 / 文本里出现这些片段就拒收。存下来也不会被执行，但这类多态文件（GIF89a<?php…、改名 .log 的 HTML）
+     * 只有探测者才会传，留在存储里只会给人当跳板；也不再只指望 finfo 把它认成 text/html。
+     */
+    private const EMBEDDED_CODE = '/<\?php|<script|<html|<svg|<iframe/i';
 
     private AttachmentConfig $config;
 
@@ -108,8 +142,11 @@ class TicketAttachmentService
 
         $storage = $this->storage();
         $key = $storage->newKey($ext);
+        // 存储里的 Content-Type 只给能内联预览的图片写真类型，其余一律 octet-stream：
+        // 万一桶被设成公开读，直接访问对象 URL 也不会被浏览器当成页面渲染
+        $storedMime = $isImage && in_array($mime, AttachmentConfig::INLINE_IMAGE_MIMES, true) ? $mime : 'application/octet-stream';
         try {
-            $storage->put($key, $path, $mime);
+            $storage->put($key, $path, $storedMime);
         } catch (\Throwable $e) {
             Log::error('[ticket-attachment] store failed', [
                 'driver' => $storage->driver(),
@@ -335,7 +372,8 @@ class TicketAttachmentService
     {
         $storage = $this->storage($attachment->driver);
         $inline = $attachment->is_image && in_array($attachment->mime, AttachmentConfig::INLINE_IMAGE_MIMES, true);
-        $mime = $inline ? $attachment->mime : ($attachment->mime ?: 'application/octet-stream');
+        // 库里的 mime 是探测结果（历史数据里可能有 text/html），下载时不再原样回给浏览器
+        $mime = $inline ? $attachment->mime : 'application/octet-stream';
 
         $url = $storage->temporaryUrl($attachment->path, self::DOWNLOAD_URL_TTL, $attachment->original_name, $inline, $mime);
         if ($url !== null) {
@@ -395,16 +433,28 @@ class TicketAttachmentService
     private function classify(UploadedFile $file, string $path): array
     {
         $detected = strtolower((string) ($file->getMimeType() ?: 'application/octet-stream'));
+        $detected = self::MIME_ALIASES[$detected] ?? $detected;
 
         if (isset(self::IMAGE_EXT_BY_MIME[$detected])) {
             $info = @getimagesize($path);
             if ($info === false || strtolower((string) ($info['mime'] ?? '')) !== $detected) {
                 throw new ApiException(__('Attachment content does not match its type'));
             }
+            if (preg_match(self::EMBEDDED_CODE, (string) @file_get_contents($path))) {
+                throw new ApiException(__('Attachment content does not match its type'));
+            }
             return [self::IMAGE_EXT_BY_MIME[$detected], $detected, true, (int) $info[0], (int) $info[1]];
         }
 
-        $ext = strtolower(pathinfo($file->getClientOriginalName(), PATHINFO_EXTENSION));
+        if ($this->mimeMatches($detected, self::FORBIDDEN_MIMES)) {
+            throw new ApiException(__('Attachment type is not allowed'));
+        }
+        $clientName = basename(str_replace('\\', '/', $file->getClientOriginalName()));
+        if (preg_match(self::DANGEROUS_NAME_SEGMENT, $clientName)) {
+            throw new ApiException(__('Attachment type is not allowed'));
+        }
+
+        $ext = strtolower(pathinfo($clientName, PATHINFO_EXTENSION));
         $ext = preg_replace('/[^a-z0-9]/', '', $ext) ?? '';
         if ($ext === '') {
             throw new ApiException(__('Attachment type is not allowed'));
@@ -415,6 +465,11 @@ class TicketAttachmentService
         }
         $expected = self::MIME_BY_EXTENSION[$ext] ?? null;
         if ($expected !== null && !$this->mimeMatches($detected, $expected)) {
+            throw new ApiException(__('Attachment content does not match its type'));
+        }
+        $textLike = str_starts_with($detected, 'text/')
+            || in_array($detected, ['application/json', 'application/yaml', 'application/x-yaml', 'application/octet-stream', 'application/x-empty'], true);
+        if ($textLike && preg_match(self::EMBEDDED_CODE, (string) @file_get_contents($path))) {
             throw new ApiException(__('Attachment content does not match its type'));
         }
         return [$ext, $detected, false, null, null];
@@ -442,6 +497,7 @@ class TicketAttachmentService
         $name = preg_replace('/[\x00-\x1F\x7F"]+/u', '', $name) ?? '';
         $name = trim(preg_replace('/\s+/u', ' ', $name) ?? '');
         $base = pathinfo($name, PATHINFO_FILENAME);
+        $base = trim(preg_replace(self::DANGEROUS_NAME_SEGMENT, '', $base) ?? '');
         if ($base === '' || $base === '.') {
             $base = 'attachment';
         }

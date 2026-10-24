@@ -154,17 +154,17 @@ class InviteGrowthTest extends TestCase
         $this->makeCode($inviter, 'tg-group');
 
         $this->postJson('/api/v1/passport/auth/register', [
-            'email' => 'friend@example.test', 'password' => 'secret-pass', 'invite_code' => 'tg-group',
+            'email' => 'friend@invitee.test', 'password' => 'secret-pass', 'invite_code' => 'tg-group',
         ])->assertOk();
-        $friend = User::where('email', 'friend@example.test')->firstOrFail();
+        $friend = User::where('email', 'friend@invitee.test')->firstOrFail();
         $this->assertSame($inviter->id, (int) $friend->invite_user_id);
         $this->assertSame('tg-group', $friend->invite_code);
 
         // 无效码（非强制邀请）被静默忽略：不记邀请人，也不记码
         $this->postJson('/api/v1/passport/auth/register', [
-            'email' => 'stranger@example.test', 'password' => 'secret-pass', 'invite_code' => 'no-such-code',
+            'email' => 'stranger@invitee.test', 'password' => 'secret-pass', 'invite_code' => 'no-such-code',
         ])->assertOk();
-        $stranger = User::where('email', 'stranger@example.test')->firstOrFail();
+        $stranger = User::where('email', 'stranger@invitee.test')->firstOrFail();
         $this->assertNull($stranger->invite_user_id);
         $this->assertNull($stranger->invite_code);
     }

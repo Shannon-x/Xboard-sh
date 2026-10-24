@@ -53,6 +53,7 @@ class PaymentService
         if (isset($payment)) {
             $this->config = is_string($payment['config']) ? json_decode($payment['config'], true) : $payment['config'];
             $this->config['enable'] = $payment['enable'];
+            $this->config['updated_at'] = (int) ($payment['updated_at'] ?? 0);
             $this->config['id'] = $payment['id'];
             $this->config['uuid'] = $payment['uuid'];
             $this->config['notify_domain'] = $payment['notify_domain'] ?? '';
@@ -78,10 +79,18 @@ class PaymentService
         $this->payment = new $this->class($this->config);
     }
 
+    /**
+     * 停用支付配置后仍接收回调的时长：换网关时用户切换前打开的旧收银台还能付款，停用即拒收回调的话，
+     * 这些人付了钱却开不了单。停用（最后一次修改）超过这个时长就恢复拒收，早已废弃的老网关不会被拿来伪造回调。
+     */
+    public const NOTIFY_GRACE_AFTER_DISABLE = 3 * 86400;
+
     public function notify($params)
     {
-        if (!$this->config['enable'])
+        if (!$this->config['enable']
+            && time() - (int) ($this->config['updated_at'] ?? 0) > self::NOTIFY_GRACE_AFTER_DISABLE) {
             throw new ApiException('gate is not enable');
+        }
         return $this->payment->notify($params);
     }
 

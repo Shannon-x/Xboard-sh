@@ -380,6 +380,33 @@ class EpayV2Test extends TestCase
         $this->assertTrue(EpaySignature::verifyMd5($query, 'v1-secret'));
     }
 
+    public function test_disabled_gateway_keeps_accepting_callbacks_for_three_days_only(): void
+    {
+        // 换网关：旧配置停用后，切换前打开的旧收银台还能付款，回调要能收
+        $payment = $this->payment($this->v2Config(['verify_before_fulfil' => '0']));
+        $order = $this->order($payment);
+        $payment->forceFill(['enable' => false])->save();
+        $plugin = new EpayPlugin('epay');
+        \App\Services\Plugin\HookManager::registerFilter('available_payment_methods', fn ($methods) => $methods + ['EPay' => ['plugin_code' => $plugin->getPluginCode()]]);
+        app()->instance(\App\Services\Plugin\PluginManager::class, new class ($plugin) extends \App\Services\Plugin\PluginManager {
+            public function __construct(private object $fake)
+            {
+            }
+
+            public function getEnabledPaymentPlugins(): array
+            {
+                return [$this->fake];
+            }
+        });
+
+        $result = (new \App\Services\PaymentService('EPay', null, $payment->uuid))->notify($this->notifyParams($order));
+        $this->assertIsArray($result);
+
+        Payment::where('id', $payment->id)->update(['updated_at' => time() - \App\Services\PaymentService::NOTIFY_GRACE_AFTER_DISABLE - 60]);
+        $this->expectException(ApiException::class);
+        (new \App\Services\PaymentService('EPay', null, $payment->uuid))->notify($this->notifyParams($order));
+    }
+
     // ───────────────────────── 查单 / 同源判定 ─────────────────────────
 
     public function test_order_query_supports_v2_for_after_the_fact_verification(): void

@@ -730,17 +730,24 @@ class BalanceRechargeTest extends TestCase
         $this->assertSame(BalanceLog::TYPE_ADMIN_ADJUST, $unrelated->fresh()->type, '时间对不上的不动');
     }
 
-    public function test_backfill_recomputes_daily_stats_with_recharge_income(): void
+    public function test_backfill_adds_recharge_income_to_old_daily_stats_once_and_leaves_orders_alone(): void
     {
         $user = $this->user();
         $day = strtotime('yesterday');
         $this->recharge($user, ['status' => RechargeOrder::STATUS_COMPLETED, 'paid_at' => $day + 3600]);
-        Stat::create(['record_at' => $day, 'record_type' => 'd', 'order_count' => 0, 'order_total' => 0, 'paid_count' => 0, 'paid_total' => 0, 'commission_count' => 0, 'commission_total' => 0, 'register_count' => 0, 'invite_count' => 0, 'transfer_used_total' => '0']);
+        $this->recharge($user, ['status' => RechargeOrder::STATUS_CANCELLED, 'created_at' => $day + 60]);
+        // 当时记下的订单收入 5000 / 2 笔；之后这些订单被删号收回了，现在库里一张都没有——补充值时不能把它们减掉
+        Stat::create(['record_at' => $day, 'record_type' => 'd', 'order_count' => 2, 'order_total' => 5000, 'paid_count' => 2, 'paid_total' => 5000, 'commission_count' => 0, 'commission_total' => 0, 'register_count' => 0, 'invite_count' => 0, 'transfer_used_total' => '0']);
+        $quiet = Stat::create(['record_at' => strtotime('-2 day', $day), 'record_type' => 'd', 'order_count' => 1, 'order_total' => 700, 'paid_count' => 1, 'paid_total' => 700, 'commission_count' => 0, 'commission_total' => 0, 'register_count' => 0, 'invite_count' => 0, 'transfer_used_total' => '0']);
 
-        Redis::shouldReceive('connection')->andReturn(new \stdClass());
+        $this->artisan('recharge:backfill', ['--stats' => true, '--dry-run' => true])->assertSuccessful();
+        $this->assertSame(5000, (int) Stat::where('record_at', $day)->value('paid_total'), 'dry-run 不写库');
+
+        $this->artisan('recharge:backfill', ['--stats' => true])->assertSuccessful();
         $this->artisan('recharge:backfill', ['--stats' => true])->assertSuccessful();
 
         $stat = Stat::where('record_at', $day)->first();
-        $this->assertSame([10000, 1], [(int) $stat->paid_total, (int) $stat->paid_count]);
+        $this->assertSame([15000, 3], [(int) $stat->paid_total, (int) $stat->paid_count], '只加一次充值，订单部分照旧');
+        $this->assertSame([700, 1], [(int) $quiet->fresh()->paid_total, (int) $quiet->fresh()->paid_count]);
     }
 }

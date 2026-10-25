@@ -744,6 +744,10 @@ class BalanceRechargeTest extends TestCase
         $this->assertSame(5000, (int) Stat::where('record_at', $day)->value('paid_total'), 'dry-run 不写库');
 
         $this->artisan('recharge:backfill', ['--stats' => true])->assertSuccessful();
+        // 模拟别的进程在写入提交前重建了设置缓存：缓存里没有标记，第二次仍必须跳过
+        $stale = Cache::store('redis')->get(\App\Support\Setting::CACHE_KEY, []);
+        unset($stale['recharge_stats_backfilled_before']);
+        Cache::store('redis')->forever(\App\Support\Setting::CACHE_KEY, $stale);
         $this->artisan('recharge:backfill', ['--stats' => true])->assertSuccessful();
 
         $stat = Stat::where('record_at', $day)->first();

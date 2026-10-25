@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\BalanceLog;
 use App\Models\RechargeOrder;
+use App\Models\Setting as SettingModel;
 use App\Models\Stat;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -116,7 +117,9 @@ class RechargeBackfill extends Command
      */
     private function backfillStats(bool $dryRun): void
     {
-        $done = admin_setting(self::STATS_MARKER);
+        // 直接查库，不走 admin_setting：设置缓存可能是别的进程在本次写入提交前重建的旧版本，
+        // 读它会以为没补过、再加一遍（2026-10-25 上线当天就这样把 128 天加成了两遍）
+        $done = SettingModel::where('name', self::STATS_MARKER)->value('value');
         if ($done) {
             $this->info('每日统计已经补过充值（' . date('Y-m-d', (int) $done) . ' 之前的日统计已含充值），跳过');
             return;
@@ -154,12 +157,15 @@ class RechargeBackfill extends Command
             });
 
         if (!$dryRun) {
+            // 统计与标记同一个事务：要么都写上，要么都没写
             DB::transaction(function () use ($updates, $before) {
                 foreach ($updates as $id => $values) {
                     Stat::where('id', $id)->update($values);
                 }
-                admin_setting([self::STATS_MARKER => $before]);
+                SettingModel::createOrUpdate(self::STATS_MARKER, $before);
             });
+            // 提交之后再清设置缓存（admin_setting 写入会顺带清）：提交前清，别的进程可能马上又把没有标记的旧值缓存回去
+            admin_setting([self::STATS_MARKER => $before]);
         }
 
         $this->info(sprintf(

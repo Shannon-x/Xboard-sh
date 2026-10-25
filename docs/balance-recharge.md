@@ -66,6 +66,6 @@
 
 迁移 `2026_10_25_000001_promote_balance_recharge_to_core` 改表名、加索引、给 `v2_payment_callback` 加 `subject_type`，把插件配置搬进系统设置并删掉插件行。改表名期间旧代码读不到表，所以要**停掉 web / horizon 之后**再跑迁移。`PluginManager::ABSORBED_PLUGINS` 拒绝再加载 / 安装 / 启用 `balance_recharge`，plugins/ 下残留的目录不会生效。
 
-一次性历史修正：`php artisan recharge:backfill --ledger --stats [--dry-run]`。`--ledger` 把插件时代记成「后台调整」的充值入账流水改标为「充值」（同一用户、金额相等、时间紧挨到账时间且唯一对上的才改）；`--stats` 按含充值的口径重算历史每日统计。
+一次性历史修正：`php artisan recharge:backfill --ledger --stats [--dry-run]`。`--ledger` 把插件时代记成「后台调整」的充值入账流水改标为「充值」（同一用户、金额相等、时间紧挨到账时间且唯一对上的才改）；`--stats` 给旧代码生成的每日统计补上当天到账的充值（只加充值，订单部分保持当时的数字；只能补一次，系统设置 `recharge_stats_backfilled_before` 记截止日；要在上线当天跑，或用 `--before=YYYY-MM-DD` 指定上线日）。
 
 回滚：`php artisan migrate:rollback --step=1`（表名改回、按系统设置写回插件行），再放回插件目录、换回旧镜像。

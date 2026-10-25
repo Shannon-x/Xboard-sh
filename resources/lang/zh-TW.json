@@ -231,5 +231,12 @@
     "Periodic commission application not approved": "週期返佣申請未通過",
     "Sorry, your periodic commission application was not approved: :reason. You can apply again on the invite page.": "很抱歉，你的週期返佣申請未通過：:reason\n\n你可以在邀請頁重新申請。",
     "Periodic commission qualification cancelled": "週期返佣資格已取消",
-    "You now have :count active paying invitees, below the threshold of :min, so your periodic commission qualification has been cancelled and commission is back to the default rule. Once you reach :min again, you can reapply on the invite page.": "你目前的有效付費使用者為 :count 位，低於 :min 位的門檻，週期返佣資格已自動取消，返佣方式恢復為站點預設規則。\n\n有效付費使用者重新達到 :min 位後，可以在邀請頁再次申請。"
+    "You now have :count active paying invitees, below the threshold of :min, so your periodic commission qualification has been cancelled and commission is back to the default rule. Once you reach :min again, you can reapply on the invite page.": "你目前的有效付費使用者為 :count 位，低於 :min 位的門檻，週期返佣資格已自動取消，返佣方式恢復為站點預設規則。\n\n有效付費使用者重新達到 :min 位後，可以在邀請頁再次申請。",
+    "Balance recharge": "餘額儲值",
+    "Balance recharge is not available": "儲值功能暫未開放",
+    "The minimum recharge amount is :amount": "單筆最低儲值 :amount 元",
+    "The maximum recharge amount is :amount": "單筆最高儲值 :amount 元",
+    "Too many recharge orders, please try again later": "儲值下單過於頻繁，請稍後再試",
+    "This payment method cannot be used for balance recharge": "該支付方式不支援餘額儲值，請換一種支付方式",
+    "Please enter the recharge amount": "請輸入正確的儲值金額"
 }

@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Jobs\OrderHandleJob;
 use App\Services\OrderService;
+use App\Services\Recharge\RechargeService;
 use Illuminate\Console\Command;
 use App\Models\Order;
 use App\Models\User;
@@ -62,5 +63,8 @@ class CheckOrder extends Command
             ->each(function ($order) {
                 OrderHandleJob::dispatch($order->trade_no);
             });
+
+        // 余额充值单超时未付同样取消。取消不影响之后到账：回调按「取消后到账」照样入账
+        app(RechargeService::class)->cancelExpired();
     }
 }

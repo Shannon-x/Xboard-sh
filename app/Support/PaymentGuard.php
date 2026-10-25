@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Models\Order;
+use App\Models\RechargeOrder;
 use App\Services\Plugin\HookManager;
 
 /**
@@ -74,22 +75,27 @@ class PaymentGuard
     /**
      * 解析 trade_no 的应付额（分）。
      *
-     * v2_order 只是「其中一种单据」：插件可以拥有自己的单据表（余额充值插件的
-     * plugin_recharge_orders 就是这样），这些 trade_no 一样会走网关回调、一样需要金额绑定。
-     * 早期实现只查 Order，插件单据一律判成 order_missing —— enforce 下等于把用户真金白银
-     * 付掉的充值整笔拒收：钱进了商户号，余额不到账，网关重投到放弃，且没有任何补偿路径。
+     * 套餐订单与余额充值单都会走网关回调、都需要金额绑定。早期只查 Order，充值单一律判成
+     * order_missing —— enforce 下等于把用户真金白银付掉的充值整笔拒收（2026-09 工单 #2665）。
      *
-     * 所以核心订单查不到时，给插件一次解析机会。过滤器返回正整数（分）才算「找到单据」，
-     * 返回 null / 非正数仍按找不到处理，保持 fail closed——「无法判断」绝不能当成支付成功。
+     * 两张表都查不到时再给插件一次解析机会：支付会话（PaymentAttempt）发给网关的是会话号，
+     * 它按会话冻结的应付额回报。过滤器返回正整数（分）才算「找到单据」，返回 null / 非正数仍按
+     * 找不到处理，保持 fail closed——「无法判断」绝不能当成支付成功。
      */
     private static function expectedMinor(string $tradeNo): ?int
     {
         $order = Order::where('trade_no', $tradeNo)->first();
         if ($order) {
             // 应付额 = total_amount + handling_amount。结账时实际向网关发起的就是这个合计
-            // （OrderController::checkout：total_amount + handling_amount），网关回传的实付额也含手续费，
+            // （CheckoutService::checkout：total_amount + handling_amount），网关回传的实付额也含手续费，
             // 因此用合计作为期望值：既不会把「足额含手续费」误判为欠额，也能拦住「只付 total、漏付手续费」。
             return (int) $order->total_amount + (int) ($order->handling_amount ?? 0);
+        }
+
+        // 充值单的 pay_amount 已经含手续费（= deposit + handling），不能再加一次
+        $recharge = RechargeOrder::where('trade_no', $tradeNo)->value('pay_amount');
+        if ($recharge !== null && (int) $recharge > 0) {
+            return (int) $recharge;
         }
 
         $expected = HookManager::filter('payment.expected_amount', null, $tradeNo);

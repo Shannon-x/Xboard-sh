@@ -19,6 +19,14 @@ class PluginManager
     protected bool $pluginsInitialized = false;
     protected array $configTypesCache = [];
 
+    /**
+     * 已并入核心的插件：即使 plugins/ 下还留着目录、或有人把 v2_plugins 行恢复回来，也不再加载 / 安装 / 启用。
+     * 余额充值插件用反射劫持了 13 条核心订单路由，并入核心后再被加载会让两套逻辑同时生效。
+     */
+    public const ABSORBED_PLUGINS = [
+        'balance_recharge' => '余额充值已并入系统（系统设置 → 余额充值），不再需要这个插件',
+    ];
+
     public function __construct()
     {
         $this->pluginPath = base_path('plugins');
@@ -31,6 +39,13 @@ class PluginManager
      * 一旦异常 code 流入（含 `.` `/` `..`），Str::studly 不阻挡 → 拼出来的路径会越界。
      * 这里集中拒绝。
      */
+    private static function assertNotAbsorbed(string $pluginCode): void
+    {
+        if (isset(self::ABSORBED_PLUGINS[$pluginCode])) {
+            throw new \Exception(self::ABSORBED_PLUGINS[$pluginCode]);
+        }
+    }
+
     private static function assertSafeCode(string $pluginCode): void
     {
         if (!preg_match('/^[a-z0-9_]+$/', $pluginCode)) {
@@ -156,6 +171,7 @@ class PluginManager
      */
     public function install(string $pluginCode): bool
     {
+        self::assertNotAbsorbed($pluginCode);
         $configFile = $this->getPluginPath($pluginCode) . '/config.json';
 
         if (!File::exists($configFile)) {
@@ -360,6 +376,7 @@ class PluginManager
      */
     public function enable(string $pluginCode): bool
     {
+        self::assertNotAbsorbed($pluginCode);
         $plugin = $this->loadPlugin($pluginCode);
 
         if (!$plugin) {
@@ -578,6 +595,7 @@ class PluginManager
             throw new \Exception('插件配置文件格式错误');
         }
 
+        self::assertNotAbsorbed((string) $config['code']);
         $targetPath = $this->pluginPath . '/' . Str::studly($config['code']);
         if (File::exists($targetPath)) {
             $installedConfigPath = $targetPath . '/config.json';
@@ -692,6 +710,9 @@ class PluginManager
         foreach ($enabledPlugins as $dbPlugin) {
             try {
                 $pluginCode = $dbPlugin->code;
+                if (isset(self::ABSORBED_PLUGINS[$pluginCode])) {
+                    continue;
+                }
 
                 $pluginInstance = $this->loadPlugin($pluginCode);
                 if (!$pluginInstance) {

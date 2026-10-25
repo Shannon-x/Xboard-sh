@@ -9,7 +9,6 @@ use App\Models\PaymentVerification;
 use App\Models\User;
 use App\Services\PaymentVerificationService;
 use App\Support\EpayOrderQuery;
-use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request as HttpRequest;
@@ -17,7 +16,6 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -333,29 +331,17 @@ class PaymentVerificationTest extends TestCase
 
     // ───────────────────────── 充值单 ─────────────────────────
 
-    public function test_recharge_orders_are_verified_when_the_plugin_table_exists(): void
+    public function test_recharge_orders_are_verified_alongside_orders(): void
     {
         $order = $this->paidOrder();
         $this->paid($order);
-        $this->verifyDue();   // 没有充值表也照常跑
+        $this->verifyDue();
         $this->assertSame(PaymentVerification::VERDICT_OK, $this->verdict($order)->verdict);
 
-        Schema::create('plugin_recharge_orders', function (Blueprint $table) {
-            $table->increments('id');
-            $table->integer('user_id');
-            $table->string('trade_no', 64);
-            $table->integer('pay_amount');
-            $table->integer('handling_amount')->nullable();
-            $table->integer('payment_id')->nullable();
-            $table->tinyInteger('status');
-            $table->string('callback_no', 255)->nullable();
-            $table->integer('paid_at')->nullable();
-            $table->integer('created_at');
-            $table->integer('updated_at');
-        });
         $now = Carbon::now()->getTimestamp();
-        $id = DB::table('plugin_recharge_orders')->insertGetId([
-            'user_id' => $order->user_id, 'trade_no' => '2026102012000011', 'pay_amount' => 500000, 'handling_amount' => null,
+        $id = DB::table('v2_recharge_order')->insertGetId([
+            'user_id' => $order->user_id, 'trade_no' => '2026102012000011', 'deposit_amount' => 500000, 'total_credit' => 500000,
+            'pay_amount' => 500000, 'handling_amount' => null,
             'payment_id' => $this->epay->id, 'status' => 3, 'callback_no' => 'GW-R1', 'paid_at' => $now - 600,
             'created_at' => $now, 'updated_at' => $now,
         ]);

@@ -5,13 +5,13 @@ namespace App\Services;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\PaymentVerification;
+use App\Models\RechargeOrder;
 use App\Models\User;
 use App\Support\AdminAlert;
 use App\Support\EpayOrderQuery;
 use App\Support\EpayV2;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Schema;
 
 /**
  * 退款回查与处置。
@@ -238,11 +238,9 @@ final class RefundWatchService
         if ($order) {
             return ['type' => PaymentVerification::SUBJECT_ORDER, 'id' => (int) $order->id, 'paid_at' => (int) $order->paid_at];
         }
-        if (Schema::hasTable('plugin_recharge_orders')) {
-            $recharge = DB::table('plugin_recharge_orders')->where('callback_no', $callbackNo)->first(['id', 'paid_at']);
-            if ($recharge) {
-                return ['type' => PaymentVerification::SUBJECT_RECHARGE, 'id' => (int) $recharge->id, 'paid_at' => (int) $recharge->paid_at];
-            }
+        $recharge = RechargeOrder::where('callback_no', $callbackNo)->first(['id', 'paid_at']);
+        if ($recharge) {
+            return ['type' => PaymentVerification::SUBJECT_RECHARGE, 'id' => (int) $recharge->id, 'paid_at' => (int) $recharge->paid_at];
         }
         return null;
     }
@@ -256,10 +254,7 @@ final class RefundWatchService
     {
         $oldest = $now - max(self::RECHECK_OFFSETS) - 2 * 86400;
         $items = [];
-        foreach ([[PaymentVerification::SUBJECT_ORDER, 'v2_order'], [PaymentVerification::SUBJECT_RECHARGE, 'plugin_recharge_orders']] as [$type, $table]) {
-            if ($table !== 'v2_order' && !Schema::hasTable($table)) {
-                continue;
-            }
+        foreach ([[PaymentVerification::SUBJECT_ORDER, 'v2_order'], [PaymentVerification::SUBJECT_RECHARGE, (new RechargeOrder())->getTable()]] as [$type, $table]) {
             $rows = DB::table('v2_payment_verification as v')
                 ->join($table . ' as s', 's.id', '=', 'v.subject_id')
                 ->where('v.subject_type', $type)

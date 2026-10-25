@@ -10,14 +10,12 @@ use App\Models\User;
 use App\Services\EpayGatewayMonitor;
 use App\Services\RefundWatchService;
 use App\Support\EpaySignature;
-use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request as HttpRequest;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\PersonalAccessToken;
 use Tests\TestCase;
@@ -271,25 +269,14 @@ class RefundWatchTest extends TestCase
 
     public function test_refunded_recharge_is_enforced_and_alert_mentions_balance(): void
     {
-        Schema::create('plugin_recharge_orders', function (Blueprint $table) {
-            $table->id();
-            $table->integer('user_id');
-            $table->string('trade_no');
-            $table->integer('pay_amount');
-            $table->integer('handling_amount')->nullable();
-            $table->integer('payment_id');
-            $table->tinyInteger('status');
-            $table->string('callback_no')->nullable();
-            $table->integer('invite_user_id')->nullable();
-            $table->integer('commission_balance')->default(0);
-            $table->integer('paid_at')->nullable();
-        });
         $payment = $this->v1Payment();
         $user = $this->customer();
         $user->forceFill(['balance' => 5000])->save();
-        $id = DB::table('plugin_recharge_orders')->insertGetId([
-            'user_id' => $user->id, 'trade_no' => 'R20261024', 'pay_amount' => 5000, 'payment_id' => $payment->id,
+        $id = DB::table('v2_recharge_order')->insertGetId([
+            'user_id' => $user->id, 'trade_no' => 'R20261024', 'deposit_amount' => 5000, 'total_credit' => 5000,
+            'pay_amount' => 5000, 'payment_id' => $payment->id,
             'status' => 3, 'callback_no' => 'GWR1', 'paid_at' => time() - 4 * self::DAY,
+            'created_at' => time() - 4 * self::DAY, 'updated_at' => time() - 4 * self::DAY,
         ]);
         PaymentVerification::create([
             'subject_type' => 'recharge', 'subject_id' => $id, 'user_id' => $user->id, 'payment_id' => $payment->id,

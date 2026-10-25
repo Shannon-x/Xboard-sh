@@ -5,6 +5,7 @@ namespace App\Http\Controllers\V1\Guest;
 use App\Http\Controllers\Controller;
 use App\Services\Commission\InviteDiscount;
 use App\Services\Plugin\HookManager;
+use App\Services\Recharge\RechargeConfig;
 use App\Utils\Dict;
 use App\Utils\Helper;
 use Illuminate\Support\Facades\Http;
@@ -37,6 +38,8 @@ class CommController extends Controller
             'invite_first_order_discount' => InviteDiscount::percent(),
             // 保持向后兼容
             'is_recaptcha' => (int) admin_setting('captcha_enable', 0) ? 1 : 0,
+            // 余额充值：开关、金额上下限（元）、赠送档位、快捷金额
+            ...RechargeConfig::fromSettings()->toGuestArray(),
         ];
 
         $data = HookManager::filter('guest_comm_config', $data);

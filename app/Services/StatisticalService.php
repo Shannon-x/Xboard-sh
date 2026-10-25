@@ -3,6 +3,7 @@ namespace App\Services;
 
 use App\Models\CommissionLog;
 use App\Models\Order;
+use App\Models\RechargeOrder;
 use App\Models\Server;
 use App\Models\Stat;
 use App\Models\StatServer;
@@ -59,14 +60,18 @@ class StatisticalService
         $data['order_total'] = Order::where('created_at', '>=', $startAt)
             ->where('created_at', '<', $endAt)
             ->sum('total_amount');
+        // 收款含已到账的余额充值（与后台仪表盘 DashboardStatService 同一口径）
+        $recharges = RechargeOrder::where('status', RechargeOrder::STATUS_COMPLETED)
+            ->where('paid_at', '>=', $startAt)
+            ->where('paid_at', '<', $endAt);
         $data['paid_count'] = Order::where('paid_at', '>=', $startAt)
             ->where('paid_at', '<', $endAt)
             ->whereNotIn('status', [0, 2])
-            ->count();
+            ->count() + (clone $recharges)->count();
         $data['paid_total'] = Order::where('paid_at', '>=', $startAt)
             ->where('paid_at', '<', $endAt)
             ->whereNotIn('status', [0, 2])
-            ->sum('total_amount');
+            ->sum('total_amount') + (int) (clone $recharges)->sum('deposit_amount');
         $commissionLogBuilder = CommissionLog::where('created_at', '>=', $startAt)
             ->where('created_at', '<', $endAt);
         $data['commission_count'] = $commissionLogBuilder->count();

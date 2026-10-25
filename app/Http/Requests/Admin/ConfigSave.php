@@ -205,6 +205,15 @@ class ConfigSave extends FormRequest
         'admin_session_days' => 'integer|min:1|max:90',
         'default_remind_expire' => 'boolean',
         'default_remind_traffic' => 'boolean',
+        // balance recharge（金额单位元；默认值与归一化见 App\Services\Recharge\RechargeConfig）
+        'recharge_enable' => '',
+        'recharge_min_amount' => 'nullable|numeric|decimal:0,2|min:0.01|max:1000000',
+        'recharge_max_amount' => 'nullable|numeric|decimal:0,2|min:0.01|max:1000000',
+        'recharge_bonus_tiers' => 'nullable|array|max:20',
+        'recharge_bonus_tiers.*.amount' => 'required|numeric|decimal:0,2|min:0.01|max:1000000',
+        'recharge_bonus_tiers.*.bonus' => 'required|numeric|decimal:0,2|min:0.01|max:1000000',
+        'recharge_quick_amounts' => 'nullable|array|max:12',
+        'recharge_quick_amounts.*' => 'numeric|decimal:0,2|min:0.01|max:1000000',
         'subscribe_template_singbox' => 'nullable',
         'subscribe_template_clash' => 'nullable',
         'subscribe_template_clashmeta' => 'nullable',
@@ -250,6 +259,7 @@ class ConfigSave extends FormRequest
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator) {
+            $this->validateRecharge($validator);
             if (!(int) $this->input('commission_distribution_enable', 0)) {
                 return;
             }
@@ -264,6 +274,22 @@ class ConfigSave extends FormRequest
                 $validator->errors()->add('commission_distribution_l1', '三级分销比例合计不能超过 100%');
             }
         });
+    }
+
+    /** 余额充值：最高不能低于最低；单档赠送不能超过该档门槛（防止把 100:10 手误成 10:100 白送钱） */
+    private function validateRecharge(Validator $validator): void
+    {
+        $min = $this->input('recharge_min_amount');
+        $max = $this->input('recharge_max_amount');
+        if (is_numeric($min) && is_numeric($max) && (float) $max < (float) $min) {
+            $validator->errors()->add('recharge_max_amount', '单笔最高充值金额不能低于最低金额');
+        }
+        foreach ((array) $this->input('recharge_bonus_tiers', []) as $i => $tier) {
+            if (is_array($tier) && is_numeric($tier['amount'] ?? null) && is_numeric($tier['bonus'] ?? null)
+                && (float) $tier['bonus'] > (float) $tier['amount']) {
+                $validator->errors()->add("recharge_bonus_tiers.{$i}.bonus", '赠送金额不能超过该档的充值门槛');
+            }
+        }
     }
 
     public function messages()
@@ -295,6 +321,13 @@ class ConfigSave extends FormRequest
             'commission_withdraw_chains.*.fee.numeric' => '通道费必须是数字（以 USDT 计）',
             'commission_withdraw_rate_source.in' => '汇率来源只能是 auto（自动获取）或 manual（手动固定）',
             'commission_withdraw_chains.max' => '提现链最多配置 20 条',
+            'recharge_min_amount.*' => '最低充值金额须为 0.01–1000000 元，最多两位小数',
+            'recharge_max_amount.*' => '最高充值金额须为 0.01–1000000 元，最多两位小数',
+            'recharge_bonus_tiers.max' => '赠送档位最多 20 档',
+            'recharge_bonus_tiers.*.amount.*' => '赠送档位的充值门槛须为 0.01–1000000 元，最多两位小数',
+            'recharge_bonus_tiers.*.bonus.*' => '赠送金额须为 0.01–1000000 元，最多两位小数',
+            'recharge_quick_amounts.max' => '快捷金额最多 12 个',
+            'recharge_quick_amounts.*.*' => '快捷金额须为 0.01–1000000 元，最多两位小数',
         ];
     }
 }

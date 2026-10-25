@@ -7,6 +7,7 @@ use App\Models\CommissionPeriodApplication;
 use App\Models\CommissionWithdrawal;
 use App\Models\Order;
 use App\Models\Plan;
+use App\Models\RechargeOrder;
 use App\Models\Server;
 use App\Models\StatServer;
 use App\Models\Ticket;
@@ -18,8 +19,10 @@ use Illuminate\Support\Facades\Cache;
  * 管理后台仪表盘的统计口径，集中在这里，前端只负责展示。
  *
  * 口径约定（与 xboard:statistics 写入 v2_stat 的口径一致）：
- * - 「收入」= 已支付订单（status 不是 待支付/已取消）的 total_amount 之和，按 paid_at 落日；
- *   total_amount 是实付金额（余额抵扣、优惠已扣掉），单位分。
+ * - 「收入」= 已支付订单（status 不是 待支付/已取消）的 total_amount 之和 + 已到账余额充值的充值金额
+ *   （deposit_amount，不含赠送与手续费），都按 paid_at 落日；total_amount 是实付金额（余额抵扣、优惠已扣掉），
+ *   单位分。用余额买套餐的那部分在订单上记 0，钱在充值时已经计过一次，不会重复。
+ *   按类型拆分时充值单单独一类（type = RechargeOrder::LEGACY_ORDER_TYPE）。
  * - 「付费订单」只数实付 > 0 的订单；余额全额抵扣、0 元订单另计为 zero_count，
  *   客单价 = 收入 / 付费订单，避免被 0 元单摊薄。
  * - 「今日 / 本月」的对比一律跟「昨日同时段 / 上月同期」比，
@@ -143,6 +146,37 @@ class DashboardStatService
             }
         }
 
+        $recharges = RechargeOrder::query()
+            ->where('status', RechargeOrder::STATUS_COMPLETED)
+            ->where('paid_at', '>=', $prevStart)
+            ->where('paid_at', '<', $end)
+            ->toBase()
+            ->select(['paid_at', 'deposit_amount', 'user_id'])
+            ->cursor();
+        foreach ($recharges as $recharge) {
+            $paidAt = (int) $recharge->paid_at;
+            $amount = (int) $recharge->deposit_amount;
+            if ($paidAt < $start) {
+                if ($paidAt < $prevEnd) {
+                    $this->addPaid($previous, $amount);
+                }
+                continue;
+            }
+            $this->addPaid($current, $amount);
+            $key = date('Y-m-d', $paidAt);
+            if (isset($daily[$key]) && $amount > 0) {
+                $daily[$key]['paid_total'] += $amount;
+                $daily[$key]['paid_count']++;
+            }
+            $type = RechargeOrder::LEGACY_ORDER_TYPE;
+            $byType[$type] ??= ['type' => $type, 'label' => '余额充值', 'count' => 0, 'amount' => 0, 'zero_count' => 0];
+            if ($amount > 0) {
+                $byType[$type]['count']++;
+                $byType[$type]['amount'] += $amount;
+                $payingUsers[(int) $recharge->user_id] = true;
+            }
+        }
+
         $commissionCurrent = ['total' => 0, 'count' => 0];
         $commissionPrevious = ['total' => 0, 'count' => 0];
         $logs = CommissionLog::query()
@@ -214,7 +248,7 @@ class DashboardStatService
         }
     }
 
-    /** 一次取出上月初到现在的已付订单，在 PHP 里分桶，避免对没有 paid_at 索引的表扫多遍 */
+    /** 一次取出上月初到现在的已付订单与已到账充值，在 PHP 里分桶，避免对没有 paid_at 索引的表扫多遍 */
     private function incomeWindows(array $windows, int $from, int $to): array
     {
         $result = [];
@@ -246,6 +280,28 @@ class DashboardStatService
                     $todayByType[$type]['count']++;
                     $todayByType[$type]['amount'] += $amount;
                 }
+            }
+        }
+        $recharges = RechargeOrder::query()
+            ->where('status', RechargeOrder::STATUS_COMPLETED)
+            ->where('paid_at', '>=', $from)
+            ->where('paid_at', '<', $to)
+            ->toBase()
+            ->select(['paid_at', 'deposit_amount'])
+            ->cursor();
+        foreach ($recharges as $recharge) {
+            $paidAt = (int) $recharge->paid_at;
+            $amount = (int) $recharge->deposit_amount;
+            foreach ($windows as $name => [$start, $end]) {
+                if ($paidAt >= $start && $paidAt < $end) {
+                    $this->addPaid($result[$name], $amount);
+                }
+            }
+            if ($paidAt >= $windows['today'][0] && $amount > 0) {
+                $type = RechargeOrder::LEGACY_ORDER_TYPE;
+                $todayByType[$type] ??= ['type' => $type, 'label' => '余额充值', 'count' => 0, 'amount' => 0];
+                $todayByType[$type]['count']++;
+                $todayByType[$type]['amount'] += $amount;
             }
         }
         ksort($todayByType);

@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Order;
 use App\Models\Payment;
+use App\Models\RechargeOrder;
 use App\Models\User;
 use App\Support\AdminAlert;
 use App\Support\EpayV2;
@@ -11,7 +12,6 @@ use App\Support\PaymentGuard;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 
 /**
  * 易支付 V2 商户侧巡检：
@@ -205,14 +205,11 @@ final class EpayGatewayMonitor
             ->whereIn('status', [Order::STATUS_COMPLETED, Order::STATUS_DISCOUNTED])
             ->whereBetween('paid_at', [$from, $to])
             ->sum(DB::raw('total_amount + COALESCE(handling_amount, 0)'));
-        $recharges = 0;
-        if (Schema::hasTable('plugin_recharge_orders')) {
-            $recharges = (int) DB::table('plugin_recharge_orders')
-                ->whereIn('payment_id', $paymentIds)
-                ->where('status', 3)
-                ->whereBetween('paid_at', [$from, $to])
-                ->sum(DB::raw('pay_amount + COALESCE(handling_amount, 0)'));
-        }
+        // 充值单的 pay_amount 已含手续费，不能再加 handling_amount
+        $recharges = (int) RechargeOrder::whereIn('payment_id', $paymentIds)
+            ->where('status', RechargeOrder::STATUS_COMPLETED)
+            ->whereBetween('paid_at', [$from, $to])
+            ->sum('pay_amount');
         return $orders + $recharges;
     }
 
@@ -252,9 +249,9 @@ final class EpayGatewayMonitor
         $userId = $order?->user_id;
         $kind = '订单';
 
-        if (!$order && Schema::hasTable('plugin_recharge_orders')) {
-            $recharge = ($gatewayTradeNo !== '' ? DB::table('plugin_recharge_orders')->where('callback_no', $gatewayTradeNo)->first() : null)
-                ?? ($baseTradeNo !== '' ? DB::table('plugin_recharge_orders')->where('trade_no', $baseTradeNo)->first() : null);
+        if (!$order) {
+            $recharge = ($gatewayTradeNo !== '' ? RechargeOrder::where('callback_no', $gatewayTradeNo)->first() : null)
+                ?? ($baseTradeNo !== '' ? RechargeOrder::where('trade_no', $baseTradeNo)->first() : null);
             if ($recharge) {
                 [$tradeNo, $userId, $kind] = [$recharge->trade_no, $recharge->user_id, '充值单'];
             }

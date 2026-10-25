@@ -10,6 +10,7 @@ use App\Http\Controllers\V2\Admin\Server\GroupController;
 use App\Http\Controllers\V2\Admin\Server\RouteController;
 use App\Http\Controllers\V2\Admin\Server\ManageController;
 use App\Http\Controllers\V2\Admin\OrderController;
+use App\Http\Controllers\V2\Admin\RechargeController;
 use App\Http\Controllers\V2\Admin\UserController;
 use App\Http\Controllers\V2\Admin\StatController;
 use App\Http\Controllers\V2\Admin\DashboardController;
@@ -135,6 +136,17 @@ class AdminRoute
                 $router->post('/paid', [OrderController::class, 'paid']);
                 $router->post('/cancel', [OrderController::class, 'cancel']);
                 $router->post('/detail', [OrderController::class, 'detail']);
+            });
+
+            // Recharge：余额充值单（列表、详情、手动确认到账、取消、概览）
+            $router->group([
+                'prefix' => 'recharge'
+            ], function ($router) {
+                $router->any('/fetch', [RechargeController::class, 'fetch']);
+                $router->post('/detail', [RechargeController::class, 'detail']);
+                $router->post('/paid', [RechargeController::class, 'paid']);
+                $router->post('/cancel', [RechargeController::class, 'cancel']);
+                $router->get('/stats', [RechargeController::class, 'stats']);
             });
 
             // User

@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\PaymentVerification;
+use App\Models\RechargeOrder;
 use App\Support\AdminAlert;
 use App\Support\EpayOrderQuery;
 use Illuminate\Support\Carbon;
@@ -47,15 +48,12 @@ class PaymentVerificationService
     /** 出错后的退避（秒），超出后一直按最后一档 */
     public const ERROR_BACKOFF = [300, 1800, 7200];
 
-    private const RECHARGE_TABLE = 'plugin_recharge_orders';
-    private const RECHARGE_STATUS_COMPLETED = 3;
+    private const RECHARGE_TABLE = 'v2_recharge_order';
     private const AUTH_ALERT_TTL = 3600;
     private const REPORT_DETAIL_LIMIT = 20;
 
     /** @var callable(array $config, string $gatewayTradeNo): array */
     private $query;
-
-    private ?bool $hasRechargeTable = null;
 
     private PaymentEnforcement $enforcement;
 
@@ -110,16 +108,16 @@ class PaymentVerificationService
             $subjects[] = $this->subject(PaymentVerification::SUBJECT_ORDER, $o, (int) $o->total_amount);
         }
 
-        if ($this->hasRechargeTable()) {
-            $recharges = $this->dueQuery(self::RECHARGE_TABLE, PaymentVerification::SUBJECT_RECHARGE, $paymentIds, $from, $to, $now)
-                ->where('s.status', self::RECHARGE_STATUS_COMPLETED)
-                ->whereRaw('(s.pay_amount + COALESCE(s.handling_amount, 0)) > 0')
-                ->orderBy('s.paid_at')
-                ->limit($limit)
-                ->get(['s.id', 's.user_id', 's.trade_no', 's.callback_no', 's.pay_amount', 's.handling_amount', 's.payment_id', 's.paid_at']);
-            foreach ($recharges as $r) {
-                $subjects[] = $this->subject(PaymentVerification::SUBJECT_RECHARGE, $r, (int) $r->pay_amount);
-            }
+        // subject() 会再加 handling_amount：传充值金额而不是 pay_amount（它已含手续费，再加就成了两份手续费，
+        // 带手续费的充值会被一律判成金额不符、自动封号）
+        $recharges = $this->dueQuery(self::RECHARGE_TABLE, PaymentVerification::SUBJECT_RECHARGE, $paymentIds, $from, $to, $now)
+            ->where('s.status', RechargeOrder::STATUS_COMPLETED)
+            ->where('s.pay_amount', '>', 0)
+            ->orderBy('s.paid_at')
+            ->limit($limit)
+            ->get(['s.id', 's.user_id', 's.trade_no', 's.callback_no', 's.deposit_amount', 's.handling_amount', 's.payment_id', 's.paid_at']);
+        foreach ($recharges as $r) {
+            $subjects[] = $this->subject(PaymentVerification::SUBJECT_RECHARGE, $r, (int) $r->deposit_amount);
         }
 
         usort($subjects, fn ($a, $b) => $a['paid_at'] <=> $b['paid_at'] ?: strcmp($a['type'], $b['type']) ?: $a['id'] <=> $b['id']);
@@ -313,19 +311,16 @@ class PaymentVerificationService
             ->whereRaw('(s.total_amount + COALESCE(s.handling_amount, 0)) > 0')
             ->whereNull('v.id')
             ->count();
-        $recharges = 0;
-        if ($this->hasRechargeTable()) {
-            $recharges = DB::table(self::RECHARGE_TABLE . ' as s')
-                ->leftJoin('v2_payment_verification as v', function ($join) {
-                    $join->on('v.subject_id', '=', 's.id')->where('v.subject_type', '=', PaymentVerification::SUBJECT_RECHARGE);
-                })
-                ->whereBetween('s.paid_at', [$from, $to])
-                ->whereIn('s.payment_id', $paymentIds)
-                ->where('s.status', self::RECHARGE_STATUS_COMPLETED)
-                ->whereRaw('(s.pay_amount + COALESCE(s.handling_amount, 0)) > 0')
-                ->whereNull('v.id')
-                ->count();
-        }
+        $recharges = DB::table(self::RECHARGE_TABLE . ' as s')
+            ->leftJoin('v2_payment_verification as v', function ($join) {
+                $join->on('v.subject_id', '=', 's.id')->where('v.subject_type', '=', PaymentVerification::SUBJECT_RECHARGE);
+            })
+            ->whereBetween('s.paid_at', [$from, $to])
+            ->whereIn('s.payment_id', $paymentIds)
+            ->where('s.status', RechargeOrder::STATUS_COMPLETED)
+            ->where('s.pay_amount', '>', 0)
+            ->whereNull('v.id')
+            ->count();
         return $orders + $recharges;
     }
 
@@ -333,11 +328,6 @@ class PaymentVerificationService
     private function gatewayPaymentIds(): array
     {
         return Payment::whereIn('payment', self::GATEWAY_METHODS)->pluck('id')->map(fn ($id) => (int) $id)->all();
-    }
-
-    private function hasRechargeTable(): bool
-    {
-        return $this->hasRechargeTable ??= Schema::hasTable(self::RECHARGE_TABLE);
     }
 
     private function subject(string $type, object $row, int $amount): array
@@ -455,7 +445,7 @@ class PaymentVerificationService
     {
         $tradeNo = $row->subject_type === PaymentVerification::SUBJECT_ORDER
             ? DB::table('v2_order')->where('id', $row->subject_id)->value('trade_no')
-            : ($this->hasRechargeTable() ? DB::table(self::RECHARGE_TABLE)->where('id', $row->subject_id)->value('trade_no') : null);
+            : DB::table(self::RECHARGE_TABLE)->where('id', $row->subject_id)->value('trade_no');
         $kind = $row->subject_type === PaymentVerification::SUBJECT_ORDER ? '订单' : '充值单';
         return $kind . ' ' . ($tradeNo ?? ('#' . $row->subject_id))
             . '，用户ID ' . ($row->user_id ?? '-')

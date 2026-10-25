@@ -4,11 +4,11 @@ namespace App\Services;
 
 use App\Models\Order;
 use App\Models\PaymentVerification;
+use App\Models\RechargeOrder;
 use App\Models\User;
 use App\Support\AdminAlert;
 use App\Utils\Helper;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 use Laravel\Sanctum\PersonalAccessToken;
 
 /**
@@ -119,9 +119,7 @@ final class PaymentEnforcement
     public static function tradeNoOf(PaymentVerification $row): string
     {
         if ($row->subject_type === PaymentVerification::SUBJECT_RECHARGE) {
-            return Schema::hasTable('plugin_recharge_orders')
-                ? (string) DB::table('plugin_recharge_orders')->where('id', $row->subject_id)->value('trade_no')
-                : '';
+            return (string) RechargeOrder::where('id', $row->subject_id)->value('trade_no');
         }
         return (string) Order::where('id', $row->subject_id)->value('trade_no');
     }
@@ -130,7 +128,7 @@ final class PaymentEnforcement
     public static function commissionLine(PaymentVerification $row): ?string
     {
         $subject = $row->subject_type === PaymentVerification::SUBJECT_RECHARGE
-            ? (Schema::hasTable('plugin_recharge_orders') ? DB::table('plugin_recharge_orders')->where('id', $row->subject_id)->first() : null)
+            ? RechargeOrder::find($row->subject_id)
             : Order::find($row->subject_id);
         if (!$subject || (int) ($subject->commission_balance ?? 0) <= 0 || !$subject->invite_user_id) {
             return null;

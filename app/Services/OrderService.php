@@ -1043,7 +1043,9 @@ class OrderService
             ->first();
 
         if ($existing) {
-            return (int) $existing->order_id === (int) $order->id;
+            // 去重表与余额充值单共用（subject_type 区分），order_id 撞号不代表是同一张单
+            return ($existing->subject_type ?? 'order') === 'order'
+                && (int) $existing->order_id === (int) $order->id;
         }
 
         DB::table('v2_payment_callback')->insert([

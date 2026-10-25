@@ -6,8 +6,10 @@ use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use App\Models\Payment;
+use App\Models\RechargeOrder;
 use App\Services\OrderService;
 use App\Services\PaymentService;
+use App\Services\Recharge\RechargeService;
 use App\Services\TelegramService;
 use App\Support\FeatureFlag;
 use App\Support\PaymentGatewayBinding;
@@ -41,7 +43,7 @@ class PaymentController extends Controller
                 return $verify['custom_result'] ?? 'success';
             }
             HookManager::call('payment.notify.verified', $verify);
-            if (!$this->handle($verify['trade_no'] ?? null, $verify['callback_no'] ?? null, $uuid)) {
+            if (!$this->handle($verify['trade_no'] ?? null, $verify['callback_no'] ?? null, $uuid, $verify)) {
                 return $this->fail([400, 'handle error']);
             }
             return (isset($verify['custom_result']) ? $verify['custom_result'] : 'success');
@@ -77,18 +79,23 @@ class PaymentController extends Controller
         }
     }
 
-    private function handle($tradeNo, $callbackNo, $uuid = null)
+    private function handle($tradeNo, $callbackNo, $uuid = null, array $verify = [])
     {
         if (!is_string($tradeNo) || $tradeNo === '' || !is_string($callbackNo) || trim($callbackNo) === '') {
             return false;
         }
-        $order = Order::where('trade_no', $tradeNo)->first();
-        if (!$order) {
-            PaymentMetrics::warn('webhook.order_missing', ['trade_no' => $tradeNo]);
-            return false;
-        }
         $payment = $uuid !== null ? Payment::where('uuid', $uuid)->first() : null;
         if (!$payment) {
+            return false;
+        }
+        $order = Order::where('trade_no', $tradeNo)->first();
+        if (!$order) {
+            // 不是套餐订单就看是不是余额充值单：两种单据共用同一个回调地址与验签流程
+            $recharge = RechargeOrder::where('trade_no', $tradeNo)->first();
+            if ($recharge) {
+                return app(RechargeService::class)->handleCallback($recharge, $payment, $callbackNo, $verify);
+            }
+            PaymentMetrics::warn('webhook.order_missing', ['trade_no' => $tradeNo]);
             return false;
         }
         // 迟到支付：订单已不是 PENDING（最常见是 PENDING 超 2 小时被 OrderHandleJob 自动取消后，

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\V2\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\CommissionLog;
 use App\Models\Order;
+use App\Models\RechargeOrder;
 use App\Models\Server;
 use App\Models\Stat;
 use App\Models\StatServer;
@@ -55,7 +56,8 @@ class StatController extends Controller
                 'month_income' => Order::where('created_at', '>=', strtotime(date('Y-m-1')))
                     ->where('created_at', '<', time())
                     ->whereNotIn('status', [0, 2])
-                    ->sum('total_amount'),
+                    ->sum('total_amount')
+                    + RechargeOrder::incomeBetween(strtotime(date('Y-m-1')), time()),
                 'month_register_total' => User::where('created_at', '>=', strtotime(date('Y-m-1')))
                     ->where('created_at', '<', time())
                     ->count(),
@@ -69,11 +71,13 @@ class StatController extends Controller
                 'day_income' => Order::where('created_at', '>=', strtotime(date('Y-m-d')))
                     ->where('created_at', '<', time())
                     ->whereNotIn('status', [0, 2])
-                    ->sum('total_amount'),
+                    ->sum('total_amount')
+                    + RechargeOrder::incomeBetween(strtotime(date('Y-m-d')), time()),
                 'last_month_income' => Order::where('created_at', '>=', strtotime('-1 month', strtotime(date('Y-m-1'))))
                     ->where('created_at', '<', strtotime(date('Y-m-1')))
                     ->whereNotIn('status', [0, 2])
-                    ->sum('total_amount'),
+                    ->sum('total_amount')
+                    + RechargeOrder::incomeBetween(strtotime('-1 month', strtotime(date('Y-m-1'))), strtotime(date('Y-m-1'))),
                 'commission_month_payout' => CommissionLog::where('created_at', '>=', strtotime(date('Y-m-1')))
                     ->where('created_at', '<', time())
                     ->sum('get_amount'),
@@ -297,25 +301,29 @@ class StatController extends Controller
         $todayIncome = Order::where('created_at', '>=', $todayStart)
             ->where('created_at', '<', time())
             ->whereNotIn('status', [0, 2])
-            ->sum('total_amount');
+            ->sum('total_amount')
+            + RechargeOrder::incomeBetween($todayStart, time());
 
         // Yesterday's income for day growth calculation
         $yesterdayIncome = Order::where('created_at', '>=', $yesterdayStart)
             ->where('created_at', '<', $todayStart)
             ->whereNotIn('status', [0, 2])
-            ->sum('total_amount');
+            ->sum('total_amount')
+            + RechargeOrder::incomeBetween($yesterdayStart, $todayStart);
 
         // Current month income
         $currentMonthIncome = Order::where('created_at', '>=', $currentMonthStart)
             ->where('created_at', '<', time())
             ->whereNotIn('status', [0, 2])
-            ->sum('total_amount');
+            ->sum('total_amount')
+            + RechargeOrder::incomeBetween($currentMonthStart, time());
 
         // Last month income
         $lastMonthIncome = Order::where('created_at', '>=', $lastMonthStart)
             ->where('created_at', '<', $currentMonthStart)
             ->whereNotIn('status', [0, 2])
-            ->sum('total_amount');
+            ->sum('total_amount')
+            + RechargeOrder::incomeBetween($lastMonthStart, $currentMonthStart);
 
         // Last month commission payout
         $lastMonthCommissionPayout = CommissionLog::where('created_at', '>=', $lastMonthStart)
@@ -345,7 +353,8 @@ class StatController extends Controller
         $twoMonthsAgoIncome = Order::where('created_at', '>=', $twoMonthsAgoStart)
             ->where('created_at', '<', $lastMonthStart)
             ->whereNotIn('status', [0, 2])
-            ->sum('total_amount');
+            ->sum('total_amount')
+            + RechargeOrder::incomeBetween($twoMonthsAgoStart, $lastMonthStart);
 
         // Previous month commission for growth calculation
         $twoMonthsAgoCommission = CommissionLog::where('created_at', '>=', $twoMonthsAgoStart)

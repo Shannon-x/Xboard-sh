@@ -13,6 +13,7 @@ use App\Services\Notification\NotificationPreference;
 use App\Services\MailService;
 use App\Services\Commission\CommissionNotifier;
 use App\Services\Commission\WithdrawalConfig;
+use App\Services\Recharge\RechargeConfig;
 use App\Services\TelegramService;
 use App\Services\ThemeService;
 use App\Services\TicketAttachment\AttachmentConfig;
@@ -202,6 +203,8 @@ class ConfigController extends Controller
                 'default_remind_traffic' => (bool) admin_setting('default_remind_traffic', 1),
                 'subscribe_path' => admin_setting('subscribe_path', 's'),
             ],
+            // 余额充值：开关、单笔上下限（元）、赠送档位、快捷金额 —— 默认值集中在 RechargeConfig
+            'recharge' => RechargeConfig::fromSettings()->toAdminArray(),
             'frontend' => [
                 'frontend_theme' => admin_setting('frontend_theme', 'Xboard'),
                 'frontend_theme_sidebar' => admin_setting('frontend_theme_sidebar', 'light'),

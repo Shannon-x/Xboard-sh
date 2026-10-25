@@ -27,6 +27,9 @@ class GuestRoute
             $router->post('/telegram/webhook', [TelegramController::class, 'webhook']);
             // Payment
             $router->match(['get', 'post'], '/payment/notify/{method}/{uuid}', [PaymentController::class, 'notify']);
+            // 余额充值插件时代的回调地址。充值并入核心后与订单共用上面那条；发起时用的是旧地址的在途充值单，
+            // 网关仍会回调到这里，保留为别名（同一个处理入口，按 trade_no 分辨订单 / 充值单）
+            $router->match(['get', 'post'], '/payment/recharge-notify/{method}/{uuid}', [PaymentController::class, 'notify']);
             // Comm
             $router->get('/comm/config', [CommController::class, 'config']);
             // Ticket attachment 下载：<img> 带不上 Bearer，用 URL 里的随机 access_key 做凭据

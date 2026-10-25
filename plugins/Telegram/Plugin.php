@@ -74,15 +74,16 @@ class Plugin extends AbstractPlugin
     $e = [TelegramService::class, 'escapeHtml'];
 
     $message = sprintf("💰 <b>成功收款 %s 元</b>\n———————————————\n", ((int) ($order->total_amount ?? 0)) / 100);
+    // 非 Order 载荷（如余额充值）用 type 说明业务来源，免得和套餐订单混在一起看不出来
+    if (!empty($order->type) && !is_numeric($order->type)) {
+      $message .= sprintf("业务类型：%s\n", $e((string) $order->type));
+    }
     if ($payment) {
       $message .= sprintf(
         "支付接口：%s\n支付渠道：%s\n",
         $e((string) ($payment->payment ?? '')),
         $e((string) ($payment->name ?? ''))
       );
-    } elseif (!empty($order->type) && !is_numeric($order->type)) {
-      // 非 Order 载荷（如余额充值）用 type 说明业务来源，避免通知里只剩一个订单号
-      $message .= sprintf("业务类型：%s\n", $e((string) $order->type));
     }
     $message .= sprintf("本站订单：<code>%s</code>", $e($tradeNo));
 

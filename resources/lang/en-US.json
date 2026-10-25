@@ -231,5 +231,12 @@
     "Periodic commission application not approved": "Periodic commission application not approved",
     "Sorry, your periodic commission application was not approved: :reason. You can apply again on the invite page.": "Sorry, your periodic commission application was not approved: :reason. You can apply again on the invite page.",
     "Periodic commission qualification cancelled": "Periodic commission qualification cancelled",
-    "You now have :count active paying invitees, below the threshold of :min, so your periodic commission qualification has been cancelled and commission is back to the default rule. Once you reach :min again, you can reapply on the invite page.": "You now have :count active paying invitees, below the threshold of :min, so your periodic commission qualification has been cancelled and commission is back to the default rule. Once you reach :min again, you can reapply on the invite page."
+    "You now have :count active paying invitees, below the threshold of :min, so your periodic commission qualification has been cancelled and commission is back to the default rule. Once you reach :min again, you can reapply on the invite page.": "You now have :count active paying invitees, below the threshold of :min, so your periodic commission qualification has been cancelled and commission is back to the default rule. Once you reach :min again, you can reapply on the invite page.",
+    "Balance recharge": "Balance recharge",
+    "Balance recharge is not available": "Balance recharge is not available",
+    "The minimum recharge amount is :amount": "The minimum recharge amount is :amount",
+    "The maximum recharge amount is :amount": "The maximum recharge amount is :amount",
+    "Too many recharge orders, please try again later": "Too many recharge orders, please try again later",
+    "This payment method cannot be used for balance recharge": "This payment method cannot be used for balance recharge",
+    "Please enter the recharge amount": "Please enter a valid recharge amount"
 }

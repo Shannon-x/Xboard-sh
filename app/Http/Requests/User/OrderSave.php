@@ -28,7 +28,7 @@ class OrderSave extends FormRequest
         }
 
         return [
-            'plan_id' => 'required',
+            'plan_id' => 'required|integer',
             'expected_amount' => 'sometimes|nullable|integer|min:1|max:100000000',
             'confirm_repeat' => 'sometimes|boolean',
             'period' => 'required|in:month_price,quarter_price,half_year_price,year_price,two_year_price,three_year_price,onetime_price,reset_price,monthly,quarterly,half_yearly,yearly,two_yearly,three_yearly,onetime,reset_traffic,traffic_topup'
@@ -38,8 +38,10 @@ class OrderSave extends FormRequest
     /** 插件时代只按 plan_id=0 分流，个别老前端不带 period，这里两种写法都认 */
     public function isDeposit(): bool
     {
+        // is_scalar：plan_id[]=x 时 (string) 强转报「Array to string conversion」→ 500，这里先挡掉，交给下面的规则回 422
+        $planId = $this->input('plan_id');
         return $this->input('period') === RechargeOrder::LEGACY_PERIOD
-            || ((string) $this->input('plan_id') === (string) RechargeOrder::LEGACY_PLAN_ID && $this->has('deposit_amount'));
+            || (is_scalar($planId) && (string) $planId === (string) RechargeOrder::LEGACY_PLAN_ID && $this->has('deposit_amount'));
     }
 
     public function messages()

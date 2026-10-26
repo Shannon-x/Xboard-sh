@@ -188,7 +188,9 @@ class OrderController extends Controller
 
     public function check(Request $request)
     {
-        $tradeNo = PaymentSessions::resolveTradeNo((string) $request->input('trade_no'));
+        // trade_no[]=x 时 (string) 强转报「Array to string conversion」→ 500；非字符串按查不到处理
+        $rawTradeNo = $request->input('trade_no');
+        $tradeNo = PaymentSessions::resolveTradeNo(is_string($rawTradeNo) ? $rawTradeNo : '');
         $order = Order::where('trade_no', $tradeNo)
             ->where('user_id', $request->user()->id)
             ->first();
@@ -229,10 +231,11 @@ class OrderController extends Controller
 
     public function cancel(Request $request, RechargeService $rechargeService)
     {
-        if (empty($request->input('trade_no'))) {
+        $rawTradeNo = $request->input('trade_no');
+        if (empty($rawTradeNo) || !is_string($rawTradeNo)) {
             return $this->fail([422, __('Invalid parameter')]);
         }
-        $tradeNo = PaymentSessions::resolveTradeNo((string) $request->input('trade_no'));
+        $tradeNo = PaymentSessions::resolveTradeNo($rawTradeNo);
         $order = Order::where('trade_no', $tradeNo)
             ->where('user_id', $request->user()->id)
             ->first();

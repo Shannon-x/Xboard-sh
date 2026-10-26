@@ -186,7 +186,9 @@ class AuthController extends Controller
             ], 401);
         }
 
-        $url = $this->loginService->generateQuickLoginUrl($user, $request->input('redirect'));
+        // 同 User\UserController::getQuickLoginUrl：非字符串 redirect 按未传处理，不在 ?string 形参处 500
+        $redirect = $request->input('redirect');
+        $url = $this->loginService->generateQuickLoginUrl($user, is_string($redirect) ? $redirect : null);
         return $this->success($url);
     }
 

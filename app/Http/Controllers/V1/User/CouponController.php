@@ -15,6 +15,10 @@ class CouponController extends Controller
         if (empty($request->input('code'))) {
             return $this->fail([422, __('Coupon cannot be empty')]);
         }
+        // period[]=x 原来在 PlanService::getPeriodKey(string) 处 TypeError → 500
+        $request->validate([
+            'period' => 'nullable|string',
+        ]);
         $couponService = new CouponService($request->input('code'));
         $couponService->setPlanId($request->input('plan_id'));
         $couponService->setUserId($request->user()->id);

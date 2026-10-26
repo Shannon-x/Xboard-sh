@@ -20,16 +20,19 @@ class PlanService
      * 获取所有可销售的订阅计划列表
      * 条件：show 和 sell 为 true，且容量充足
      *
+     * $includeSoldOut：新套餐页要把满员的也列出来（默认收起、带「到货提醒」），由接口参数
+     * include_sold_out=1 打开；是否满员由调用方用 PlanCapacity 批量算好放进 stock。不带参数时与原来逐字相同。
+     *
      * @return Collection
      */
-    public function getAvailablePlans(): Collection
+    public function getAvailablePlans(bool $includeSoldOut = false): Collection
     {
         return Plan::where('show', true)
             ->where('sell', true)
             ->orderBy('sort')
             ->get()
-            ->filter(function ($plan) {
-                return $this->hasCapacity($plan);
+            ->filter(function ($plan) use ($includeSoldOut) {
+                return $includeSoldOut || $this->hasCapacity($plan);
             })
             // PlanResource preserves numeric addon group IDs. Reindex this outer list
             // after filtering so sold-out plans cannot turn its JSON array into an object.

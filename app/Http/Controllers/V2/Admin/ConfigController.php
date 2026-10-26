@@ -205,6 +205,8 @@ class ConfigController extends Controller
             ],
             // 余额充值：开关、单笔上下限（元）、赠送档位、快捷金额 —— 默认值集中在 RechargeConfig
             'recharge' => RechargeConfig::fromSettings()->toAdminArray(),
+            // 上网按量：认定哪些套餐、月度保底、首充 / 档位赠送、自动补充 —— 默认值集中在 PaygConfig
+            'payg' => \App\Services\Payg\PaygConfig::fromSettings()->toAdminArray(),
             'frontend' => [
                 'frontend_theme' => admin_setting('frontend_theme', 'Xboard'),
                 'frontend_theme_sidebar' => admin_setting('frontend_theme_sidebar', 'light'),

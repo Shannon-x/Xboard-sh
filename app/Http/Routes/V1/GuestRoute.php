@@ -23,6 +23,9 @@ class GuestRoute
             $router->get('/plan/fetch', [PlanController::class, 'fetch']);
             $router->post('/plan/quote', [PlanController::class, 'quote'])
                 ->middleware('throttle:plan-quote');
+            // 游客的到货提醒：留邮箱登记；已登记进 sufe-middleware-rs 的路径表
+            $router->post('/plan/restock-notify', [PlanController::class, 'restockNotify'])
+                ->middleware('throttle:restock-notify');
             // Telegram
             $router->post('/telegram/webhook', [TelegramController::class, 'webhook']);
             // Payment

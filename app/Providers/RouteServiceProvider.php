@@ -111,6 +111,15 @@ class RouteServiceProvider extends ServiceProvider
             ];
         });
 
+        // 到货提醒登记：游客端只要一个邮箱就能登记，要防的是拿它给别人的邮箱成批登记（每个登记最多一封信）。
+        // 正常用户在套餐页点几下就够了；兜底键前缀与上面同理，不能和 $byUserOrIp 的 `restock:ip:` 撞同一个 key。
+        RateLimiter::for('restock-notify', function (Request $request) use ($byUserOrIp) {
+            return [
+                Limit::perMinute(6)->by($byUserOrIp($request, 'restock')),
+                Limit::perHour(30)->by('restock_ip:' . $request->ip()),
+            ];
+        });
+
         RateLimiter::for('coupon-check', function (Request $request) use ($byUserOrIp) {
             return [
                 Limit::perMinute(20)->by($byUserOrIp($request, 'coupon_check')),

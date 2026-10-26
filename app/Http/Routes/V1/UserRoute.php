@@ -12,6 +12,7 @@ use App\Http\Controllers\V1\User\KnowledgeController;
 use App\Http\Controllers\V1\User\NoticeController;
 use App\Http\Controllers\V1\User\NotificationController;
 use App\Http\Controllers\V1\User\OrderController;
+use App\Http\Controllers\V1\User\PaygController;
 use App\Http\Controllers\V1\User\PlanController;
 use App\Http\Controllers\V1\User\ServerController;
 use App\Http\Controllers\V1\User\StatController;
@@ -57,6 +58,11 @@ class UserRoute
             $router->get('/plan/fetch', [PlanController::class, 'fetch']);
             $router->post('/plan/quote', [PlanController::class, 'quote'])
                 ->middleware('throttle:plan-quote');
+            // 售罄套餐的到货提醒（登记 / cancel=1 取消）；已登记进 sufe-middleware-rs 的路径表
+            $router->post('/plan/restock-notify', [PlanController::class, 'restockNotify'])
+                ->middleware('throttle:restock-notify');
+            // 上网按量：扣费明细（近 3 个月用量与保底、充值与赠送、自动补充）；已登记进中间件路径表
+            $router->get('/payg/ledger', [PaygController::class, 'ledger']);
             // Invite
             // GET save 保留给老前端（无参随机码）；POST save 支持自定义 code；同方法双路由
             $router->get('/invite/save', [InviteController::class, 'save'])

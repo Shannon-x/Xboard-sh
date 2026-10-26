@@ -9,6 +9,7 @@ use App\Models\Order;
 use App\Models\Plan;
 use App\Models\User;
 use App\Services\Commission\WithdrawalConfig;
+use App\Services\PlanCapacity;
 use App\Services\PlanCustomizationService;
 use App\Services\RenewService;
 use Illuminate\Support\Facades\App;
@@ -339,15 +340,21 @@ class BillingDocumentService
 
     /**
      * 「也可以看看」：后台 billing_recommend_plan_ids（逗号分隔）优先；
-     * 没配就挑在售套餐里月均价最接近当前套餐的 3 个。
+     * 没配、或配的全都满员了，就挑在售套餐里月均价最接近当前套餐的 3 个。
+     *
+     * 和前台套餐列表同一个口径：显示 + 在售 + 还有席位。满员的不推荐 —— 点进去买不到，
+     * 召回邮件曾把满员的日本星链推给 KDDI 到期用户。席位数只用来筛，邮件里不出现。
      */
     public function alternatives(User $user, ?Plan $current): array
     {
         $configured = array_values(array_filter(array_map('intval', explode(',', (string) admin_setting('billing_recommend_plan_ids', '')))));
-        $query = Plan::where('show', true)->where('sell', true)->where('id', '!=', (int) $user->plan_id);
-        if ($configured) $query->whereIn('id', $configured);
+        $plans = PlanCapacity::available(
+            Plan::where('show', true)->where('sell', true)->where('id', '!=', (int) $user->plan_id)->orderBy('sort')->get()
+        );
+        $picked = $configured ? $plans->filter(fn (Plan $plan) => in_array((int) $plan->id, $configured, true)) : collect();
+        if ($picked->isEmpty()) $configured = [];   // 配的全满员（或没配）：退回按价位挑，这一栏不空着
         $candidates = [];
-        foreach ($query->orderBy('sort')->get() as $plan) {
+        foreach ($configured ? $picked : $plans as $plan) {
             $best = $this->cheapestMonthly($plan);
             if ($best === null) continue;
             $candidates[] = ['plan' => $plan, 'monthly' => $best['monthly']];

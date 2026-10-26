@@ -21,8 +21,9 @@ class GiftCardCheckRequest extends FormRequest
      */
     public function rules(): array
     {
+        // 原来没有规则：缺 code 或传数组时 new GiftCardService(string) TypeError → 500。长度上限与兑换接口一致
         return [
-            //
+            'code' => 'required|string|max:32',
         ];
     }
 }

@@ -8,6 +8,7 @@ use App\Http\Requests\User\GiftCardCheckRequest;
 use App\Http\Requests\User\GiftCardRedeemRequest;
 use App\Models\GiftCardUsage;
 use App\Services\GiftCardService;
+use App\Support\PageParams;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -119,7 +120,8 @@ class GiftCardController extends Controller
     public function history(Request $request)
     {
         $request->validate([
-            'page' => 'integer|min:1',
+            // 页码封顶，理由同 BillingController::balanceLog
+            'page' => 'integer|min:1|max:' . PageParams::MAX_PAGE,
             'per_page' => 'integer|min:1|max:100',
         ]);
 

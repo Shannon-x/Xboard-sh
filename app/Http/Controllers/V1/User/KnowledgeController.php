@@ -40,8 +40,9 @@ class KnowledgeController extends Controller
             ->where('id', $request->input('id'))
             ->first();
 
+        // 不存在 / 已隐藏是请求方的问题：400，与工单、套餐「不存在」一致（原来回 500）
         if (!$knowledge) {
-            return $this->fail([500, __('Article does not exist')]);
+            return $this->fail([400, __('Article does not exist')]);
         }
 
         $knowledge = $knowledge->toArray();
@@ -73,6 +74,26 @@ class KnowledgeController extends Controller
             ->groupBy('category');
 
         return $this->success($knowledges);
+    }
+
+    /**
+     * 显示中的文章分类（可按 language 过滤）。路由 /user/knowledge/getCategory 从上游
+     * 一直登记着，但用户端控制器里没有这个方法，任何调用都是 BadMethodCallException 500。
+     */
+    public function getCategory(Request $request)
+    {
+        $request->validate([
+            'language' => 'nullable|sometimes|string|max:10',
+        ]);
+
+        $categories = $this->buildKnowledgeQuery(['category'])
+            ->when($request->filled('language'), fn ($query) => $query->where('language', $request->input('language')))
+            ->orderBy('sort', 'ASC')
+            ->pluck('category')
+            ->unique()
+            ->values();
+
+        return $this->success($categories);
     }
 
     private function buildKnowledgeQuery(array $select = ['*'])

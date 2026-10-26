@@ -19,6 +19,7 @@ use App\Services\Commission\Leaderboard;
 use App\Services\Commission\PeriodCommission;
 use App\Services\Commission\WithdrawalConfig;
 use App\Support\InviteCodeRules;
+use App\Support\PageParams;
 use App\Utils\Helper;
 use Illuminate\Http\Request;
 
@@ -191,9 +192,8 @@ class InviteController extends Controller
      */
     public function users(Request $request)
     {
-        $current = max(1, (int) $request->input('current', 1));
-        $pageSize = (int) $request->input('page_size', 10);
-        $pageSize = $pageSize >= 10 ? min($pageSize, 100) : 10;
+        $current = PageParams::page($request->input('current'));
+        $pageSize = PageParams::size($request->input('page_size'), 10, 10, 100);
 
         $builder = User::where('invite_user_id', $request->user()->id)
             ->orderBy('id', 'DESC');
@@ -226,9 +226,8 @@ class InviteController extends Controller
 
     public function details(Request $request)
     {
-        $current = $request->input('current') ? $request->input('current') : 1;
-        $pageSize = $request->input('page_size') >= 10 ? $request->input('page_size') : 10;
-        $pageSize = min((int) $pageSize, 100); // 与 users() 一致，封顶防一次拉全量序列化
+        $current = PageParams::page($request->input('current'));
+        $pageSize = PageParams::size($request->input('page_size'), 10, 10, 100); // 封顶防一次拉全量序列化
         $builder = CommissionLog::where('invite_user_id', $request->user()->id)
             ->where('get_amount', '>', 0)
             ->orderBy('created_at', 'DESC');

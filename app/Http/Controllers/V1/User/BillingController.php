@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Services\Billing\BillingDocumentService;
 use App\Services\Billing\BillingPayService;
 use App\Services\MailService;
+use App\Support\PageParams;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 
@@ -50,7 +51,8 @@ class BillingController extends Controller
     public function balanceLog(Request $request)
     {
         $request->validate([
-            'page' => 'nullable|integer|min:1',
+            // 页码封顶：PHP_INT_MAX 能过 integer 校验，forPage 相乘溢出成 float，PHP 8.5 转回 int 时告警 → 500
+            'page' => 'nullable|integer|min:1|max:' . PageParams::MAX_PAGE,
             'pageSize' => 'nullable|integer|min:1|max:100',
         ]);
         $page = max(1, (int) $request->input('page', 1));

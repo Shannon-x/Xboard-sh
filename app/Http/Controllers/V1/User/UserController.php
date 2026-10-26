@@ -46,8 +46,12 @@ class UserController extends Controller
     public function removeActiveSession(Request $request)
     {
         $user = $request->user();
+        // 缺参或传数组原来在 removeSession(string) 处 TypeError → 500
+        $request->validate([
+            'session_id' => 'required|integer',
+        ]);
         $authService = new AuthService($user);
-        return $this->success($authService->removeSession($request->input('session_id')));
+        return $this->success($authService->removeSession((string) $request->input('session_id')));
     }
 
     public function logout(Request $request)
@@ -321,7 +325,9 @@ class UserController extends Controller
     {
         $user = $request->user();
 
-        $url = $this->loginService->generateQuickLoginUrl($user, $request->input('redirect'));
+        // redirect[]=x 原来在 generateQuickLoginUrl(?string) 处 TypeError → 500；非字符串按未传处理
+        $redirect = $request->input('redirect');
+        $url = $this->loginService->generateQuickLoginUrl($user, is_string($redirect) ? $redirect : null);
         return $this->success($url);
     }
 }

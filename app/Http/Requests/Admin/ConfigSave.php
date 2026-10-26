@@ -214,6 +214,16 @@ class ConfigSave extends FormRequest
         'recharge_bonus_tiers.*.bonus' => 'required|numeric|decimal:0,2|min:0.01|max:1000000',
         'recharge_quick_amounts' => 'nullable|array|max:12',
         'recharge_quick_amounts.*' => 'numeric|decimal:0,2|min:0.01|max:1000000',
+        // 上网按量（金额单位元；默认值与归一化见 App\Services\Payg\PaygConfig）
+        'payg_plan_ids' => 'nullable|array|max:20',
+        'payg_plan_ids.*' => 'integer|min:1',
+        'payg_monthly_floor' => 'nullable|numeric|decimal:0,2|min:0|max:1000',
+        'payg_first_bonus_gb' => 'nullable|integer|min:0|max:10000',
+        'payg_bonus_tiers' => 'nullable|array|max:10',
+        'payg_bonus_tiers.*.amount' => 'required|numeric|decimal:0,2|min:0.01|max:1000000',
+        'payg_bonus_tiers.*.bonus' => 'required|numeric|decimal:0,2|min:0.01|max:1000000',
+        'payg_auto_topup_enable' => '',
+        'payg_auto_topup_threshold' => 'nullable|numeric|decimal:0,2|min:0|max:1000',
         'subscribe_template_singbox' => 'nullable',
         'subscribe_template_clash' => 'nullable',
         'subscribe_template_clashmeta' => 'nullable',
@@ -260,6 +270,7 @@ class ConfigSave extends FormRequest
     {
         $validator->after(function (Validator $validator) {
             $this->validateRecharge($validator);
+            $this->validatePayg($validator);
             if (!(int) $this->input('commission_distribution_enable', 0)) {
                 return;
             }
@@ -288,6 +299,34 @@ class ConfigSave extends FormRequest
             if (is_array($tier) && is_numeric($tier['amount'] ?? null) && is_numeric($tier['bonus'] ?? null)
                 && (float) $tier['bonus'] > (float) $tier['amount']) {
                 $validator->errors()->add("recharge_bonus_tiers.{$i}.bonus", '赠送金额不能超过该档的充值门槛');
+            }
+        }
+    }
+
+    /**
+     * 上网按量：认定的套餐必须能换算单价（一次性价 + 流量），而且流量不重置 ——
+     * 按量余额就是剩余流量，跟随系统按月重置会把已用清零 = 每月白送一次。赠送同样不能超过门槛。
+     */
+    private function validatePayg(Validator $validator): void
+    {
+        $ids = $this->input('payg_plan_ids');
+        if (is_array($ids) && $ids !== []) {
+            $plans = \App\Models\Plan::whereIn('id', array_filter($ids, 'is_numeric'))->get()->keyBy('id');
+            foreach ($ids as $i => $id) {
+                $plan = is_numeric($id) ? $plans->get((int) $id) : null;
+                if (!$plan) {
+                    $validator->errors()->add("payg_plan_ids.{$i}", "套餐 #{$id} 不存在");
+                } elseif (\App\Services\Payg\PaygConfig::unitPrice($plan) === null) {
+                    $validator->errors()->add("payg_plan_ids.{$i}", "「{$plan->name}」没有一次性价格或流量，算不出每 GB 单价");
+                } elseif ($plan->reset_traffic_method !== \App\Models\Plan::RESET_TRAFFIC_NEVER) {
+                    $validator->errors()->add("payg_plan_ids.{$i}", "「{$plan->name}」的流量重置方式必须是「不重置」：按量余额就是剩余流量");
+                }
+            }
+        }
+        foreach ((array) $this->input('payg_bonus_tiers', []) as $i => $tier) {
+            if (is_array($tier) && is_numeric($tier['amount'] ?? null) && is_numeric($tier['bonus'] ?? null)
+                && (float) $tier['bonus'] > (float) $tier['amount']) {
+                $validator->errors()->add("payg_bonus_tiers.{$i}.bonus", '赠送金额不能超过该档的充值门槛');
             }
         }
     }
@@ -328,6 +367,14 @@ class ConfigSave extends FormRequest
             'recharge_bonus_tiers.*.bonus.*' => '赠送金额须为 0.01–1000000 元，最多两位小数',
             'recharge_quick_amounts.max' => '快捷金额最多 12 个',
             'recharge_quick_amounts.*.*' => '快捷金额须为 0.01–1000000 元，最多两位小数',
+            'payg_plan_ids.max' => '按量套餐最多 20 个',
+            'payg_plan_ids.*.*' => '按量套餐须填套餐 ID',
+            'payg_monthly_floor.*' => '月度保底须为 0–1000 元，最多两位小数（0 = 不设保底）',
+            'payg_first_bonus_gb.*' => '首充赠送须为 0–10000 GB 的整数',
+            'payg_bonus_tiers.max' => '按量充值赠送最多 10 档',
+            'payg_bonus_tiers.*.amount.*' => '按量赠送档位的充值门槛须为 0.01–1000000 元，最多两位小数',
+            'payg_bonus_tiers.*.bonus.*' => '按量赠送金额须为 0.01–1000000 元，最多两位小数',
+            'payg_auto_topup_threshold.*' => '自动补充门槛须为 0–1000 元，最多两位小数',
         ];
     }
 }

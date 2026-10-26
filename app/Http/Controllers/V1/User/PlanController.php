@@ -8,7 +8,11 @@ use App\Http\Resources\PlanResource;
 use App\Http\Requests\User\PlanQuote;
 use App\Models\Plan;
 use App\Models\User;
+use App\Services\Payg\PaygConfig;
+use App\Services\Payg\PaygService;
+use App\Services\PlanCapacity;
 use App\Services\PlanService;
+use App\Services\RestockNotifier;
 use Illuminate\Http\Request;
 
 class PlanController extends Controller
@@ -30,8 +34,36 @@ class PlanController extends Controller
         if ($user) {
             $quote['order'] = \App\Services\OrderService::previewOrderType($user, $plan, $data['period'], $quote);
         }
+        // 上网按量：这一单开通时会送多少（档位 + 首充），纯新增键
+        if (PaygConfig::fromSettings()->isPaygPlanId($plan->id) && PlanService::getPeriodKey($data['period']) === Plan::PERIOD_ONETIME) {
+            $quote['payg_bonus'] = app(PaygService::class)->quoteBonus($plan, (int) $quote['amount'], $user);
+        }
         unset($quote['snapshot']);
         return $this->success($quote);
+    }
+
+    /**
+     * 售罄套餐的到货提醒：用账户邮箱登记；cancel=1 取消。只有在售、此刻满员的套餐能登记。
+     * 新端点，已登记进 sufe-middleware-rs 的路径表。
+     */
+    public function restockNotify(Request $request)
+    {
+        $data = $request->validate([
+            'plan_id' => 'required|integer|min:1',
+            'cancel' => 'nullable|in:0,1',
+        ]);
+        $plan = Plan::find($data['plan_id']);
+        if (!$plan) {
+            return $this->fail([400, __('Subscription plan does not exist')]);
+        }
+        $user = User::findOrFail($request->user()->id);
+        $notifier = app(RestockNotifier::class);
+        if ((int) ($data['cancel'] ?? 0) === 1) {
+            $notifier->cancel($plan, (string) $user->email);
+            return $this->success(['subscribed' => false]);
+        }
+        $notifier->subscribe($plan, (string) $user->email, $user);
+        return $this->success(['subscribed' => true]);
     }
 
     public function fetch(Request $request)
@@ -49,11 +81,16 @@ class PlanController extends Controller
             if (!$this->planService->isPlanAvailableForUser($plan, $user)) {
                 return $this->fail([400, __('Subscription plan does not exist')]);
             }
+            $request->attributes->set(PlanResource::STOCK_ATTRIBUTE, PlanCapacity::remaining([$plan]));
+            $request->attributes->set(PlanResource::RESTOCK_ATTRIBUTE, RestockNotifier::pendingPlanIds($user));
             $plan = $forClient($plan);
             return $this->success(PlanResource::make($plan));
         }
 
-        $plans = $this->planService->getAvailablePlans();
+        // include_sold_out=1（新套餐页）：满员的也列出来，带 stock=sold_out；不带参数与原来相同
+        $plans = $this->planService->getAvailablePlans($request->boolean('include_sold_out'));
+        $request->attributes->set(PlanResource::STOCK_ATTRIBUTE, PlanCapacity::remaining($plans));
+        $request->attributes->set(PlanResource::RESTOCK_ATTRIBUTE, RestockNotifier::pendingPlanIds($user));
         $plans = $plans->map($forClient);
         return $this->success(PlanResource::collection($plans));
     }

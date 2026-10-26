@@ -150,6 +150,7 @@ class UserController extends Controller
                 'email_verify_code',
                 'email_verify_code_attempts',
                 'auto_renew',
+                'payg_auto_topup',
                 'expired_at',
                 'balance',
                 'commission_balance',
@@ -232,7 +233,10 @@ class UserController extends Controller
         $user['traffic_topup'] = $customizer->topupSummary($planModel, $user);
         $user['addon_groups'] = $customizer->addonGroupsForUser($planModel, $user);
         // 续费助手：提醒天数 + 上次配置的续费规格与金额 + 自动续费状态（需要余额 / 折扣等未 select 的列）
-        $user['renew'] = app(\App\Services\RenewService::class)->payload(User::find($request->user()->id));
+        $fullUser = User::find($request->user()->id);
+        $user['renew'] = app(\App\Services\RenewService::class)->payload($fullUser);
+        // 上网按量钱包摘要（按量余额、本月用量、保底、自动补充）；不是按量套餐时为 null。纯新增键
+        $user['payg'] = app(\App\Services\Payg\PaygService::class)->status($fullUser);
         if (!$request->boolean('include_addon_groups') && $user->plan_options) {
             $user->plan_options = array_intersect_key($user->plan_options, \App\Services\PlanCustomizationService::LIMITS);
         } elseif ($user->plan_options) {
@@ -263,6 +267,7 @@ class UserController extends Controller
             'remind_expire',
             'remind_traffic',
             'auto_renew',
+            'payg_auto_topup',
         ]);
 
         $user = $request->user();

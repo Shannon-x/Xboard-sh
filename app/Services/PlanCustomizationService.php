@@ -150,6 +150,7 @@ class PlanCustomizationService
         // ServerGroup::server_count 访问器（各发一条 COUNT），10 个套餐 × 2 组 = 30 条。
         $names = self::groupNames();
         $counts = self::serverCountsByGroup();
+        $rates = self::serverRatesByGroup();
         $display = [];
         foreach ($rules as $groupId => $rule) {
             if (!isset($names[$groupId])) continue; // 组已被删除：不展示也不可选，validateConfiguration 会在下次保存时拦下
@@ -160,6 +161,8 @@ class PlanCustomizationService
                 // 展示名优先；未设置时才用权限组名。设了展示名就不再把内部组名下发给用户。
                 'name' => $label !== '' ? $label : $names[$groupId],
                 'server_count' => $counts[$groupId] ?? 0,
+                // 组内节点最常见的倍率（三网加购卡写「×10 扣量」用）；组里没有节点为 null
+                'rate' => $rates[$groupId] ?? null,
                 'topup_price_per_gb' => (int) ($rule['topup_price_per_gb'] ?? 0),
                 ...(isset($rule['topup_final_price_per_gb']) ? ['topup_final_price_per_gb' => $rule['topup_final_price_per_gb']] : []),
                 'transfer_price_per_gb' => (int) ($rule['transfer_price_per_gb'] ?? 0),
@@ -540,6 +543,7 @@ class PlanCustomizationService
 
     public const CACHE_GROUP_NAMES = 'plan_addon:group_names';
     public const CACHE_GROUP_SERVER_COUNTS = 'plan_addon:group_server_counts';
+    public const CACHE_GROUP_SERVER_RATES = 'plan_addon:group_server_rates';
     public const CACHE_ADDON_GROUP_IDS = 'plan_addon:group_ids_in_use';
     public const CACHE_INCLUDED_BY_PLAN = 'plan_addon:included_by_plan';
     public const CACHE_ADMIN_GROUP_IDS = 'plan_addon:admin_group_ids';
@@ -636,6 +640,31 @@ class PlanCustomizationService
     }
 
     /**
+     * 权限组 id → 组内节点最常见的倍率（众数，并列取较大的）。只用于展示：扣量永远按每个节点自己的倍率。
+     * 与节点数同一个缓存周期，节点编辑 / 分组变更时随 forgetAddonCaches 一起失效。
+     */
+    public static function serverRatesByGroup(): array
+    {
+        return Cache::remember(self::CACHE_GROUP_SERVER_RATES, self::CACHE_TTL, function () {
+            $tally = [];
+            foreach (Server::query()->select(['group_ids', 'rate'])->get() as $server) {
+                $rate = (string) (float) $server->rate;
+                foreach ((array) ($server->group_ids ?? []) as $gid) {
+                    $gid = (int) $gid;
+                    $tally[$gid][$rate] = ($tally[$gid][$rate] ?? 0) + 1;
+                }
+            }
+            $modes = [];
+            foreach ($tally as $gid => $counts) {
+                uksort($counts, fn ($a, $b) => ($counts[$b] <=> $counts[$a]) ?: ((float) $b <=> (float) $a));
+                $rate = (float) array_key_first($counts);
+                $modes[$gid] = $rate == (int) $rate ? (int) $rate : $rate;
+            }
+            return $modes;
+        });
+    }
+
+    /**
      * 需要按用户 JSON 字段筛名单的组：任一套餐里在售的 optional 组 ∪ 用户仍持有的已购组
      * ∪ 管理员手动授予过的组。included 组不在这里 —— 它们走 plan_id 索引分支。
      * 节点端拉名单只对这些组才多发一条 JSON 查询；其余节点走纯索引查询。
@@ -680,6 +709,7 @@ class PlanCustomizationService
         self::forgetAddonMembershipCache();
         Cache::forget(self::CACHE_GROUP_NAMES);
         Cache::forget(self::CACHE_GROUP_SERVER_COUNTS);
+        Cache::forget(self::CACHE_GROUP_SERVER_RATES);
     }
 
     public function validateConfiguration(Plan $plan): void

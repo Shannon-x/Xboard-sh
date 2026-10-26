@@ -16,6 +16,8 @@ use App\Services\Billing\BillingDocumentService;
 use App\Services\EmailVerification;
 use App\Services\Commission\CommissionPolicy;
 use App\Services\Commission\InviteDiscount;
+use App\Services\Payg\PaygConfig;
+use App\Services\Payg\PaygService;
 use App\Services\Plugin\HookManager;
 use App\Support\AdminAlert;
 use App\Support\PaymentGatewayBinding;
@@ -240,7 +242,7 @@ class OrderService
             }
 
             match ((string) $order->period) {
-                Plan::PERIOD_ONETIME => $this->buyByOneTime($plan),
+                Plan::PERIOD_ONETIME => $this->buyByOneTime($order, $plan),
                 Plan::PERIOD_RESET_TRAFFIC => $this->resetTrafficForOrder(),
                 Plan::PERIOD_TRAFFIC_TOPUP => $this->applyTrafficTopup($order),
                 default => $this->buyByPeriod($order, $plan),
@@ -336,6 +338,11 @@ class OrderService
             $order->type = Order::TYPE_TRAFFIC_TOPUP;
         } else if ($order->period === Plan::PERIOD_RESET_TRAFFIC) {
             $order->type = Order::TYPE_RESET_TRAFFIC;
+        } else if ((int) $order->plan_id === (int) $user->plan_id && PaygService::isWallet($user)) {
+            // 按量钱包再充值：同一按量套餐再买永远是续费，流量在开通时叠加（PaygService::deliver）。
+            // 不能落进下面「规格变了 = 套餐变更」的分支：每次充值的 GB 不同，那会把钱包剩余流量折抵成钱，
+            // 开通时又叠加回去，等于白送一份。
+            $order->type = Order::TYPE_RENEWAL;
         } else if ($user->plan_id !== NULL && ($order->plan_id !== $user->plan_id || $this->hasChangedOptions($user)) && ($user->expired_at > time() || $user->expired_at === NULL)) {
             // 套餐变更：旧套餐立即终止，新套餐从支付完成时间重新开始。
             // 这条规则一次性消除三类问题：
@@ -504,6 +511,11 @@ class OrderService
 
     private function getSurplusValue(User $user, Order $order): void
     {
+        if (PaygService::isWallet($user)) {
+            // 按量钱包叠加了好几单，原算法只看最后一单会漏钱：按整个钱包的实付 × 剩余比例折抵
+            app(PaygService::class)->applySurplus($user, $order);
+            return;
+        }
         if ($user->expired_at === null) {
             $lastOneTimeOrder = Order::where('user_id', $user->id)
                 ->where('period', Plan::PERIOD_ONETIME)
@@ -1343,6 +1355,10 @@ class OrderService
 
     private function getOpenEventId(Order $order): int
     {
+        // 按量钱包的余额就是剩余流量：开通事件「重置流量」会把已用清零 = 白送，按量套餐一律不触发
+        if ((string) $order->period === Plan::PERIOD_ONETIME && PaygConfig::fromSettings()->isPaygPlanId($order->plan_id)) {
+            return 0;
+        }
         return match ((int) $order->type) {
             Order::TYPE_NEW_PURCHASE => (int) admin_setting('new_order_event_id', 0),
             Order::TYPE_RENEWAL => (int) admin_setting('renew_order_event_id', 0),
@@ -1352,8 +1368,13 @@ class OrderService
         };
     }
 
-    private function buyByOneTime(Plan $plan)
+    private function buyByOneTime(Order $order, Plan $plan)
     {
+        $payg = PaygConfig::fromSettings();
+        if ($payg->isPaygPlanId($plan->id) && PaygConfig::unitPrice(Plan::find($plan->id) ?? $plan) !== null) {
+            app(PaygService::class)->deliver($this->user, $order, $plan, $payg);
+            return;
+        }
         app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER);
         $this->user->transfer_enable = $plan->transfer_enable * self::BYTES_PER_GB;
         $this->user->plan_id = $plan->id;

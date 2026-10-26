@@ -4,7 +4,8 @@
 namespace App\Http\Resources;
 
 use App\Models\Plan;
-use App\Services\PlanService;
+use App\Services\Payg\PaygService;
+use App\Support\PlanCatalog;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -19,6 +20,14 @@ class PlanResource extends JsonResource
      * 在 PlanService::getAvailablePlans() 过滤后必须 values()，保证仍返回 JSON 数组。
      */
     public $preserveKeys = true;
+
+    /**
+     * 套餐列表 / 单查接口把批量算好的剩余席位（PlanCapacity::remaining）和本人在等的到货提醒放进请求属性，
+     * 这里按 plan_id 取，避免每个套餐各查一次。请求属性跟着请求走，Octane 下不会串到下一个请求。
+     * 没放（订单详情、礼品卡里内嵌的套餐）就不输出 stock / restock_subscribed。
+     */
+    public const STOCK_ATTRIBUTE = 'plan_resource.remaining';
+    public const RESTOCK_ATTRIBUTE = 'plan_resource.restock_plan_ids';
 
     /**
      * Transform the resource into an array.
@@ -38,11 +47,22 @@ class PlanResource extends JsonResource
             // 不暴露任何具体节点名称 / 地址。
             $customization[\App\Services\PlanCustomizationService::ADDON_KEY] = $customizer->addonGroupsForDisplay($this->resource, $request->user());
         }
+        // 目录前缀标签（carrier: / segment: / family: / batch:）只给新前端：从 tags 里拿掉、解析成 catalog
+        $catalog = PlanCatalog::split($this->resource['tags']);
+        $remaining = $request->attributes->get(self::STOCK_ATTRIBUTE);
+        $restock = $request->attributes->get(self::RESTOCK_ATTRIBUTE);
+        $planId = (int) $this->resource['id'];
         return [
             'id' => $this->resource['id'],
             'group_id' => $this->resource['group_id'],
             'name' => $this->resource['name'],
-            'tags' => $this->resource['tags'],
+            'tags' => $catalog['tags'],
+            'catalog' => $catalog['catalog'],
+            // 纯新增键：只说有货 / 售罄，席位数不出后台
+            ...(is_array($remaining) ? ['stock' => ($remaining[$planId] ?? null) === 0 ? 'sold_out' : 'available'] : []),
+            ...(is_array($restock) ? ['restock_subscribed' => in_array($planId, $restock, true)] : []),
+            // 纯新增键：上网按量套餐的单价、最低充值、保底、赠送、自动补充；其余套餐为 null
+            'payg' => app(PaygService::class)->planPayload($this->resource, $request->user()),
             'content' => $this->formatContent(),
             'content_template' => $customization
                 ? str_replace('{{reset_method}}', $this->getResetMethodText(), $this->resource['content'] ?? '') : null,
@@ -52,7 +72,8 @@ class PlanResource extends JsonResource
                 'price_per_gb' => $topup['price_per_gb'], 'min_gb' => $topup['min_gb'], 'max_gb' => $topup['max_gb'],
             ] : null,
             ...$this->getPeriodPrices(),
-            'capacity_limit' => $this->getFormattedCapacityLimit(),
+            // 席位上限不给用户看（有货 / 售罄见 stock）。键保留、恒为 null：旧前端按「不限」处理
+            'capacity_limit' => null,
             'transfer_enable' => $this->resource['transfer_enable'],
             'speed_limit' => $this->resource['speed_limit'],
             'device_limit' => $this->resource['device_limit'],
@@ -83,22 +104,6 @@ class PlanResource extends JsonResource
                 ];
             })
             ->all();
-    }
-
-    /**
-     * Get formatted capacity limit value
-     *
-     * @return int|string|null
-     */
-    protected function getFormattedCapacityLimit(): int|string|null
-    {
-        $limit = $this->resource['capacity_limit'];
-
-        return match (true) {
-            $limit === null => null,
-            $limit <= 0 => __('Sold out'),
-            default => (int) $limit,
-        };
     }
 
     /**

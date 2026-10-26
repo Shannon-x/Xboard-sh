@@ -42,6 +42,12 @@ class Kernel extends ConsoleKernel
         $schedule->command('check:traffic-exceeded')->everyMinute()->onOneServer()->withoutOverlapping(10)->runInBackground();
         // 自动续费：到期前 lead 小时 ~ 到期后 grace 小时窗口内，余额足够的用户按上次配置续费
         $schedule->command('renew:auto')->hourly()->onOneServer()->withoutOverlapping(50);
+        // 上网按量：余额低于门槛且开了自动补充的用户用账户余额买一份（未配置按量套餐时命令直接返回）
+        $schedule->command('payg:auto-topup')->everyMinute()->onOneServer()->withoutOverlapping(5);
+        // 上网按量月度保底：结算上个月；每天跑，已结算的是空操作，1 号停机也能补上
+        $schedule->command('payg:settle-floor')->dailyAt('0:40')->onOneServer()->withoutOverlapping(60);
+        // 到货提醒：售罄套餐放出席位 / 同产品开新车时给登记的人发信
+        $schedule->command('plan:restock-notify')->everyFiveMinutes()->onOneServer()->withoutOverlapping(10);
         // reset
         $schedule->command('reset:traffic')->everyMinute()->onOneServer()->withoutOverlapping(10);
         $schedule->command('reset:log')->daily()->onOneServer();

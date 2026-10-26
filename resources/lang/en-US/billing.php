@@ -243,4 +243,11 @@ return [
         'unavailable' => 'This link cannot be used for payment right now. Please sign in and renew from the plans page.',
         'blocked' => 'There is another unpaid order on this account. Please sign in and deal with that one first.',
     ],
+    // Restock alert: a sold-out plan has room again (one email per sign-up)
+    'restock' => [
+        'subject' => 'Back in stock: :plan',
+        'body' => '":plan", which you asked us to watch, has room again. First come, first served.',
+        'link' => 'Buy now: :url',
+        'once' => 'We send this alert only once. If the plan fills up again we will not remind you, but you can sign up again on the plans page.',
+    ],
 ];

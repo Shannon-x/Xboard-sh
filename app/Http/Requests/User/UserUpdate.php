@@ -18,6 +18,8 @@ class UserUpdate extends FormRequest
             'remind_traffic' => 'in:0,1',
             // 自动续费开关：到期前余额足够时按上次配置自动续费
             'auto_renew' => 'in:0,1',
+            // 上网按量的自动补充：按量余额低于门槛时从账户余额买一份（与自动续费分开）
+            'payg_auto_topup' => 'in:0,1',
         ];
     }
 

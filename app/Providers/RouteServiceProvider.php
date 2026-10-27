@@ -195,6 +195,11 @@ class RouteServiceProvider extends ServiceProvider
             return Limit::perMinute(10)->by('billing_pay_action:ip:' . $request->ip());
         });
 
+        // AI 助手令牌生成：每人最多 5 个由服务层卡住，这里只防脚本刷
+        RateLimiter::for('mcp-token', function (Request $request) use ($byUserOrIp) {
+            return Limit::perMinute(5)->by($byUserOrIp($request, 'mcp_token'));
+        });
+
         // 邮箱投递自测：控制器里还有 10 分钟一次的业务限制，这里只防脚本刷
         RateLimiter::for('mail-test', function (Request $request) use ($byUserOrIp) {
             return Limit::perMinute(3)->by($byUserOrIp($request, 'mail_test'));

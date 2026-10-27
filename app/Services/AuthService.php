@@ -26,11 +26,18 @@ class AuthService
      * 不过期、单独列出、单独吊销；碰不到账号安全页本身的接口（见 Admin 中间件）。
      */
     public const ABILITY_API = 'api';
+    /**
+     * 客户 AI 助手（MCP）令牌：只认 /mcp，面板接口（User 中间件）、快捷登录换票一律拒绝，
+     * 泄露了也只能查这个账号、替这个账号下一张要本人去付款页付的单。mcp:order 是客户勾选「允许下单」才带的。
+     */
+    public const ABILITY_MCP_READ = 'mcp:read';
+    public const ABILITY_MCP_ORDER = 'mcp:order';
 
     /** token 名前缀：后台会话 admin|ip|ua，接口令牌 api|名称，用户面板 user|ip|ua（老 token 是 20 位随机串） */
     public const TOKEN_KIND_ADMIN = 'admin';
     public const TOKEN_KIND_API = 'api';
     public const TOKEN_KIND_USER = 'user';
+    public const TOKEN_KIND_MCP = 'mcp';
 
     /** 只读令牌在 POST 方法下能调的接口（路径最后一段）；GET 一律算查询 */
     private const READ_ONLY_POST_ENDPOINTS = ['fetch', 'detail'];
@@ -117,6 +124,9 @@ class AuthService
         if (in_array(self::ABILITY_API, $abilities, true)) {
             return self::TOKEN_KIND_API;
         }
+        if (in_array(self::ABILITY_MCP_READ, $abilities, true)) {
+            return self::TOKEN_KIND_MCP;
+        }
         if (in_array(self::ABILITY_ADMIN, $abilities, true)) {
             return self::TOKEN_KIND_ADMIN;
         }
@@ -169,6 +179,14 @@ class AuthService
             && self::tokenKind($token) === self::TOKEN_KIND_API;
     }
 
+    /** 是否客户 AI 助手（MCP）令牌（Sanctum 测试替身一律不算） */
+    public static function isMcpToken(mixed $token): bool
+    {
+        return $token instanceof PersonalAccessToken
+            && is_array($token->abilities)
+            && self::tokenKind($token) === self::TOKEN_KIND_MCP;
+    }
+
     private function issueToken(string $name, array $abilities, \DateTimeInterface $expiresAt): array
     {
         $token = $this->user->createToken($name, $abilities, $expiresAt);
@@ -213,7 +231,11 @@ class AuthService
         }
         
         $accessToken = PersonalAccessToken::findToken($token);
-        
+        // AI 助手令牌不能拿来换快捷登录链接：那等于把只读 / 下单令牌升级成完整的面板会话
+        if (self::isMcpToken($accessToken)) {
+            return null;
+        }
+
         $tokenable = $accessToken?->tokenable;
         
         return $tokenable instanceof User ? $tokenable : null;

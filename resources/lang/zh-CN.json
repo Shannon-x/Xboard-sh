@@ -238,5 +238,9 @@
     "The maximum recharge amount is :amount": "单笔最高充值 :amount 元",
     "Too many recharge orders, please try again later": "充值下单过于频繁，请稍后再试",
     "This payment method cannot be used for balance recharge": "该支付方式不支持余额充值，请换一种支付方式",
-    "Please enter the recharge amount": "请输入正确的充值金额"
+    "Please enter the recharge amount": "请输入正确的充值金额",
+    "This token can only be used by the AI assistant": "这个令牌只能给 AI 助手使用",
+    "The AI assistant is not available for this account": "这个账号暂时不能使用 AI 助手",
+    "You can keep at most :count AI assistant tokens; revoke one first": "AI 助手令牌最多保留 :count 个，请先吊销一个",
+    "Token does not exist": "令牌不存在或已吊销"
 }

@@ -28,6 +28,11 @@ class User
         if ($user->banned) {
             throw new ApiException(__('Your account has been suspended'), 403);
         }
+        // AI 助手（MCP）令牌只认 /mcp：面板接口能改密码、提现、看订阅链接，绝不能被它调用。
+        // 只看令牌能力，现有会话令牌（user / 两步验证上线前的 *）行为不变。
+        if (AuthService::isMcpToken($user->currentAccessToken())) {
+            throw new ApiException(__('This token can only be used by the AI assistant'), 403);
+        }
         return $next($request);
     }
 }

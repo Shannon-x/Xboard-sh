@@ -42,7 +42,7 @@ class RedeemGiftCardTool extends McpTool
             throw new ApiException('兑换码是 8–32 位，请让客户核对一下。');
         }
         // 与面板兑换共用限流桶：借 AI 也不能多试几个码
-        self::throttle("giftcard_redeem:user:{$user->id}", 5, 60, '兑换太频繁，请一分钟后再试。');
+        self::throttle("giftcard_redeem:user:{$user->id}", 5, 60, '兑换太频繁，请一分钟后再试。', 'gift-card-redeem');
 
         $service = new GiftCardService($code);
         $service->setUser(User::findOrFail($user->id));

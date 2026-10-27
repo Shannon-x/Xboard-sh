@@ -3,6 +3,8 @@
 namespace Tests\Feature;
 
 use App\Http\Requests\Admin\ConfigSave;
+use App\Models\BalanceLog;
+use App\Models\CommissionWithdrawal;
 use App\Models\Coupon;
 use App\Models\McpCallLog;
 use App\Models\Notice;
@@ -15,6 +17,7 @@ use App\Models\Ticket;
 use App\Models\TicketMessage;
 use App\Models\User;
 use App\Models\UserNotificationPref;
+use App\Models\UserPayoutProfile;
 use App\Services\AuthService;
 use App\Services\CheckoutService;
 use App\Services\Mcp\McpTicketRef;
@@ -525,13 +528,18 @@ class McpAssistantTest extends TestCase
         $this->assertFalse($this->tool($token, 'set_restock_alert', ['plan_id' => $this->bigPlan->id, 'cancel' => true])['error']);
         $this->assertSame(0, PlanRestockNotify::where('plan_id', $this->bigPlan->id)->count());
 
-        // 礼品卡：错码报错；与面板共用每分钟 5 次的限流桶
-        for ($i = 0; $i < 5; $i++) {
+        // 礼品卡：错码报错；与面板共用每分钟 5 次的限流桶（AI 试 3 次 + 面板试 2 次就满了，两边都被挡）
+        for ($i = 0; $i < 3; $i++) {
             $miss = $this->tool($token, 'redeem_gift_card', ['code' => 'NOPE' . $i . 'XXXXXX']);
             $this->assertTrue($miss['error']);
             $this->assertStringNotContainsString('频繁', $miss['text']);
         }
+        $panel = $this->panelToken($user);
+        for ($i = 0; $i < 2; $i++) {
+            $this->assertNotSame(429, $this->bearer($panel)->postJson('/api/v1/user/gift-card/redeem', ['code' => 'PANEL' . $i . 'XXXXXX'])->status());
+        }
         $this->assertStringContainsString('频繁', $this->tool($token, 'redeem_gift_card', ['code' => 'NOPE9XXXXXX'])['text']);
+        $this->bearer($panel)->postJson('/api/v1/user/gift-card/redeem', ['code' => 'PANEL9XXXXXX'])->assertStatus(429);
 
         // 重置订阅：不带 confirm 只说后果；确认后旧凭据作废，新链接不经过 AI
         [$oldToken, $oldUuid] = [$user->token, $user->uuid];
@@ -548,6 +556,78 @@ class McpAssistantTest extends TestCase
         // 只读令牌看不到这些操作
         $names = $this->toolNames($this->mcpToken($user));
         foreach (['create_ticket', 'reply_ticket', 'close_ticket', 'set_restock_alert', 'redeem_gift_card', 'reset_subscription', 'advance_traffic_cycle'] as $tool) {
+            $this->assertNotContains($tool, $names);
+        }
+    }
+
+    // ───────────────────────── 佣金：提现与转余额 ─────────────────────────
+
+    public function test_ai_withdraws_commission_only_to_the_saved_address_and_moves_it_to_balance(): void
+    {
+        $this->enable();
+        admin_setting(['commission_withdraw_limit' => 10, 'commission_withdraw_rate_source' => 'manual', 'commission_withdraw_usdt_rate' => 7.2]);
+        $address = 'TN3W4H6rK2ce4vX9YnFQHwKENnHjoxb3m9';
+        $user = $this->user(['commission_balance' => 30000, 'balance' => 500]);
+        $token = $this->mcpToken($user, true);
+
+        // 没在面板填过收款地址：AI 提不了，工具也没有填地址的参数
+        $first = $this->tool($token, 'withdraw_commission', ['amount_yuan' => '150']);
+        $this->assertTrue($first['error']);
+        $this->assertStringContainsString('面板', $first['text']);
+        $schema = collect($this->rpc($token, 'tools/list')->json('result.tools'))->firstWhere('name', 'withdraw_commission');
+        $this->assertEqualsCanonicalizing(['amount_yuan', 'confirm'], array_keys($schema['inputSchema']['properties']));
+
+        // 面板提过一次、留下收款信息之后：地址只给头尾
+        UserPayoutProfile::create(['user_id' => $user->id, 'chain_code' => 'usdt_trc20', 'address' => $address]);
+        $info = $this->tool($token, 'get_invite_info');
+        $this->assertSame('TN3W4H…b3m9', $info['data']['withdrawal']['payout_address']['address']);
+        $this->assertStringNotContainsString($address, $info['text']);
+
+        // 预览不动账户；确认后是与面板同一张提现单：佣金冻结、开系统工单，工单里注明是 AI 代提
+        $preview = $this->tool($token, 'withdraw_commission', ['amount_yuan' => '150']);
+        $this->assertFalse($preview['data']['done'], $preview['text']);
+        $this->assertSame('150.00', $preview['data']['amount_yuan']);
+        $this->assertSame('TN3W4H…b3m9', $preview['data']['to']['address']);
+        $this->assertSame(30000, (int) $user->fresh()->commission_balance);
+        $this->assertSame(0, CommissionWithdrawal::count());
+
+        $done = $this->tool($token, 'withdraw_commission', ['amount_yuan' => '150', 'confirm' => true]);
+        $this->assertTrue($done['data']['done'], $done['text']);
+        $withdrawal = CommissionWithdrawal::where('user_id', $user->id)->firstOrFail();
+        $this->assertSame($address, $withdrawal->address);
+        $this->assertSame(15000, (int) $withdrawal->amount);
+        $this->assertSame(15000, (int) $user->fresh()->commission_balance);
+        $this->assertSame($withdrawal->reference(), $done['data']['withdrawal']['reference']);
+        $this->assertStringContainsString('AI 助手', (string) TicketMessage::where('ticket_id', $withdrawal->ticket_id)->value('message'));
+        $this->assertMatchesRegularExpression('/^WD-\d{8}-[0-9A-Z]{8}$/', $done['data']['withdrawal']['reference'], '编号不带自增 id');
+        $this->assertTrue($this->tool($token, 'withdraw_commission', ['amount_yuan' => '20', 'confirm' => true])['error'], '同一时间只有一笔');
+
+        // 取消：冻结的佣金退回
+        $cancel = $this->tool($token, 'cancel_withdrawal');
+        $this->assertFalse($cancel['error'], $cancel['text']);
+        $this->assertSame(CommissionWithdrawal::STATUS_CANCELLED, (int) $withdrawal->fresh()->status);
+        $this->assertSame(30000, (int) $user->fresh()->commission_balance);
+        $this->assertTrue($this->tool($token, 'cancel_withdrawal')['error']);
+
+        // 佣金转余额：预览不动账户，确认后记一笔余额流水
+        $this->assertFalse($this->tool($token, 'transfer_commission', ['amount_yuan' => '50'])['data']['done']);
+        $this->assertSame(500, (int) $user->fresh()->balance);
+        $moved = $this->tool($token, 'transfer_commission', ['amount_yuan' => '50', 'confirm' => true]);
+        $this->assertTrue($moved['data']['done'], $moved['text']);
+        $fresh = $user->fresh();
+        $this->assertSame(25000, (int) $fresh->commission_balance);
+        $this->assertSame(5500, (int) $fresh->balance);
+        $this->assertSame(1, BalanceLog::where('user_id', $user->id)->where('type', BalanceLog::TYPE_COMMISSION_TRANSFER)->count());
+        $this->assertTrue($this->tool($token, 'transfer_commission', ['amount_yuan' => '9999', 'confirm' => true])['error']);
+
+        // 门槛与面板一致：付费被邀请人不够就提不了
+        admin_setting(['commission_withdraw_min_invitees' => 3]);
+        $this->assertTrue($this->tool($token, 'withdraw_commission', ['amount_yuan' => '20'])['error']);
+        $this->assertSame(0, CommissionWithdrawal::where('status', CommissionWithdrawal::STATUS_PENDING)->count());
+
+        // 只读令牌看不到这三个
+        $names = $this->toolNames($this->mcpToken($user));
+        foreach (['withdraw_commission', 'cancel_withdrawal', 'transfer_commission'] as $tool) {
             $this->assertNotContains($tool, $names);
         }
     }

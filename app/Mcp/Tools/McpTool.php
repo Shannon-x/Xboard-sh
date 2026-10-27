@@ -82,11 +82,15 @@ abstract class McpTool extends Tool
     }
 
     /**
-     * 与面板同名接口共用一个限流桶（键与 RouteServiceProvider 的 byUserOrIp 一致）：
-     * 换成 AI 调也不会多出一份额度，比如礼品卡兑换码不能借 AI 多试几次。
+     * 限流。给了 $panelLimiter（RouteServiceProvider 里的限流器名）时与面板同名接口共用一个桶：
+     * 键按 ThrottleRequests 的规则算成 md5(限流器名 . byUserOrIp 键)，换成 AI 调也不会多出一份额度，
+     * 比如礼品卡兑换码不能借 AI 多试几次。
      */
-    protected static function throttle(string $key, int $max, int $decaySeconds, string $message): void
+    protected static function throttle(string $key, int $max, int $decaySeconds, string $message, ?string $panelLimiter = null): void
     {
+        if ($panelLimiter !== null) {
+            $key = md5($panelLimiter . $key);
+        }
         if (RateLimiter::tooManyAttempts($key, $max)) {
             throw new ApiException($message);
         }

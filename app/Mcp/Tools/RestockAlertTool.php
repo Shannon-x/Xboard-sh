@@ -38,7 +38,7 @@ class RestockAlertTool extends McpTool
     protected function run(Request $request, User $user): Response|ResponseFactory
     {
         // 与面板登记同一个限流桶
-        self::throttle("restock:user:{$user->id}", 6, 60, '操作太频繁，请稍后再试。');
+        self::throttle("restock:user:{$user->id}", 6, 60, '操作太频繁，请稍后再试。', 'restock-notify');
         $plan = Plan::find((int) $request->get('plan_id'));
         if (!$plan) {
             throw new ApiException('找不到这个套餐，请先用 list_plans(include_sold_out=true) 查看。');

@@ -46,9 +46,10 @@ class CommissionWithdrawalService
      * @param array $chain WithdrawalConfig 里的链定义（老接口可传合成的 preset=none 链）
      * @param int[] $attachmentIds 已上传的二维码等附件（先经 TicketAttachmentService::validatePendingIds）
      * @param bool $reuseSavedQr 没有新上传时，沿用上次保存的二维码（复制一份绑定到新工单）
+     * @param string|null $note 附在工单首条消息末尾的一行说明（客户的 AI 助手代提时注明来源）
      * @throws ApiException
      */
-    public function apply(User $user, int $amountCents, array $chain, string $address, array $attachmentIds = [], bool $reuseSavedQr = false): CommissionWithdrawal
+    public function apply(User $user, int $amountCents, array $chain, string $address, array $attachmentIds = [], bool $reuseSavedQr = false, ?string $note = null): CommissionWithdrawal
     {
         if (!$this->config->enable) {
             throw new ApiException(__('Unsupported withdrawal'));
@@ -129,7 +130,7 @@ class CommissionWithdrawalService
             $message = TicketMessage::create([
                 'user_id' => $locked->id,
                 'ticket_id' => $ticket->id,
-                'message' => $this->applyMessage($withdrawal),
+                'message' => $this->applyMessage($withdrawal) . ($note !== null && $note !== '' ? "\n" . $note : ''),
             ]);
             if ($attachmentIds) {
                 (new TicketAttachmentService())->attachToMessage($attachmentIds, $message, $locked->id);

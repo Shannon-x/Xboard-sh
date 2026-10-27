@@ -9,6 +9,7 @@ use App\Services\Commission\CommissionPolicy;
 use App\Services\Commission\InviteDiscount;
 use App\Services\Commission\InviteeStats;
 use App\Services\Commission\WithdrawalConfig;
+use App\Services\Mcp\McpCommission;
 use App\Services\Mcp\McpPresenter as P;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Laravel\Mcp\Request;
@@ -22,7 +23,7 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 
 #[Name('get_invite_info')]
 #[Title('邀请与佣金')]
-#[Description('客户的邀请链接、邀请了多少人、多少人付过款、返佣比例、可用佣金和确认中的佣金，以及提现门槛。提现、佣金划转要客户到面板邀请页操作。')]
+#[Description('客户的邀请链接、邀请了多少人、多少人付过款、返佣比例、可用佣金和确认中的佣金，以及提现情况：门槛、收款地址（只给头尾）、处理中的申请和最近几笔记录。要提现用 withdraw_commission，转余额用 transfer_commission。')]
 #[IsReadOnly]
 #[IsIdempotent]
 class GetInviteInfoTool extends McpTool
@@ -54,8 +55,9 @@ class GetInviteInfoTool extends McpTool
             'commission_rate_percent' => (int) CommissionPolicy::view($user)['rate'],
             'commission_available_yuan' => P::yuan((int) $user->commission_balance),
             'commission_pending_yuan' => P::yuan($pending),
-            'withdraw_needs_paid_invitees' => $withdraw->minInvitees,
-            'note' => '提现和佣金转余额请到面板邀请页操作。',
+            'withdrawal' => McpCommission::withdrawal($user, $withdraw),
+            'transfer_to_balance_needs_paid_invitees' => $withdraw->transferRequireInvitees ? $withdraw->minInvitees : 0,
+            'note' => '可用佣金能提现（withdraw_commission，打到客户在面板填过的收款地址），也能转进余额抵扣下单（transfer_commission，转进余额后不能再提现）。',
         ]);
     }
 }

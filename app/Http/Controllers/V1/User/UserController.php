@@ -3,19 +3,16 @@
 namespace App\Http\Controllers\V1\User;
 
 use App\Http\Controllers\Controller;
+use App\Services\Commission\CommissionTransfer;
 use App\Services\Commission\InviteDiscount;
 use App\Services\EmailVerification;
 use App\Http\Requests\User\UserChangePassword;
 use App\Http\Requests\User\UserTransfer;
 use App\Http\Requests\User\UserUpdate;
-use App\Models\BalanceLog;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\Ticket;
 use App\Models\User;
-use App\Services\BalanceLedger;
-use App\Services\Commission\WithdrawalConfig;
-use App\Services\CommissionWithdrawalService;
 use App\Services\Auth\LoginService;
 use App\Services\AuthService;
 use App\Services\Plugin\HookManager;
@@ -24,7 +21,6 @@ use App\Utils\CacheKey;
 use App\Utils\Helper;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 
 class UserController extends Controller
 {
@@ -284,33 +280,10 @@ class UserController extends Controller
 
     public function transfer(UserTransfer $request)
     {
-        // 佣金转余额与佣金提现同属「拿佣金」，邮箱软验证受限时一起挡（下单付款不受影响）
-        EmailVerification::assertAllowed(User::findOrFail($request->user()->id));
-        // 后台开启「划转同样受人数门槛」时，划转与提现一样要求不同付费被邀请人 ≥ N：
-        // 否则自邀者不提现、直接把佣金划成余额抵下一单，提现门槛就被绕过了。
-        $withdrawConfig = WithdrawalConfig::fromSettings();
-        if ($withdrawConfig->transferRequireInvitees) {
-            (new CommissionWithdrawalService($withdrawConfig))->assertInviteeThreshold($request->user());
-        }
-        $amount = $request->input('transfer_amount');
+        // 门槛（邮箱软验证、可选的人数门槛）与划转本身都在 CommissionTransfer，AI 助手走同一套
+        CommissionTransfer::assertAllowed($request->user());
         try {
-            DB::transaction(function () use ($request, $amount) {
-                $user = User::lockForUpdate()->find($request->user()->id);
-                if (!$user) {
-                    throw new \Exception(__('The user does not exist'));
-                }
-                if ($amount > $user->commission_balance) {
-                    throw new \Exception(__('Insufficient commission balance'));
-                }
-                $user->commission_balance -= $amount;
-                $user->balance += $amount;
-                if (!$user->save()) {
-                    throw new \Exception(__('Transfer failed'));
-                }
-                BalanceLedger::record($user, BalanceLog::TYPE_COMMISSION_TRANSFER, (int) $amount, [
-                    'ref_type' => 'commission', 'remark' => '佣金划转到余额',
-                ]);
-            });
+            CommissionTransfer::move((int) $request->user()->id, (int) $request->input('transfer_amount'));
         } catch (\Exception $e) {
             return $this->fail([400, $e->getMessage()]);
         }

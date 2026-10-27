@@ -22,7 +22,7 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 
 #[Name('list_plans')]
 #[Title('在售套餐')]
-#[Description('列出在售套餐：套餐 ID、名称、运营商 / 分类、每个周期的价格（元）、流量、设备数、是否有货、是否支持按 GB 加购流量。客户自己正在用的套餐即使已下架或满员也会列出（可以续费）。下单或报价前先用它拿到 plan_id 和可选周期。')]
+#[Description('列出在售套餐：套餐 ID、名称、运营商 / 分类、每个周期的价格（元）、流量（可自选流量的列出档位）、设备数、是否有货、含哪些增值线路 / 能加选哪些（如三网，每月加价）、是否支持按 GB 加购流量。客户自己正在用的套餐即使已下架或满员也会列出（可以续费）。下单或报价前先用它拿到 plan_id 和可选周期。')]
 #[IsReadOnly]
 #[IsIdempotent]
 class ListPlansTool extends McpTool
@@ -72,6 +72,8 @@ class ListPlansTool extends McpTool
                     'price_per_gb_yuan' => P::yuan((float) $paygInfo['unit_price']),
                     'min_recharge_yuan' => P::yuan($paygInfo['min_amount']),
                 ] : null,
+                'traffic_choices' => self::trafficChoices($plan, $customizer),
+                'lines' => self::lines($plan, $customizer),
                 'traffic_topup' => $topup ? [
                     'price_per_gb_yuan' => P::yuan($topup['price_per_gb']),
                     'min_gb' => $topup['min_gb'],
@@ -89,7 +91,41 @@ class ListPlansTool extends McpTool
 
         return self::result([
             'plans' => $items,
-            'note' => '价格以报价工具 quote_plan 和付款页为准；需要定制流量、增值线路时请到面板下单。',
+            'note' => '价格以报价工具 quote_plan 和付款页为准。可自选流量的套餐（traffic_choices）和可加选的增值线路（lines 里 optional 的）在 quote_plan / create_order 用 traffic_gb、addon_group_ids 指定。不知道选哪个时用 recommend_plan。',
         ]);
+    }
+
+    /** 可自选流量的套餐：能选哪些档（GB）、每多一档每月加多少钱；固定流量返回 null */
+    private static function trafficChoices(Plan $plan, PlanCustomizationService $customizer): ?array
+    {
+        $mode = $customizer->mode($plan, 'transfer_enable');
+        if ($mode === 'fixed') {
+            return null;
+        }
+        $rule = $plan->customization['transfer_enable'];
+        return $mode === 'choices'
+            ? ['choices_gb' => array_values($rule['choices'])]
+            : [
+                'min_gb' => (int) $plan->transfer_enable,
+                'max_gb' => (int) $rule['max'],
+                'step_gb' => (int) $rule['step'],
+                'price_per_step_yuan' => P::yuan($rule['price_per_step']),
+            ];
+    }
+
+    /** 增值线路：随套餐包含的、可以加选的（每月加多少钱、组里节点大多是几倍率） */
+    private static function lines(Plan $plan, PlanCustomizationService $customizer): array
+    {
+        $out = [];
+        foreach ($customizer->addonGroupsForDisplay($plan) as $groupId => $group) {
+            $out[] = [
+                'group_id' => (int) $groupId,
+                'name' => $group['name'],
+                'mode' => $group['mode'] === 'included' ? 'included' : 'optional',
+                'monthly_fee_yuan' => $group['mode'] === 'included' ? null : P::yuan($group['price']),
+                'rate' => $group['rate'],
+            ];
+        }
+        return $out;
     }
 }

@@ -276,7 +276,7 @@ class McpAssistantTest extends TestCase
 
         // 所有只读工具的输出里都不能出现订阅凭据
         $readTools = ['get_account_overview', 'get_traffic_daily', 'get_traffic_options', 'get_account_settings', 'list_orders',
-            'list_balance_log', 'list_plans', 'list_offers', 'list_tickets', 'get_invite_info', 'search_help', 'list_nodes', 'get_payg_wallet'];
+            'list_balance_log', 'list_plans', 'list_offers', 'list_tickets', 'get_invite_info', 'search_help', 'list_nodes', 'get_payg_wallet', 'recommend_plan'];
         $this->assertEqualsCanonicalizing(array_merge($readTools, ['quote_plan', 'get_payment_link']), $names, '只读令牌只有查询工具');
         foreach ($readTools as $tool) {
             $out = $this->tool($token, $tool);
@@ -285,7 +285,7 @@ class McpAssistantTest extends TestCase
             $this->assertStringNotContainsString($user->uuid, $out['text'], $tool);
             $this->assertStringNotContainsString('/s/', $out['text'], $tool);
         }
-        $this->assertSame(14, McpCallLog::where('user_id', $user->id)->where('ok', 1)->count(), '每次调用都记审计');
+        $this->assertSame(15, McpCallLog::where('user_id', $user->id)->where('ok', 1)->count(), '每次调用都记审计');
     }
 
     // ───────────────────────── 下单与付款 ─────────────────────────

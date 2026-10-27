@@ -42,6 +42,8 @@ class CreateOrderTool extends McpTool
             'plan_id' => $schema->integer()->description('purchase 时必填，来自 list_plans。'),
             'period' => $schema->string()->description('付款周期，同 quote_plan。purchase 必填；renew 可选。'),
             'topup_gb' => $schema->integer()->description('traffic_topup 时必填：加购多少 GB。')->min(1),
+            'traffic_gb' => $schema->integer()->min(1)->description('purchase 可选：可自选流量的套餐选哪一档（GB）；按量套餐就是这次充多少 GB。来自 recommend_plan 的 quote_args，不传就是套餐默认流量。'),
+            'addon_group_ids' => $schema->array()->items($schema->integer())->description('purchase 可选：要加选的增值线路（如三网优化）的 group_id，来自 recommend_plan 的 quote_args 或 list_plans 的 lines；不传就不加。'),
             'coupon_code' => $schema->string()->description('客户提供的优惠码，可选。'),
             'expected_price_yuan' => $schema->string()->description('quote_plan 返回的 price_yuan，原样传入；价格在此期间变了会拒绝下单，避免按新价悄悄下单。'),
             'confirm_repeat' => $schema->boolean()->description('几分钟内刚买过同一套餐时会被拦下；客户确认确实要再买一次才传 true。'),

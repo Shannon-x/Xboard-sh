@@ -275,7 +275,7 @@ final class McpPlanAdvisor
         $viable = $access['missing'] === [] && ($shortfall <= 0 || $topup !== null);
         $tight = $shortfall <= 0 && $need > 0 && $traffic < $need * self::TIGHT && !$rule;
         $monthly = $base['per_month'] + ($topup['cents'] ?? 0);
-        $headroom = $need > 0 ? (int) floor(($traffic / $need - 1) * 100) : null;
+        $headroom = $need > 0 && $shortfall <= 0 ? (int) floor(($traffic / $need - 1) * 100) : null;
 
         $why = '每月 ¥' . P::yuan($base['per_month']) . "，{$traffic} GB 套餐流量";
         if ($addonFees !== []) {

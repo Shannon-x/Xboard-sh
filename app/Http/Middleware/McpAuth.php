@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Services\AuthService;
+use App\Services\Mcp\McpOAuthServer;
 use App\Services\Mcp\McpTokenService;
 use Closure;
 use Illuminate\Http\Request;
@@ -28,8 +29,8 @@ class McpAuth
         $user = Auth::guard('sanctum')->user();
         $token = $user?->currentAccessToken();
         if (!$user || !$token instanceof PersonalAccessToken || !AuthService::isMcpToken($token)) {
-            return self::deny(401, '令牌无效或已失效，请在面板「AI 助手」里重新生成。')
-                ->header('WWW-Authenticate', 'Bearer realm="mcp"');
+            return self::deny(401, '令牌无效或已失效，请在网站「AI 助手」页重新连接。')
+                ->header('WWW-Authenticate', self::challenge($config, $request));
         }
         if ($service->ineligibleReason($user) !== null) {
             return self::deny(403, '这个账号暂时不能使用 AI 助手。');
@@ -47,6 +48,22 @@ class McpAuth
         $service->touch($token);
         Auth::shouldUse('sanctum');
         return $next($request);
+    }
+
+    /**
+     * 401 时告诉 AI 软件去哪儿授权（RFC 9728）：ChatGPT、Claude 据此发起一键授权。
+     * 一键授权关着时只回 realm，手动令牌照旧。
+     */
+    private static function challenge(\App\Services\Mcp\McpConfig $config, Request $request): string
+    {
+        $header = 'Bearer realm="mcp"';
+        if ($request->bearerToken()) {
+            $header .= ', error="invalid_token"';
+        }
+        if ($config->oauthActive()) {
+            $header .= ', resource_metadata="' . McpOAuthServer::make()->resourceMetadataUrl() . '"';
+        }
+        return $header;
     }
 
     private static function deny(int $status, string $message)

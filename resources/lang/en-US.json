@@ -242,5 +242,6 @@
     "This token can only be used by the AI assistant": "This token can only be used by the AI assistant",
     "The AI assistant is not available for this account": "The AI assistant is not available for this account",
     "You can keep at most :count AI assistant tokens; revoke one first": "You can keep at most :count AI assistant tokens; revoke one first",
+    "This authorization request has expired; go back to your AI app and connect again": "This authorization request has expired; go back to your AI app and connect again",
     "Token does not exist": "Token does not exist or has been revoked"
 }

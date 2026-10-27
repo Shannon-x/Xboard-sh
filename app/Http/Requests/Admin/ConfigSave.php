@@ -233,6 +233,7 @@ class ConfigSave extends FormRequest
         'mcp_rate_per_minute' => 'nullable|integer|min:1|max:600',
         'mcp_rate_per_day' => 'nullable|integer|min:1|max:100000',
         'mcp_token_idle_days' => 'nullable|integer|min:1|max:365',
+        'mcp_oauth_enable' => '',
         'subscribe_template_singbox' => 'nullable',
         'subscribe_template_clash' => 'nullable',
         'subscribe_template_clashmeta' => 'nullable',

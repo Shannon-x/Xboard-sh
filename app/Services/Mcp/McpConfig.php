@@ -5,10 +5,11 @@ namespace App\Services\Mcp;
 /**
  * 客户 AI 助手（MCP）的站点设置快照。
  *
- * 客户在面板「AI 助手」里生成一个令牌，填进自己的 AI（Claude 自定义连接器、Cursor、Cherry Studio……），
- * AI 就能通过 /mcp 查账户、按客户的话下单。令牌只认 /mcp，面板接口一律拒绝（见 User 中间件）。
+ * 客户把接入地址填进自己的 AI：ChatGPT、Claude、Grok 这类网页版走一键授权（OAuth，见 McpOAuthServer），
+ * 在网站授权页点「允许」就连上；OpenClaw、Hermes Agent 这类自己装的智能体在网站生成令牌填进配置。
+ * 两种方式拿到的是同一种令牌，只认 /mcp，面板接口一律拒绝（见 User 中间件）。AI 能查账户、按客户的话下单。
  *
- * mcp_enable 为 0（默认）= 整个功能关闭：/mcp 一律 403，面板卡片显示「未开放」，下单 / 付款与上线前逐字相同。
+ * mcp_enable 为 0（默认）= 整个功能关闭：/mcp 一律 403，面板入口显示「未开放」，下单 / 付款与上线前逐字相同。
  * 白名单非空时只有名单里的账号能生成令牌（试点）；为空时开放给「付过款」的账号。
  */
 final class McpConfig
@@ -28,6 +29,8 @@ final class McpConfig
         'mcp_rate_per_day' => 2000,
         // 令牌多少天没用就失效
         'mcp_token_idle_days' => 90,
+        // 一键授权（OAuth）：ChatGPT、Claude、Grok 网页版只认这种方式；关掉后只能手动生成令牌
+        'mcp_oauth_enable' => 1,
     ];
 
     /** 每个账号最多同时持有的令牌数 */
@@ -45,6 +48,7 @@ final class McpConfig
         public readonly int $ratePerMinute,
         public readonly int $ratePerDay,
         public readonly int $tokenIdleDays,
+        public readonly bool $oauthEnabled = true,
     ) {
     }
 
@@ -61,6 +65,7 @@ final class McpConfig
             ratePerMinute: max(1, min(600, (int) $get('mcp_rate_per_minute'))),
             ratePerDay: max(1, min(100000, (int) $get('mcp_rate_per_day'))),
             tokenIdleDays: max(1, min(365, (int) $get('mcp_token_idle_days'))),
+            oauthEnabled: (bool) (int) $get('mcp_oauth_enable'),
         );
     }
 
@@ -93,6 +98,23 @@ final class McpConfig
             'mcp_rate_per_minute' => $this->ratePerMinute,
             'mcp_rate_per_day' => $this->ratePerDay,
             'mcp_token_idle_days' => $this->tokenIdleDays,
+            'mcp_oauth_enable' => $this->oauthEnabled,
         ];
+    }
+
+    /** 一键授权此刻是否可用：总开关、授权开关都开着，且接入地址是完整网址 */
+    public function oauthActive(): bool
+    {
+        return $this->enabled && $this->oauthEnabled && $this->issuer() !== null;
+    }
+
+    /** 授权服务器标识（issuer）= 接入地址的源（https://host[:port]），ChatGPT 按它逐字比对 */
+    public function issuer(): ?string
+    {
+        $parts = parse_url($this->endpointUrl);
+        if (!$parts || empty($parts['scheme']) || empty($parts['host'])) {
+            return null;
+        }
+        return strtolower($parts['scheme']) . '://' . strtolower($parts['host']) . (isset($parts['port']) ? ':' . $parts['port'] : '');
     }
 }

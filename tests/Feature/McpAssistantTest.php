@@ -175,6 +175,13 @@ class McpAssistantTest extends TestCase
         $this->assertSame($user->id, AuthService::findUserByBearerToken('Bearer ' . $panel)?->id);
     }
 
+    public function test_guest_config_tells_the_homepage_whether_the_assistant_is_open(): void
+    {
+        $this->assertSame(0, $this->getJson('/api/v1/guest/comm/config')->assertOk()->json('data.ai_assistant_enable'));
+        $this->enable();
+        $this->assertSame(1, $this->getJson('/api/v1/guest/comm/config')->assertOk()->json('data.ai_assistant_enable'));
+    }
+
     public function test_mcp_endpoint_is_closed_by_default_and_only_accepts_assistant_tokens(): void
     {
         $user = $this->user();

@@ -24,7 +24,6 @@ class McpTokenService
     public const NAME_PREFIX = 'mcp|';
 
     public const REASON_DISABLED = 'disabled';
-    public const REASON_NOT_LISTED = 'not_listed';
     public const REASON_NOT_PAID = 'not_paid';
     public const REASON_ACCOUNT = 'account';
 
@@ -51,11 +50,6 @@ class McpTokenService
         // 后台账号不发：令牌只代表客户本人，管理员的账号另有两步验证与接口令牌
         if ($user->banned || $user->is_admin) {
             return self::REASON_ACCOUNT;
-        }
-        if ($this->config->whitelist !== []) {
-            $listed = in_array(mb_strtolower((string) $user->email), $this->config->whitelist, true)
-                || in_array((string) $user->id, $this->config->whitelist, true);
-            return $listed ? null : self::REASON_NOT_LISTED;
         }
         $paid = Order::where('user_id', $user->id)
             ->whereIn('status', [Order::STATUS_PROCESSING, Order::STATUS_COMPLETED, Order::STATUS_DISCOUNTED])

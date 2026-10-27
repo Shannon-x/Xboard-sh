@@ -226,7 +226,6 @@ class ConfigSave extends FormRequest
         'payg_auto_topup_threshold' => 'nullable|numeric|decimal:0,2|min:0|max:1000',
         // 客户 AI 助手（MCP；默认值与归一化见 App\Services\Mcp\McpConfig）
         'mcp_enable' => '',
-        'mcp_whitelist' => 'nullable|string|max:5000',
         'mcp_endpoint_url' => 'nullable|url|max:255',
         'mcp_order_enable' => '',
         'mcp_daily_order_limit' => 'nullable|integer|min:0|max:100',
@@ -385,7 +384,6 @@ class ConfigSave extends FormRequest
             'payg_bonus_tiers.*.amount.*' => '按量赠送档位的充值门槛须为 0.01–1000000 元，最多两位小数',
             'payg_bonus_tiers.*.bonus.*' => '按量赠送金额须为 0.01–1000000 元，最多两位小数',
             'payg_auto_topup_threshold.*' => '自动补充门槛须为 0–1000 元，最多两位小数',
-            'mcp_whitelist.*' => '试点名单最多 5000 字',
             'mcp_endpoint_url.*' => '接入地址须是完整网址（含 https:// 与 /mcp）',
             'mcp_daily_order_limit.*' => '每日下单上限须为 0–100 的整数（0 = 只能查询）',
             'mcp_rate_per_minute.*' => '每分钟调用上限须为 1–600 的整数',

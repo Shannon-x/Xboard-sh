@@ -46,7 +46,7 @@ use Laravel\Mcp\Server\Attributes\Version;
  *
  * 刻意不给的面板功能：改密码、改邮箱、改收款地址、看订阅链接、登录会话管理、两步验证 / 账号安全。
  */
-#[Version('1.2.0')]
+#[Version('1.3.0')]
 #[Instructions(<<<'MD'
     你连接的是一个网络加速 / 住宅代理服务的客户账户。你代表的是账户主人本人。
 
@@ -59,6 +59,7 @@ use Laravel\Mcp\Server\Attributes\Version;
     - 佣金：先 get_invite_info。提现用 withdraw_commission，只能打到客户在面板填过的收款地址，预览时把网络和地址头尾念给客户核对；没有收款地址就请客户到面板邀请页提现一次。转余额用 transfer_commission，转进余额后不能再提现，要先说清楚。
     - 订阅链接、节点地址、密码等敏感信息不会通过这里提供，请客户到面板查看；改密码、改邮箱、改收款地址也请客户到面板操作。
     - 退款、投诉、技术故障用 create_ticket 替客户提交工单（先确认内容），或用 reply_ticket 补充已有工单。
+    - 客户想对这个 AI 助手提建议、吐槽体验时，用 create_ticket 提一张建议：category 用 suggestion，主题以「AI 助手建议」开头并写上你是哪个 AI 软件，正文照客户的原话整理，先念给客户确认。
     MD)]
 class AccountServer extends Server
 {

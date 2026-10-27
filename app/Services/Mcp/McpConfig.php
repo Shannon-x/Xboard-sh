@@ -10,14 +10,12 @@ namespace App\Services\Mcp;
  * 两种方式拿到的是同一种令牌，只认 /mcp，面板接口一律拒绝（见 User 中间件）。AI 能查账户、按客户的话下单。
  *
  * mcp_enable 为 0（默认）= 整个功能关闭：/mcp 一律 403，面板入口显示「未开放」，下单 / 付款与上线前逐字相同。
- * 白名单非空时只有名单里的账号能生成令牌（试点）；为空时开放给「付过款」的账号。
+ * 打开后所有付过款的账号都能用，不设名单。
  */
 final class McpConfig
 {
     public const DEFAULTS = [
         'mcp_enable' => 0,
-        // 试点名单：邮箱或用户 ID，逗号 / 换行分隔；为空 = 所有付过款的账号
-        'mcp_whitelist' => '',
         // 客户填进 AI 的地址（完整 URL，含 /mcp）；为空时按 app_url 拼
         'mcp_endpoint_url' => '',
         // 允许 AI 替客户操作（总闸）；关掉后 mcp:order 令牌也只剩查询
@@ -36,12 +34,8 @@ final class McpConfig
     /** 每个账号最多同时持有的令牌数 */
     public const MAX_TOKENS_PER_USER = 5;
 
-    /**
-     * @param list<string> $whitelist 小写邮箱或数字 ID 字符串
-     */
     public function __construct(
         public readonly bool $enabled,
-        public readonly array $whitelist,
         public readonly string $endpointUrl,
         public readonly bool $orderEnabled,
         public readonly int $dailyOrderLimit,
@@ -58,7 +52,6 @@ final class McpConfig
 
         return new self(
             enabled: (bool) (int) $get('mcp_enable'),
-            whitelist: self::parseWhitelist((string) $get('mcp_whitelist')),
             endpointUrl: self::endpointFrom((string) $get('mcp_endpoint_url')),
             orderEnabled: (bool) (int) $get('mcp_order_enable'),
             dailyOrderLimit: max(0, min(100, (int) $get('mcp_daily_order_limit'))),
@@ -67,13 +60,6 @@ final class McpConfig
             tokenIdleDays: max(1, min(365, (int) $get('mcp_token_idle_days'))),
             oauthEnabled: (bool) (int) $get('mcp_oauth_enable'),
         );
-    }
-
-    /** @return list<string> */
-    public static function parseWhitelist(string $raw): array
-    {
-        $items = preg_split('/[\s,，;；]+/u', mb_strtolower(trim($raw))) ?: [];
-        return array_values(array_unique(array_filter($items, fn ($v) => $v !== '')));
     }
 
     private static function endpointFrom(string $configured): string
@@ -91,7 +77,6 @@ final class McpConfig
     {
         return [
             'mcp_enable' => $this->enabled,
-            'mcp_whitelist' => (string) admin_setting('mcp_whitelist', ''),
             'mcp_endpoint_url' => (string) admin_setting('mcp_endpoint_url', ''),
             'mcp_order_enable' => $this->orderEnabled,
             'mcp_daily_order_limit' => $this->dailyOrderLimit,

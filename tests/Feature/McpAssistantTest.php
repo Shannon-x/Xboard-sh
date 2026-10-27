@@ -241,11 +241,6 @@ class McpAssistantTest extends TestCase
         $this->bearer($this->panelToken($other))->postJson('/api/v1/user/mcp/token/revoke', ['id' => $list['tokens'][0]['id']])->assertStatus(400);
         $this->bearer($panel)->postJson('/api/v1/user/mcp/token/revoke', ['id' => $list['tokens'][0]['id']])->assertOk();
         $this->rpc($plain, 'tools/list')->assertStatus(401);
-
-        // 试点名单：不在名单里的账号不发
-        admin_setting(['mcp_whitelist' => strtoupper($other->email)]);
-        $this->assertNull(McpTokenService::make()->ineligibleReason($other), '名单按邮箱匹配，不分大小写');
-        $this->assertSame(McpTokenService::REASON_NOT_LISTED, McpTokenService::make()->ineligibleReason($user));
     }
 
     // ───────────────────────── 只读 ─────────────────────────
@@ -685,7 +680,7 @@ class McpAssistantTest extends TestCase
     {
         $rules = (new ConfigSave())->rules();
         $ok = Validator::make([
-            'mcp_enable' => 1, 'mcp_whitelist' => "a@example.test\n42", 'mcp_endpoint_url' => 'https://ai.example.test/mcp',
+            'mcp_enable' => 1, 'mcp_endpoint_url' => 'https://ai.example.test/mcp',
             'mcp_order_enable' => 0, 'mcp_daily_order_limit' => 0, 'mcp_rate_per_minute' => 60, 'mcp_rate_per_day' => 2000, 'mcp_token_idle_days' => 90,
         ], $rules);
         $this->assertFalse($ok->fails(), json_encode($ok->errors()->all(), JSON_UNESCAPED_UNICODE));

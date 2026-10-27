@@ -76,6 +76,10 @@ final class McpCommission
         if ($config->requireQrcode && !$profile->qr_attachment_id) {
             throw new ApiException('本站提现需要收款二维码，AI 没法替你上传。请到面板邀请页提现一次并上传二维码，之后 AI 就能沿用。');
         }
+        // 先说处理中的那笔：它冻结着佣金，先报「余额不足」会让客户摸不着头脑
+        if (CommissionWithdrawal::where('user_id', $user->id)->where('status', CommissionWithdrawal::STATUS_PENDING)->exists()) {
+            throw new ApiException('你已有一笔提现在处理中，等它完成，或先取消（cancel_withdrawal）再重新申请。');
+        }
         if ($amountCents < $config->minCents) {
             throw new ApiException('单次最少提现 ¥' . P::yuan($config->minCents) . '。');
         }
@@ -87,9 +91,6 @@ final class McpCommission
             throw new ApiException('可提现佣金只有 ¥' . P::yuan($available) . '。');
         }
         (new CommissionWithdrawalService($config))->assertInviteeThreshold($user);
-        if (CommissionWithdrawal::where('user_id', $user->id)->where('status', CommissionWithdrawal::STATUS_PENDING)->exists()) {
-            throw new ApiException('你已有一笔提现在处理中，等它完成，或先取消（cancel_withdrawal）再重新申请。');
-        }
 
         return [
             'chain' => $chain,
@@ -108,8 +109,8 @@ final class McpCommission
             'status' => CommissionWithdrawal::$statusMap[$w->status] ?? (string) $w->status,
             'applied_at' => P::time($w->created_at ? (int) $w->getRawOriginal('created_at') : null),
             'finished_at' => P::time($w->settled_at ? (int) $w->settled_at : null),
-            'estimated_usdt' => $w->usdt_amount,
-            'paid_usdt' => $w->paid_usdt,
+            'estimated_usdt' => $w->usdt_amount !== null ? (string) $w->usdt_amount : null,
+            'paid_usdt' => $w->paid_usdt !== null ? (string) $w->paid_usdt : null,
             'reject_reason' => $w->reject_reason,
         ];
     }

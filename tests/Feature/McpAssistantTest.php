@@ -600,7 +600,9 @@ class McpAssistantTest extends TestCase
         $this->assertSame($withdrawal->reference(), $done['data']['withdrawal']['reference']);
         $this->assertStringContainsString('AI 助手', (string) TicketMessage::where('ticket_id', $withdrawal->ticket_id)->value('message'));
         $this->assertMatchesRegularExpression('/^WD-\d{8}-[0-9A-Z]{8}$/', $done['data']['withdrawal']['reference'], '编号不带自增 id');
-        $this->assertTrue($this->tool($token, 'withdraw_commission', ['amount_yuan' => '20', 'confirm' => true])['error'], '同一时间只有一笔');
+        $again = $this->tool($token, 'withdraw_commission', ['amount_yuan' => '200', 'confirm' => true]);
+        $this->assertTrue($again['error']);
+        $this->assertStringContainsString('处理中', $again['text'], '同一时间只有一笔，先说处理中的那笔而不是余额不足');
 
         // 取消：冻结的佣金退回
         $cancel = $this->tool($token, 'cancel_withdrawal');

@@ -26,7 +26,7 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 
 #[Name('create_order')]
 #[Title('下单')]
-#[Description('替客户下单（续费 / 新购 / 换套餐 / 加购流量），返回订单号、应付金额和付款链接。钱由客户本人在付款链接里付，订单 2 小时内不付会自动取消。只在客户明确说要买之后调用，并先用 quote_plan 报价给客户确认。账户有余额时会先自动抵扣（取消订单会退回）。')]
+#[Description('替客户下单（续费 / 新购 / 换套餐 / 加购流量 / 流量重置包），返回订单号、应付金额和付款链接。钱由客户本人在付款链接里付，订单 2 小时内不付会自动取消。只在客户明确说要买之后调用，并先用 quote_plan 报价给客户确认。账户有余额时会先自动抵扣（取消订单会退回）。')]
 #[IsReadOnly(false)]
 #[IsDestructive(false)]
 #[IsIdempotent(false)]
@@ -38,8 +38,7 @@ class CreateOrderTool extends McpTool
     public function schema(JsonSchema $schema): array
     {
         return [
-            'mode' => $schema->string()->enum(McpOrderSpec::MODES)
-                ->description('renew = 续费当前套餐；purchase = 新购或换成 plan_id 指定的套餐；traffic_topup = 当前套餐本周期加购流量。')->required(),
+            'mode' => $schema->string()->enum(McpOrderSpec::MODES)->description(McpOrderSpec::MODE_HELP)->required(),
             'plan_id' => $schema->integer()->description('purchase 时必填，来自 list_plans。'),
             'period' => $schema->string()->description('付款周期，同 quote_plan。purchase 必填；renew 可选。'),
             'topup_gb' => $schema->integer()->description('traffic_topup 时必填：加购多少 GB。')->min(1),

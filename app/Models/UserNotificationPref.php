@@ -23,6 +23,8 @@ class UserNotificationPref extends Model
     public const SOURCE_LIST_UNSUBSCRIBE = 'list_unsubscribe';
     public const SOURCE_ADMIN = 'admin';
     public const SOURCE_LEGACY = 'legacy';
+    /** 客户让自己的 AI 助手（MCP）改的 */
+    public const SOURCE_MCP = 'mcp';
 
     public const SOURCES = [
         self::SOURCE_PANEL,
@@ -30,6 +32,7 @@ class UserNotificationPref extends Model
         self::SOURCE_LIST_UNSUBSCRIBE,
         self::SOURCE_ADMIN,
         self::SOURCE_LEGACY,
+        self::SOURCE_MCP,
     ];
 
     protected $table = 'v2_user_notification_pref';

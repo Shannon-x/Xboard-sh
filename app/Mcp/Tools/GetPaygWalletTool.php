@@ -59,7 +59,7 @@ class GetPaygWalletTool extends McpTool
                 'gb' => P::gb($e['bytes']),
                 'bonus_gb' => P::gb($e['bonus_bytes'] + $e['first_bonus_bytes']),
             ], array_slice($ledger['entries'], 0, 10)),
-            'note' => '自动补充开关只能在面板里改。',
+            'note' => '自动补充开关可以用 update_account_settings(payg_auto_topup=…) 修改。',
         ]);
     }
 }

@@ -19,7 +19,7 @@ final class McpConfig
         'mcp_whitelist' => '',
         // 客户填进 AI 的地址（完整 URL，含 /mcp）；为空时按 app_url 拼
         'mcp_endpoint_url' => '',
-        // 允许 AI 下单（总闸）；关掉后 mcp:order 令牌也只剩查询
+        // 允许 AI 替客户操作（总闸）；关掉后 mcp:order 令牌也只剩查询
         'mcp_order_enable' => 1,
         // 每个令牌每天最多建几单（新购 / 续费 / 换套餐 / 充值合计）
         'mcp_daily_order_limit' => 10,

@@ -9,6 +9,7 @@ use App\Services\Mcp\McpAudit;
 use App\Services\Mcp\McpConfig;
 use App\Services\Mcp\McpTokenService;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Validation\ValidationException;
 use Laravel\Mcp\Request;
 use Laravel\Mcp\Response;
@@ -24,7 +25,10 @@ use Laravel\Sanctum\PersonalAccessToken;
  */
 abstract class McpTool extends Tool
 {
-    /** 需要客户勾选「允许下单」的工具（mcp:order）；后台关了「允许 AI 下单」时也不注册 */
+    /**
+     * 会改动账户的工具（下单、改设置、工单、兑换……）：只对客户勾选了「允许 AI 替我操作」的令牌（mcp:order）注册，
+     * 后台关了「允许 AI 操作」时也不注册。只读令牌连工具名都看不到。
+     */
     protected bool $ordering = false;
 
     /** 审计里记下的业务编号（下单类工具：订单号） */
@@ -58,7 +62,7 @@ abstract class McpTool extends Tool
         $ip = request()->ip();
         try {
             if ($this->ordering && !$this->shouldRegister($request)) {
-                throw new ApiException('这个令牌没有下单权限：请在面板「AI 助手」里生成一个勾选了「允许下单」的令牌。');
+                throw new ApiException('这个令牌是只读的：要让 AI 替你下单或修改设置，请在面板「AI 助手」里生成一个勾选了「允许 AI 替我操作」的令牌。');
             }
             $response = $this->run($request, $user);
             McpAudit::record($user->id, (int) $token->id, $this->name(), !self::failed($response), $this->auditRef, null, $ip);
@@ -75,6 +79,24 @@ abstract class McpTool extends Tool
             McpAudit::record($user->id, (int) $token->id, $this->name(), false, $this->auditRef, 'internal: ' . $e->getMessage(), $ip);
             return Response::error('服务暂时出错，请稍后再试，或到面板里操作。');
         }
+    }
+
+    /**
+     * 与面板同名接口共用一个限流桶（键与 RouteServiceProvider 的 byUserOrIp 一致）：
+     * 换成 AI 调也不会多出一份额度，比如礼品卡兑换码不能借 AI 多试几次。
+     */
+    protected static function throttle(string $key, int $max, int $decaySeconds, string $message): void
+    {
+        if (RateLimiter::tooManyAttempts($key, $max)) {
+            throw new ApiException($message);
+        }
+        RateLimiter::hit($key, $decaySeconds);
+    }
+
+    /** 改动类工具的二次确认：没带 confirm=true 时只说明后果，不动账户 */
+    protected static function confirmed(Request $request): bool
+    {
+        return filter_var($request->get('confirm'), FILTER_VALIDATE_BOOLEAN);
     }
 
     /** 结构化结果：同一份数据既给 structuredContent，也镜像成一段 JSON 文本（老客户端只认文本） */

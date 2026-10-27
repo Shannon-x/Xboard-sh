@@ -20,7 +20,7 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 
 #[Name('quote_plan')]
 #[Title('报价')]
-#[Description('报价，不下单：续费当前套餐、新购或换套餐、按 GB 加购流量分别要多少钱；换套餐时会算出剩余时间折抵多少、折抵后应付多少。下单前先报价给客户确认。金额不含优惠码与余额抵扣，以下单结果和付款页为准。')]
+#[Description('报价，不下单：续费当前套餐、新购或换套餐、按 GB 加购流量、流量重置包分别要多少钱；换套餐时会算出剩余时间折抵多少、折抵后应付多少。下单前先报价给客户确认。金额不含优惠码与余额抵扣，以下单结果和付款页为准。')]
 #[IsReadOnly]
 #[IsIdempotent]
 class QuotePlanTool extends McpTool
@@ -28,10 +28,9 @@ class QuotePlanTool extends McpTool
     public function schema(JsonSchema $schema): array
     {
         return [
-            'mode' => $schema->string()->enum(McpOrderSpec::MODES)
-                ->description('renew = 续费当前套餐；purchase = 新购或换成 plan_id 指定的套餐；traffic_topup = 当前套餐本周期加购流量。')->required(),
+            'mode' => $schema->string()->enum(McpOrderSpec::MODES)->description(McpOrderSpec::MODE_HELP)->required(),
             'plan_id' => $schema->integer()->description('purchase 时必填，来自 list_plans。'),
-            'period' => $schema->string()->description('付款周期：monthly / quarterly / half_yearly / yearly / two_yearly / three_yearly / onetime / reset_traffic。purchase 必填；renew 可选（默认上次的周期）。'),
+            'period' => $schema->string()->description('付款周期：monthly / quarterly / half_yearly / yearly / two_yearly / three_yearly / onetime。purchase 必填；renew 可选（默认上次的周期）。'),
             'topup_gb' => $schema->integer()->description('traffic_topup 时必填：加购多少 GB。')->min(1),
         ];
     }

@@ -7,12 +7,19 @@ use App\Models\McpCallLog;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\Plan;
+use App\Models\PlanRestockNotify;
 use App\Models\ServerGroup;
+use App\Models\Ticket;
+use App\Models\TicketMessage;
 use App\Models\User;
+use App\Models\UserNotificationPref;
 use App\Services\AuthService;
 use App\Services\CheckoutService;
+use App\Services\Mcp\McpTicketRef;
 use App\Services\Mcp\McpTokenService;
 use App\Services\Mcp\OrderPayService;
+use App\Services\Notification\NotificationPreference;
+use App\Services\TicketService;
 use App\Services\PaymentService;
 use App\Utils\Helper;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -261,14 +268,17 @@ class McpAssistantTest extends TestCase
         $this->assertNull($overview['data']['pending_order']);
 
         // 所有只读工具的输出里都不能出现订阅凭据
-        foreach (['get_account_overview', 'get_traffic_daily', 'list_orders', 'list_plans', 'list_tickets', 'search_help', 'list_nodes', 'get_payg_wallet'] as $tool) {
+        $readTools = ['get_account_overview', 'get_traffic_daily', 'get_traffic_options', 'get_account_settings', 'list_orders',
+            'list_balance_log', 'list_plans', 'list_tickets', 'get_invite_info', 'search_help', 'list_nodes', 'get_payg_wallet'];
+        $this->assertEqualsCanonicalizing(array_merge($readTools, ['quote_plan', 'get_payment_link']), $names, '只读令牌只有查询工具');
+        foreach ($readTools as $tool) {
             $out = $this->tool($token, $tool);
             $this->assertFalse($out['error'], "{$tool}: {$out['text']}");
             $this->assertStringNotContainsString($user->token, $out['text'], $tool);
             $this->assertStringNotContainsString($user->uuid, $out['text'], $tool);
             $this->assertStringNotContainsString('/s/', $out['text'], $tool);
         }
-        $this->assertSame(9, McpCallLog::where('user_id', $user->id)->where('ok', 1)->count(), '每次调用都记审计');
+        $this->assertSame(13, McpCallLog::where('user_id', $user->id)->where('ok', 1)->count(), '每次调用都记审计');
     }
 
     // ───────────────────────── 下单与付款 ─────────────────────────
@@ -354,12 +364,190 @@ class McpAssistantTest extends TestCase
         $this->assertTrue($second['error']);
         $this->assertStringContainsString('上限', $second['text']);
 
-        // 后台关掉「允许 AI 下单」：下单类工具整个消失，查询照常
+        // 后台关掉「允许 AI 替客户操作」：下单类工具整个消失，查询照常
         admin_setting(['mcp_order_enable' => 0, 'mcp_daily_order_limit' => 10]);
         $names = $this->toolNames($token);
         $this->assertNotContains('create_order', $names);
         $this->assertContains('get_account_overview', $names);
         $this->assertTrue($this->tool($token, 'create_order', ['mode' => 'renew'])['error']);
+    }
+
+    // ───────────────────────── 只碰令牌主人自己的账户 ─────────────────────────
+
+    public function test_tools_only_touch_the_token_owners_account(): void
+    {
+        $this->enable();
+        $alice = $this->user();
+        $bob = $this->user();
+        $bobOrder = Order::create([
+            'user_id' => $bob->id, 'plan_id' => $this->bigPlan->id, 'period' => 'monthly', 'type' => Order::TYPE_UPGRADE,
+            'trade_no' => Helper::generateOrderNo(), 'total_amount' => 4500, 'status' => Order::STATUS_PENDING,
+        ]);
+        $bobTicket = (new TicketService())->createTicket($bob->id, '鲍勃的工单', 1, '东京 01 连不上', [], 'connection');
+        $token = $this->mcpToken($alice, true);
+
+        // 没有一个工具接受「用户 ID / 邮箱」之类的参数：想指定别人也没有入口
+        foreach ($this->rpc($token, 'tools/list')->assertOk()->json('result.tools') as $tool) {
+            $props = array_map('strtolower', array_keys((array) ($tool['inputSchema']['properties'] ?? [])));
+            $this->assertEmpty(array_intersect($props, ['user_id', 'uid', 'email', 'user', 'account']), $tool['name']);
+        }
+
+        // 拿别人的订单号：查不到、取消不了
+        $this->assertTrue($this->tool($token, 'get_payment_link', ['trade_no' => $bobOrder->trade_no])['error']);
+        $this->assertTrue($this->tool($token, 'cancel_order', ['trade_no' => $bobOrder->trade_no])['error']);
+        $this->assertSame(Order::STATUS_PENDING, (int) $bobOrder->fresh()->status);
+        $this->assertStringNotContainsString($bobOrder->trade_no, $this->tool($token, 'list_orders')['text']);
+
+        // 拿别人的工单编号：看不到、回不了、关不掉
+        $bobRef = McpTicketRef::of($bobTicket);
+        $this->assertStringNotContainsString('鲍勃的工单', $this->tool($token, 'list_tickets')['text']);
+        $this->assertTrue($this->tool($token, 'reply_ticket', ['ticket_ref' => $bobRef, 'message' => '插一句'])['error']);
+        $this->assertTrue($this->tool($token, 'close_ticket', ['ticket_ref' => $bobRef])['error']);
+        $this->assertSame(Ticket::STATUS_OPENING, (int) $bobTicket->fresh()->status);
+        $this->assertSame(1, TicketMessage::where('ticket_id', $bobTicket->id)->count());
+
+        // 别人的邮箱、订阅凭据不出现在任何输出里
+        foreach (['get_account_overview', 'get_account_settings', 'get_invite_info', 'list_balance_log'] as $tool) {
+            $text = $this->tool($token, $tool)['text'];
+            foreach ([$bob->email, $bob->token, $bob->uuid] as $secret) {
+                $this->assertStringNotContainsString($secret, $text, $tool);
+            }
+        }
+    }
+
+    // ───────────────────────── 面板操作：设置、流量、工单、订阅 ─────────────────────────
+
+    public function test_ai_switches_auto_renew_and_email_notifications_like_the_panel(): void
+    {
+        $this->enable();
+        $user = $this->user(['balance' => 500]);
+        $readOnly = $this->mcpToken($user);
+        $this->assertNotContains('update_account_settings', $this->toolNames($readOnly));
+        $token = $this->mcpToken($user, true);
+
+        $view = $this->tool($token, 'get_account_settings');
+        $this->assertFalse($view['error'], $view['text']);
+        $this->assertFalse($view['data']['auto_renew']['enabled']);
+        $this->assertSame('20.00', $view['data']['auto_renew']['renew_amount_yuan']);
+        $this->assertSame('15.00', $view['data']['auto_renew']['shortfall_yuan']);
+
+        $on = $this->tool($token, 'update_account_settings', ['auto_renew' => true, 'email_notifications' => ['marketing' => false]]);
+        $this->assertFalse($on['error'], $on['text']);
+        $this->assertSame(1, (int) $user->fresh()->auto_renew);
+        $this->assertFalse(NotificationPreference::enabled($user->fresh(), NotificationPreference::MARKETING));
+        $this->assertSame(UserNotificationPref::SOURCE_MCP, UserNotificationPref::where('user_id', $user->id)->where('category', 'marketing')->value('source'));
+        $this->assertTrue($on['data']['settings']['auto_renew']['enabled']);
+
+        $this->assertTrue($this->tool($token, 'update_account_settings', ['email_notifications' => ['spam' => false]])['error']);
+        $this->assertTrue($this->tool($token, 'update_account_settings', [])['error']);
+        $this->assertTrue($this->tool($token, 'update_account_settings', ['payg_auto_topup' => true])['error'], '不是按量套餐');
+
+        $this->assertFalse($this->tool($token, 'update_account_settings', ['auto_renew' => false])['error']);
+        $this->assertSame(0, (int) $user->fresh()->auto_renew);
+        admin_setting(['auto_renew_enable' => 0]);
+        $this->assertTrue($this->tool($token, 'update_account_settings', ['auto_renew' => true])['error'], '站点关了自动续费');
+        $this->assertSame(0, (int) $user->fresh()->auto_renew);
+    }
+
+    public function test_ai_resets_traffic_by_pack_or_by_advancing_the_cycle(): void
+    {
+        $this->enable();
+        $this->plan->prices = ['monthly' => 20, 'quarterly' => 57, 'reset_traffic' => 5];
+        $this->plan->save();
+        $expiredAt = time() + 40 * 86400;
+        $user = $this->user(['u' => 30 * self::GB, 'd' => 67 * self::GB, 'expired_at' => $expiredAt, 'next_reset_at' => time() + 10 * 86400]);
+        $token = $this->mcpToken($user, true);
+
+        $options = $this->tool($token, 'get_traffic_options');
+        $this->assertFalse($options['error'], $options['text']);
+        $this->assertEquals(3, $options['data']['remaining_gb']);
+        $this->assertTrue($options['data']['reset_traffic_pack']['available']);
+        $this->assertSame('5.00', $options['data']['reset_traffic_pack']['price_yuan']);
+        $this->assertTrue($options['data']['advance_cycle']['available'], json_encode($options['data']['advance_cycle'], JSON_UNESCAPED_UNICODE));
+        $this->assertFalse($options['data']['traffic_topup']['available'], '套餐没开加购');
+
+        // 花钱的重置包：报价 → 下单，和面板一样是一张「流量重置」订单
+        $quote = $this->tool($token, 'quote_plan', ['mode' => 'reset_traffic']);
+        $this->assertFalse($quote['error'], $quote['text']);
+        $this->assertSame('5.00', $quote['data']['price_yuan']);
+        $created = $this->tool($token, 'create_order', ['mode' => 'reset_traffic', 'expected_price_yuan' => '5.00']);
+        $this->assertFalse($created['error'], $created['text']);
+        $order = Order::where('trade_no', $created['data']['trade_no'])->firstOrFail();
+        $this->assertSame(Plan::PERIOD_RESET_TRAFFIC, $order->period);
+        $this->assertSame(Order::TYPE_RESET_TRAFFIC, (int) $order->type);
+        $this->assertFalse($this->tool($token, 'cancel_order', ['trade_no' => $order->trade_no])['error']);
+        $this->assertTrue($this->tool($token, 'create_order', ['mode' => 'purchase', 'plan_id' => $this->plan->id, 'period' => 'reset_traffic'])['error'], '重置包只走 mode=reset_traffic');
+
+        // 免费提前重置：不带 confirm 只预览，什么都不改
+        $preview = $this->tool($token, 'advance_traffic_cycle');
+        $this->assertFalse($preview['error'], $preview['text']);
+        $this->assertFalse($preview['data']['done']);
+        $this->assertSame(97 * self::GB, (int) $user->fresh()->u + (int) $user->fresh()->d);
+        $this->assertSame($expiredAt, (int) $user->fresh()->expired_at);
+
+        $done = $this->tool($token, 'advance_traffic_cycle', ['confirm' => true]);
+        $this->assertFalse($done['error'], $done['text']);
+        $this->assertTrue($done['data']['done']);
+        $fresh = $user->fresh();
+        $this->assertSame(0, (int) $fresh->u + (int) $fresh->d);
+        $this->assertSame($expiredAt - 30 * 86400, (int) $fresh->expired_at, '到期日提前 30 天');
+        $this->assertTrue($this->tool($token, 'advance_traffic_cycle', ['confirm' => true])['error'], '流量没用完不能再提前');
+    }
+
+    public function test_ai_handles_tickets_restock_alerts_gift_cards_and_subscription_reset(): void
+    {
+        $this->enable();
+        $user = $this->user();
+        $token = $this->mcpToken($user, true);
+
+        $created = $this->tool($token, 'create_ticket', ['subject' => '东京 01 晚上卡顿', 'message' => '每晚 9 点卡几秒', 'category' => 'connection']);
+        $this->assertFalse($created['error'], $created['text']);
+        $ticket = Ticket::where('user_id', $user->id)->firstOrFail();
+        $this->assertSame($created['data']['ticket_ref'], McpTicketRef::of($ticket));
+        $this->assertStringContainsString('AI 助手', (string) TicketMessage::where('ticket_id', $ticket->id)->value('message'), '客服看得出是 AI 代写的');
+        $this->assertSame($created['data']['ticket_ref'], $this->tool($token, 'list_tickets')['data']['tickets'][0]['ticket_ref']);
+        $this->assertTrue($this->tool($token, 'create_ticket', ['subject' => '再开一张', 'message' => 'x'])['error'], '求助工单同时只能开一张');
+
+        $this->assertFalse($this->tool($token, 'reply_ticket', ['ticket_ref' => strtolower($created['data']['ticket_ref']), 'message' => '补充：用的是 Clash'])['error']);
+        $this->assertSame(2, TicketMessage::where('ticket_id', $ticket->id)->count());
+        $this->assertFalse($this->tool($token, 'close_ticket', ['ticket_ref' => $created['data']['ticket_ref']])['error']);
+        $this->assertSame(Ticket::STATUS_CLOSED, (int) $ticket->fresh()->status);
+        $this->assertTrue($this->tool($token, 'reply_ticket', ['ticket_ref' => $created['data']['ticket_ref'], 'message' => '还在吗'])['error']);
+
+        // 到货提醒：只有售罄的套餐能登记
+        $this->assertTrue($this->tool($token, 'set_restock_alert', ['plan_id' => $this->bigPlan->id])['error'], '有位置的套餐直接买');
+        $this->bigPlan->capacity_limit = 0;
+        $this->bigPlan->save();
+        $this->assertFalse($this->tool($token, 'set_restock_alert', ['plan_id' => $this->bigPlan->id])['error']);
+        $this->assertSame(1, PlanRestockNotify::where('plan_id', $this->bigPlan->id)->where('email', $user->email)->count());
+        $this->assertFalse($this->tool($token, 'set_restock_alert', ['plan_id' => $this->bigPlan->id, 'cancel' => true])['error']);
+        $this->assertSame(0, PlanRestockNotify::where('plan_id', $this->bigPlan->id)->count());
+
+        // 礼品卡：错码报错；与面板共用每分钟 5 次的限流桶
+        for ($i = 0; $i < 5; $i++) {
+            $miss = $this->tool($token, 'redeem_gift_card', ['code' => 'NOPE' . $i . 'XXXXXX']);
+            $this->assertTrue($miss['error']);
+            $this->assertStringNotContainsString('频繁', $miss['text']);
+        }
+        $this->assertStringContainsString('频繁', $this->tool($token, 'redeem_gift_card', ['code' => 'NOPE9XXXXXX'])['text']);
+
+        // 重置订阅：不带 confirm 只说后果；确认后旧凭据作废，新链接不经过 AI
+        [$oldToken, $oldUuid] = [$user->token, $user->uuid];
+        $this->assertFalse($this->tool($token, 'reset_subscription')['data']['done']);
+        $this->assertSame($oldToken, $user->fresh()->token);
+        $reset = $this->tool($token, 'reset_subscription', ['confirm' => true]);
+        $this->assertTrue($reset['data']['done']);
+        $fresh = $user->fresh();
+        $this->assertNotSame($oldToken, $fresh->token);
+        $this->assertNotSame($oldUuid, $fresh->uuid);
+        $this->assertStringNotContainsString($fresh->token, $reset['text']);
+        $this->assertStringNotContainsString($fresh->uuid, $reset['text']);
+
+        // 只读令牌看不到这些操作
+        $names = $this->toolNames($this->mcpToken($user));
+        foreach (['create_ticket', 'reply_ticket', 'close_ticket', 'set_restock_alert', 'redeem_gift_card', 'reset_subscription', 'advance_traffic_cycle'] as $tool) {
+            $this->assertNotContains($tool, $names);
+        }
     }
 
     public function test_admin_settings_validate(): void

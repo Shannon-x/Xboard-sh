@@ -6,6 +6,8 @@ use App\Models\Ticket;
 use App\Models\TicketMessage;
 use App\Models\User;
 use App\Services\Mcp\McpPresenter as P;
+use App\Services\Mcp\McpTicketRef;
+use App\Services\TicketCategory\TicketCategories;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Laravel\Mcp\Request;
 use Laravel\Mcp\Response;
@@ -18,7 +20,7 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 
 #[Name('list_tickets')]
 #[Title('我的工单')]
-#[Description('查看客户最近的工单：主题、是否已关闭、客服是否已回复，以及每张工单最近几条消息。回答「客服回了没」时用它。提交 / 回复工单请到面板。')]
+#[Description('查看客户最近的工单：编号（ticket_ref）、主题、分类、是否已关闭、客服是否已回复，以及每张工单最近几条消息。回答「客服回了没」时用它；回复或关闭工单要用这里的 ticket_ref。')]
 #[IsReadOnly]
 #[IsIdempotent]
 class ListTicketsTool extends McpTool
@@ -36,9 +38,11 @@ class ListTicketsTool extends McpTool
         $tickets = Ticket::where('user_id', $user->id)->orderByDesc('updated_at')->limit($limit)->get();
         $messages = TicketMessage::whereIn('ticket_id', $tickets->pluck('id'))->orderByDesc('id')->get()->groupBy('ticket_id');
 
-        // 工单不带编号（自增 ID 会让人推算出站点总工单数）：按最近更新排序，主题就是辨认方式
+        // 编号是 HMAC 出来的 ticket_ref，不是自增 ID（自增 ID 会让人推算出站点总工单数）
         $items = $tickets->map(fn (Ticket $t) => [
+            'ticket_ref' => McpTicketRef::of($t),
             'subject' => (string) $t->subject,
+            'category' => TicketCategories::nameOf($t->category),
             'status' => (int) $t->status === Ticket::STATUS_CLOSED ? '已关闭' : '处理中',
             'reply_status' => (int) $t->reply_status === Ticket::REPLY_STATUS_REPLIED ? '客服已回复' : '等待客服回复',
             'updated_at' => P::time((int) $t->updated_at),

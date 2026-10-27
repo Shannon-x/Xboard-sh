@@ -15,7 +15,7 @@ use Laravel\Sanctum\PersonalAccessToken;
  * 客户 AI 助手的一键授权（OAuth 2.1 授权码 + PKCE，按 MCP 授权规范）。
  *
  * ChatGPT、Claude、Grok 网页版不让客户填请求头，只认这一套：客户在 AI 里填接入地址 → AI 跳到
- * /oauth/authorize → 我们转到网站的授权页（/ai/authorize，客户用平常的账号登录）→ 客户点「允许」→
+ * /oauth/authorize → 我们转到网站的授权页（/ai/authorize/<请求号>，客户用平常的账号登录）→ 客户点「允许」→
  * 带着一次性授权码回到 AI → AI 用码换令牌。换到的就是面板手动生成的那种令牌（McpTokenService::issue），
  * 只认 /mcp，「允许 AI 替我操作」由客户在授权页自己勾。
  *
@@ -135,7 +135,8 @@ class McpOAuthServer
             'wants_order' => self::wantsOrder($query['scope'] ?? null),
             'app' => McpOAuthClients::describe($client, $redirect),
         ], self::PENDING_TTL);
-        return $this->consentUrl(['req' => $id]);
+        // 请求号放在路径里：客户要先登录时，登录页只把路径带回来（查询串会被丢掉）
+        return rtrim((string) admin_setting('app_url', ''), '/') . '/ai/authorize/' . $id;
     }
 
     /**

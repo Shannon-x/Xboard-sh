@@ -125,9 +125,8 @@ class McpOAuthTest extends TestCase
             'scope' => 'mcp:read mcp:order',
             'resource' => self::ENDPOINT,
         ]))->assertRedirect()->headers->get('Location');
-        $this->assertStringStartsWith(self::APP_URL . '/ai/authorize?req=', $location);
-        parse_str((string) parse_url($location, PHP_URL_QUERY), $query);
-        return $query['req'];
+        $this->assertMatchesRegularExpression('#^' . preg_quote(self::APP_URL, '#') . '/ai/authorize/[A-Za-z0-9]{40}$#', $location);
+        return basename($location);
     }
 
     private function approve(User $user, string $req, bool $canOrder): array

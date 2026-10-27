@@ -195,6 +195,19 @@ class RouteServiceProvider extends ServiceProvider
             return Limit::perMinute(10)->by('billing_pay_action:ip:' . $request->ip());
         });
 
+        // AI 助手令牌生成：每人最多 5 个由服务层卡住，这里只防脚本刷
+        RateLimiter::for('mcp-token', function (Request $request) use ($byUserOrIp) {
+            return Limit::perMinute(5)->by($byUserOrIp($request, 'mcp_token'));
+        });
+
+        // AI 助手一键授权：动态注册每次连接只调一次，收得紧；授权入口和换令牌按 IP 防刷
+        RateLimiter::for('mcp-oauth-register', function (Request $request) {
+            return Limit::perHour(20)->by('mcp_oauth_register:ip:' . $request->ip());
+        });
+        RateLimiter::for('mcp-oauth', function (Request $request) {
+            return Limit::perMinute(60)->by('mcp_oauth:ip:' . $request->ip());
+        });
+
         // 邮箱投递自测：控制器里还有 10 分钟一次的业务限制，这里只防脚本刷
         RateLimiter::for('mail-test', function (Request $request) use ($byUserOrIp) {
             return Limit::perMinute(3)->by($byUserOrIp($request, 'mail_test'));

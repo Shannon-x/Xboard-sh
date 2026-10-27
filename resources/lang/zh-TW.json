@@ -238,5 +238,10 @@
     "The maximum recharge amount is :amount": "單筆最高儲值 :amount 元",
     "Too many recharge orders, please try again later": "儲值下單過於頻繁，請稍後再試",
     "This payment method cannot be used for balance recharge": "該支付方式不支援餘額儲值，請換一種支付方式",
-    "Please enter the recharge amount": "請輸入正確的儲值金額"
+    "Please enter the recharge amount": "請輸入正確的儲值金額",
+    "This token can only be used by the AI assistant": "這個令牌只能給 AI 助手使用",
+    "The AI assistant is not available for this account": "這個帳號暫時不能使用 AI 助手",
+    "You can keep at most :count AI assistant tokens; revoke one first": "AI 助手令牌最多保留 :count 個，請先撤銷一個",
+    "This authorization request has expired; go back to your AI app and connect again": "授權請求已過期，請回到 AI 軟體裡重新點「連接」",
+    "Token does not exist": "令牌不存在或已撤銷"
 }

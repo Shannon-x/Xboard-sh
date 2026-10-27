@@ -238,5 +238,10 @@
     "The maximum recharge amount is :amount": "The maximum recharge amount is :amount",
     "Too many recharge orders, please try again later": "Too many recharge orders, please try again later",
     "This payment method cannot be used for balance recharge": "This payment method cannot be used for balance recharge",
-    "Please enter the recharge amount": "Please enter a valid recharge amount"
+    "Please enter the recharge amount": "Please enter a valid recharge amount",
+    "This token can only be used by the AI assistant": "This token can only be used by the AI assistant",
+    "The AI assistant is not available for this account": "The AI assistant is not available for this account",
+    "You can keep at most :count AI assistant tokens; revoke one first": "You can keep at most :count AI assistant tokens; revoke one first",
+    "This authorization request has expired; go back to your AI app and connect again": "This authorization request has expired; go back to your AI app and connect again",
+    "Token does not exist": "Token does not exist or has been revoked"
 }

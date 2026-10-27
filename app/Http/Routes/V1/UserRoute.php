@@ -9,6 +9,8 @@ use App\Http\Controllers\V1\User\EmailVerifyController;
 use App\Http\Controllers\V1\User\GiftCardController;
 use App\Http\Controllers\V1\User\InviteController;
 use App\Http\Controllers\V1\User\KnowledgeController;
+use App\Http\Controllers\V1\User\McpAuthorizeController;
+use App\Http\Controllers\V1\User\McpTokenController;
 use App\Http\Controllers\V1\User\NoticeController;
 use App\Http\Controllers\V1\User\NotificationController;
 use App\Http\Controllers\V1\User\OrderController;
@@ -115,6 +117,16 @@ class UserRoute
             // 输入邮件里的 6 位验证码（登记进中间件路径表）。服务层按验证码计错满 5 次作废，这里只防刷
             $router->post('/email-verify/confirm-code', [EmailVerifyController::class, 'confirmCode'])
                 ->middleware('throttle:email-verify-code');
+            // AI 助手（MCP）令牌：查看 / 生成 / 吊销（三条都登记进中间件路径表）
+            $router->get('/mcp/token/fetch', [McpTokenController::class, 'fetch']);
+            $router->post('/mcp/token/create', [McpTokenController::class, 'create'])
+                ->middleware('throttle:mcp-token');
+            $router->post('/mcp/token/revoke', [McpTokenController::class, 'revoke']);
+            // AI 助手一键授权：网站授权页的查看 / 允许 / 拒绝（三条都登记进中间件路径表）
+            $router->get('/mcp/authorize/fetch', [McpAuthorizeController::class, 'show']);
+            $router->post('/mcp/authorize/approve', [McpAuthorizeController::class, 'approve'])
+                ->middleware('throttle:mcp-token');
+            $router->post('/mcp/authorize/deny', [McpAuthorizeController::class, 'deny']);
             // Server
             $router->get('/server/fetch', [ServerController::class, 'fetch']);
             // Coupon

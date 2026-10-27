@@ -8,6 +8,7 @@ use App\Http\Controllers\V1\Guest\TelegramController;
 use App\Http\Controllers\V1\Guest\TicketAttachmentController;
 use App\Http\Controllers\V1\Guest\BillingDocumentController;
 use App\Http\Controllers\V1\Guest\BillingPayController;
+use App\Http\Controllers\V1\Guest\OrderPayController;
 use App\Http\Controllers\V1\Guest\NotificationController;
 use App\Http\Controllers\V1\Guest\EmailVerifyController;
 use Illuminate\Contracts\Routing\Registrar;
@@ -52,6 +53,16 @@ class GuestRoute
             $router->post('/billing/pay/checkout', [BillingPayController::class, 'checkout'])
                 ->middleware('throttle:billing-pay-action');
             $router->post('/billing/pay/cancel', [BillingPayController::class, 'cancel'])
+                ->middleware('throttle:billing-pay-action');
+            // 订单的免登录付款（AI 助手下单后给客户的 /pay/o-… 链接）：同上，凭据在请求体里、由 OrderPayService 验签；
+            // 四条都登记进 sufe-middleware-rs 的路径表
+            $router->post('/order/pay/fetch', [OrderPayController::class, 'fetch'])
+                ->middleware('throttle:billing-pay');
+            $router->post('/order/pay/check', [OrderPayController::class, 'check'])
+                ->middleware('throttle:billing-pay');
+            $router->post('/order/pay/checkout', [OrderPayController::class, 'checkout'])
+                ->middleware('throttle:billing-pay-action');
+            $router->post('/order/pay/cancel', [OrderPayController::class, 'cancel'])
                 ->middleware('throttle:billing-pay-action');
             // 邮件页脚「管理通知偏好」打开的免登录偏好页：凭据在请求体里，走加密通道（登记进中间件路径表）
             $router->post('/notify/fetch', [NotificationController::class, 'fetch'])

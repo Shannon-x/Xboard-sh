@@ -4,6 +4,7 @@ namespace App\Http\Controllers\V1\Guest;
 
 use App\Http\Controllers\Controller;
 use App\Services\Commission\InviteDiscount;
+use App\Services\Mcp\McpConfig;
 use App\Services\Plugin\HookManager;
 use App\Services\Recharge\RechargeConfig;
 use App\Utils\Dict;
@@ -36,6 +37,8 @@ class CommController extends Controller
             'addon_group_label' => (string) admin_setting('addon_group_label', ''),
             // 被邀请人首单优惠百分比（0 = 关）：注册页 / 套餐页据此提示「通过邀请注册首单 x 折」
             'invite_first_order_discount' => InviteDiscount::percent(),
+            // AI 助手总开关：前台首页的 AI 助手版块只在打开时显示（游客也要知道，所以放在这里）
+            'ai_assistant_enable' => McpConfig::fromSettings()->enabled ? 1 : 0,
             // 保持向后兼容
             'is_recaptcha' => (int) admin_setting('captcha_enable', 0) ? 1 : 0,
             // 余额充值：开关、金额上下限（元）、赠送档位、快捷金额

@@ -226,9 +226,10 @@ class InviteController extends Controller
 
     public function details(Request $request)
     {
-        $current = $request->input('current') ? $request->input('current') : 1;
-        $pageSize = $request->input('page_size') >= 10 ? $request->input('page_size') : 10;
-        $pageSize = min((int) $pageSize, 100); // 与 users() 一致，封顶防一次拉全量序列化
+        // 与 users() 一致：非数字分页参数按默认值处理（原来直接进 forPage 会 500），封顶防一次拉全量序列化
+        $current = max(1, (int) $request->input('current', 1));
+        $pageSize = (int) $request->input('page_size', 10);
+        $pageSize = $pageSize >= 10 ? min($pageSize, 100) : 10;
         $builder = CommissionLog::where('invite_user_id', $request->user()->id)
             ->where('get_amount', '>', 0)
             ->orderBy('created_at', 'DESC');

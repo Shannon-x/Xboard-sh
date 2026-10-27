@@ -10,7 +10,7 @@ class NoticeController extends Controller
 {
     public function fetch(Request $request)
     {
-        $current = $request->input('current') ? $request->input('current') : 1;
+        $current = max(1, (int) $request->input('current', 1));
         $pageSize = 5;
         $model = Notice::orderBy('sort', 'ASC')
             ->orderBy('id', 'DESC')

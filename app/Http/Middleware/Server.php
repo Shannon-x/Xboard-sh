@@ -32,8 +32,10 @@ class Server
     {
         $request->validate([
             'token' => [
-                'string',
+                // bail：token 不是字符串时别再进闭包里 (string) 强转（Array to string → 500）
+                'bail',
                 'required',
+                'string',
                 function ($attribute, $value, $fail) {
                     // hash_equals 避免时序泄露；admin_setting 可能返回 null，强转 string
                     $expected = (string) admin_setting('server_token');
@@ -42,10 +44,21 @@ class Server
                     }
                 },
             ],
-            'node_id' => 'required',
+            'node_id' => [
+                'required',
+                function ($attribute, $value, $fail) {
+                    if (!is_string($value) && !is_int($value)) {
+                        $fail("Invalid {$attribute}");
+                    }
+                },
+            ],
             'node_type' => [
                 'nullable',
                 function ($attribute, $value, $fail) use ($request) {
+                    if (!is_string($value)) {
+                        $fail("Invalid node type specified");
+                        return;
+                    }
                     if ($value === "v2node") {
                         $value = null;
                     }

@@ -3,7 +3,9 @@
 namespace Tests\Feature;
 
 use App\Http\Requests\Admin\ConfigSave;
+use App\Models\Coupon;
 use App\Models\McpCallLog;
+use App\Models\Notice;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\Plan;
@@ -269,7 +271,7 @@ class McpAssistantTest extends TestCase
 
         // 所有只读工具的输出里都不能出现订阅凭据
         $readTools = ['get_account_overview', 'get_traffic_daily', 'get_traffic_options', 'get_account_settings', 'list_orders',
-            'list_balance_log', 'list_plans', 'list_tickets', 'get_invite_info', 'search_help', 'list_nodes', 'get_payg_wallet'];
+            'list_balance_log', 'list_plans', 'list_offers', 'list_tickets', 'get_invite_info', 'search_help', 'list_nodes', 'get_payg_wallet'];
         $this->assertEqualsCanonicalizing(array_merge($readTools, ['quote_plan', 'get_payment_link']), $names, '只读令牌只有查询工具');
         foreach ($readTools as $tool) {
             $out = $this->tool($token, $tool);
@@ -278,7 +280,7 @@ class McpAssistantTest extends TestCase
             $this->assertStringNotContainsString($user->uuid, $out['text'], $tool);
             $this->assertStringNotContainsString('/s/', $out['text'], $tool);
         }
-        $this->assertSame(13, McpCallLog::where('user_id', $user->id)->where('ok', 1)->count(), '每次调用都记审计');
+        $this->assertSame(14, McpCallLog::where('user_id', $user->id)->where('ok', 1)->count(), '每次调用都记审计');
     }
 
     // ───────────────────────── 下单与付款 ─────────────────────────
@@ -548,6 +550,53 @@ class McpAssistantTest extends TestCase
         foreach (['create_ticket', 'reply_ticket', 'close_ticket', 'set_restock_alert', 'redeem_gift_card', 'reset_subscription', 'advance_traffic_cycle'] as $tool) {
             $this->assertNotContains($tool, $names);
         }
+    }
+
+    // ───────────────────────── 节日优惠：公告里的优惠码 ─────────────────────────
+
+    public function test_ai_offers_only_coupons_published_in_announcements_and_applies_them(): void
+    {
+        $this->enable();
+        $coupon = fn (string $code, int $type, int $value, array $extra = []) => Coupon::create($extra + [
+            'code' => $code, 'name' => $code . ' 券', 'type' => $type, 'value' => $value, 'show' => true,
+            'limit_use' => null, 'limit_use_with_user' => null, 'started_at' => time() - 86400, 'ended_at' => time() + 7 * 86400,
+        ]);
+        $coupon('GUOQING20', 2, 20);
+        $coupon('VIPONLY88', 1, 500);                                        // 私下发给渠道的码：公告里没写
+        $coupon('OLD2025', 2, 30, ['ended_at' => time() - 60]);             // 公告还挂着，但券已过期
+        $coupon('DRAFT10', 2, 10);                                           // 只出现在未上架的公告里
+        Notice::create(['title' => '国庆快乐', 'content' => '<p>全场 8 折，下单填 <b>GUOQING20</b>；去年的 OLD2025 已失效。</p>', 'show' => true]);
+        Notice::create(['title' => '草稿', 'content' => '双十一用 DRAFT10', 'show' => false]);
+
+        $user = $this->user();
+        $token = $this->mcpToken($user, true);
+
+        $offers = $this->tool($token, 'list_offers');
+        $this->assertFalse($offers['error'], $offers['text']);
+        $this->assertSame(['GUOQING20'], array_column($offers['data']['coupons'], 'code'));
+        $this->assertSame('8 折（减 20%）', $offers['data']['coupons'][0]['discount']);
+        $this->assertSame('国庆快乐', $offers['data']['notices'][0]['title']);
+        $this->assertStringNotContainsString('VIPONLY88', $offers['text']);
+        $this->assertStringNotContainsString('DRAFT10', $offers['text']);
+
+        // 客户只是来查流量，AI 也能看到正在发的券
+        $overview = $this->tool($token, 'get_account_overview');
+        $this->assertSame('GUOQING20', $overview['data']['current_offers'][0]['code']);
+        $this->assertStringNotContainsString('VIPONLY88', $overview['text']);
+
+        $quote = $this->tool($token, 'quote_plan', ['mode' => 'renew', 'coupon_code' => 'GUOQING20']);
+        $this->assertFalse($quote['error'], $quote['text']);
+        $this->assertTrue($quote['data']['coupon']['valid']);
+        $this->assertSame('4.00', $quote['data']['coupon']['discount_yuan']);
+        $this->assertSame('16.00', $quote['data']['cash_due_estimate_yuan']);
+        $this->assertFalse($this->tool($token, 'quote_plan', ['mode' => 'renew', 'coupon_code' => 'OLD2025'])['data']['coupon']['valid']);
+
+        $created = $this->tool($token, 'create_order', ['mode' => 'renew', 'coupon_code' => 'GUOQING20', 'expected_price_yuan' => $quote['data']['price_yuan']]);
+        $this->assertFalse($created['error'], $created['text']);
+        $order = Order::where('trade_no', $created['data']['trade_no'])->firstOrFail();
+        $this->assertSame(400, (int) $order->discount_amount);
+        $this->assertSame(1600, (int) $order->total_amount);
+        $this->assertSame('16.00', $created['data']['cash_due_yuan']);
     }
 
     public function test_admin_settings_validate(): void

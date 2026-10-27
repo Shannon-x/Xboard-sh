@@ -5,6 +5,7 @@ namespace App\Mcp\Tools;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\User;
+use App\Services\Mcp\McpOffers;
 use App\Services\Mcp\McpPresenter as P;
 use App\Services\Mcp\OrderPayService;
 use App\Services\Payg\PaygService;
@@ -22,7 +23,7 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 
 #[Name('get_account_overview')]
 #[Title('账户概览')]
-#[Description('查看当前账户：套餐、到期时间、本周期流量（总量 / 已用 / 剩余）、重置日、设备数、增值线路、账户余额、续费参考价，以及是否有待付款订单。回答「还剩多少流量」「几号到期」「要不要续费」时先调用它。')]
+#[Description('查看当前账户：套餐、到期时间、本周期流量（总量 / 已用 / 剩余）、重置日、设备数、增值线路、账户余额、续费参考价、是否有待付款订单，以及公告里正在发的优惠码。回答「还剩多少流量」「几号到期」「要不要续费」时先调用它。')]
 #[IsReadOnly]
 #[IsIdempotent]
 class GetAccountOverviewTool extends McpTool
@@ -97,6 +98,12 @@ class GetAccountOverviewTool extends McpTool
                 'amount_due_yuan' => P::yuan($pending->total_amount),
                 'payment_url' => OrderPayService::url((string) $pending->trade_no),
             ] : null,
+            // 公告里正在发的优惠码：客户哪怕只是来查流量，AI 也能顺口提一句（详情 list_offers）
+            'current_offers' => McpOffers::announcedCoupons()->take(3)->map(fn ($c) => [
+                'name' => (string) $c->name,
+                'code' => (string) $c->code,
+                'valid_until' => P::time((int) $c->ended_at),
+            ])->values()->all() ?: null,
             'note' => '订阅链接不会通过 AI 助手提供，请在面板「我的订阅」里复制。',
         ]);
     }

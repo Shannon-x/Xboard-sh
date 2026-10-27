@@ -17,6 +17,7 @@ use App\Mcp\Tools\GetTrafficDailyTool;
 use App\Mcp\Tools\GetTrafficOptionsTool;
 use App\Mcp\Tools\ListBalanceLogTool;
 use App\Mcp\Tools\ListNodesTool;
+use App\Mcp\Tools\ListOffersTool;
 use App\Mcp\Tools\ListOrdersTool;
 use App\Mcp\Tools\ListPlansTool;
 use App\Mcp\Tools\ListTicketsTool;
@@ -47,6 +48,7 @@ use Laravel\Mcp\Server\Attributes\Version;
     - 回答流量、到期、续费问题前先调用 get_account_overview；金额单位是人民币元，流量是 GB，时间是北京时间。
     - 下单流程：先 list_plans / quote_plan 报价并让客户确认，再 create_order。订单建好后把 payment_url 原样交给客户，由客户本人打开付款；你不能也不需要替客户付款。待付订单 2 小时内不付会自动取消。
     - 客户已有待付款订单时，先把那一单的付款链接给他（get_payment_link），不要重复下单。
+    - 客户要买、续费、加购前先看 list_offers：有适用的优惠码就告诉客户，并在 quote_plan / create_order 带上 coupon_code。get_account_overview 里有 current_offers 时，可以在回答末尾顺带提一句活动，一次对话提一次就够，不要反复推销。
     - 流量不够时先调 get_traffic_options，把加购流量、流量重置包、免费提前重置三种办法和代价讲给客户，让客户选。
     - 会改动账户的操作（提前重置流量、重置订阅链接、开关自动续费、提交工单、兑换礼品卡）先讲清后果、等客户明确同意再调用；带 confirm 参数的工具，第一次不带 confirm 只看后果。
     - 订阅链接、节点地址、密码等敏感信息不会通过这里提供，请客户到面板查看；改密码、提现也请客户到面板操作。
@@ -54,6 +56,9 @@ use Laravel\Mcp\Server\Attributes\Version;
     MD)]
 class AccountServer extends Server
 {
+    /** tools/list 一页给全：默认 15 个一页，有的 AI 客户端不翻页，会看不到后面的下单类工具 */
+    public int $defaultPaginationLength = 50;
+
     protected array $tools = [
         // 查询（只读令牌也有）
         GetAccountOverviewTool::class,
@@ -64,6 +69,7 @@ class AccountServer extends Server
         ListOrdersTool::class,
         ListBalanceLogTool::class,
         ListPlansTool::class,
+        ListOffersTool::class,
         QuotePlanTool::class,
         GetPaymentLinkTool::class,
         ListTicketsTool::class,

@@ -55,7 +55,8 @@ class CheckCommission extends Command
     public const AUTO_CHECK_CHUNK = 200;
 
     /**
-     * 把「已完成、有邀请人、满 3 天」的订单从待确认(0)推进到发放中(1)。
+     * 把「已完成（或确认期内被换套餐折抵，见 Order::COMMISSION_DISCOUNTED_SINCE）、有邀请人、满 3 天」
+     * 的订单从待确认(0)推进到发放中(1)。
      *
      * 历史实现是一条整表 UPDATE：优化器走 status 索引（基数 3），把全部已完成订单逐行加排他锁。
      * 2026-10-21 生产 InnoDB 的最近一次死锁记录里它持有 122,664 个行锁，对面是支付回调后的
@@ -72,7 +73,7 @@ class CheckCommission extends Command
         $eligible = fn ($query) => $query
             ->where('commission_status', 0)
             ->whereNotNull('invite_user_id')
-            ->where('status', Order::STATUS_COMPLETED)
+            ->commissionSettleable()
             ->where('updated_at', '<=', $cutoff);
 
         $eligible(Order::query())
@@ -101,7 +102,7 @@ class CheckCommission extends Command
                                 ->first();
 
                             // 多层防御：除了 commission_status=1 之外，必须额外校验
-                            //   ① order.status = STATUS_COMPLETED（已支付完成的订单才发佣）
+                            //   ① 订单已付款未退款（Order::isCommissionSettleable：已完成，或换套餐折抵）
                             //   ② invite_user_id 非空
                             //   ③ commission_balance > 0（订单本身有佣金额度可分；防御 admin 把 status
                             //      改回 1 但 commission_balance=0/负数 时仍然走 payHandle）
@@ -114,7 +115,7 @@ class CheckCommission extends Command
                             if (
                                 !$lockedOrder
                                 || (int) $lockedOrder->commission_status !== 1
-                                || (int) $lockedOrder->status !== Order::STATUS_COMPLETED
+                                || !$lockedOrder->isCommissionSettleable()
                                 || !$lockedOrder->invite_user_id
                             ) {
                                 return;

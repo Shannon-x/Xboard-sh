@@ -38,7 +38,7 @@ class GetInviteInfoTool extends McpTool
         $user = User::findOrFail($user->id);
         $origin = rtrim((string) admin_setting('app_url', ''), '/');
         $codes = InviteCode::where('user_id', $user->id)->where('status', InviteCode::STATUS_UNUSED)->orderByDesc('id')->limit(5)->pluck('code');
-        $pending = (int) Order::where('status', Order::STATUS_COMPLETED)->where('commission_status', 0)
+        $pending = (int) Order::commissionSettleable()->where('commission_status', 0)
             ->where('invite_user_id', $user->id)->sum('commission_balance');
         if (admin_setting('commission_distribution_enable', 0)) {
             $pending = (int) ($pending * (admin_setting('commission_distribution_l1') / 100));

@@ -3,12 +3,16 @@
 namespace Tests\Feature;
 
 use App\Console\Commands\CheckCommission;
+use App\Models\CommissionLog;
 use App\Models\Order;
+use App\Models\User;
 use App\Utils\Helper;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
@@ -105,6 +109,70 @@ class CommissionAutoCheckTest extends TestCase
         app(CheckCommission::class)->autoCheck();
 
         $this->assertSame(0, (int) DB::table('v2_order')->where('id', $id)->value('commission_status'));
+    }
+
+    /**
+     * 被邀请人在确认期内换套餐，原订单变成已折抵(4)：起点之后创建的照常推进，起点之前的存量不动；
+     * 站点设置 commission_discounted_since=0 时存量也推进（整体补发的开关）。
+     */
+    #[Test]
+    public function discounted_orders_follow_the_cutoff(): void
+    {
+        $old = time() - 4 * 86400;
+        $since = Order::COMMISSION_DISCOUNTED_SINCE;
+        $after = $this->order(['status' => Order::STATUS_DISCOUNTED, 'created_at' => $since + 60], $old);
+        $before = $this->order(['status' => Order::STATUS_DISCOUNTED, 'created_at' => $since - 60], $old);
+        $afterButFresh = $this->order(['status' => Order::STATUS_DISCOUNTED, 'created_at' => $since + 60], time() - 2 * 86400);
+
+        app(CheckCommission::class)->autoCheck();
+
+        $status = fn (int $id) => (int) DB::table('v2_order')->where('id', $id)->value('commission_status');
+        $this->assertSame(1, $status($after));
+        $this->assertSame(0, $status($before));
+        $this->assertSame(0, $status($afterButFresh));
+
+        $this->app->instance(\App\Support\Setting::class, new class extends \App\Support\Setting {
+            public function __construct() {}
+            public function get(string $key, mixed $default = null): mixed { return strtolower($key) === 'commission_discounted_since' ? 0 : $default; }
+        });
+        app(CheckCommission::class)->autoCheck();
+
+        $this->assertSame(1, $status($before));
+    }
+
+    #[Test]
+    public function promoted_discounted_orders_are_paid_and_pre_cutoff_ones_are_skipped(): void
+    {
+        Queue::fake();
+        $user = fn () => User::create([
+            'email' => Str::random(10) . '@example.test', 'password' => 'x', 'uuid' => (string) Str::uuid(), 'token' => Str::random(32),
+            'balance' => 0, 'commission_balance' => 0, 'transfer_enable' => 0, 'u' => 0, 'd' => 0,
+        ]);
+        $inviter = $user();
+        $buyer = $user();
+        $attrs = ['user_id' => $buyer->id, 'invite_user_id' => $inviter->id, 'status' => Order::STATUS_DISCOUNTED,
+            'commission_status' => 1, 'commission_balance' => 300];
+        $paid = $this->order($attrs + ['created_at' => Order::COMMISSION_DISCOUNTED_SINCE + 60], time() - 86400);
+        $skipped = $this->order($attrs + ['created_at' => Order::COMMISSION_DISCOUNTED_SINCE - 60], time() - 86400);
+
+        app(CheckCommission::class)->autoPayCommission();
+
+        $this->assertSame(2, (int) DB::table('v2_order')->where('id', $paid)->value('commission_status'));
+        $this->assertSame(1, (int) DB::table('v2_order')->where('id', $skipped)->value('commission_status'));
+        $this->assertSame(300, (int) $inviter->fresh()->commission_balance);
+        $this->assertSame(1, CommissionLog::where('invite_user_id', $inviter->id)->count());
+    }
+
+    #[Test]
+    public function pending_commission_on_the_invite_page_counts_post_cutoff_discounted_orders(): void
+    {
+        $base = ['invite_user_id' => 7, 'commission_status' => 0, 'commission_balance' => 100];
+        $this->order($base, time());
+        $this->order($base + ['status' => Order::STATUS_DISCOUNTED, 'created_at' => Order::COMMISSION_DISCOUNTED_SINCE + 60], time());
+        $this->order($base + ['status' => Order::STATUS_DISCOUNTED, 'created_at' => Order::COMMISSION_DISCOUNTED_SINCE - 60], time());
+        $this->order($base + ['status' => Order::STATUS_CANCELLED], time());
+
+        $this->assertSame(200, (int) Order::commissionSettleable()->where('invite_user_id', 7)->where('commission_status', 0)->sum('commission_balance'));
     }
 
     #[Test]

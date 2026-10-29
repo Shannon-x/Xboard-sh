@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -79,6 +80,16 @@ class Order extends Model
         self::STATUS_DISCOUNTED => '已折抵',
     ];
 
+    /**
+     * 「已折抵」订单也计佣的起点（按订单 created_at，2026-10-29 00:00 +08:00）。
+     *
+     * 被邀请人在佣金确认期内换套餐，原订单会被 OrderService 标成已折抵（status=4 只有这一个来源，
+     * 退款不会走到这里）。以前结算只认已完成（status=3）：这类订单的佣金永远停在待确认，邀请页
+     * 「确认中」的金额也随之消失；而同样的钱晚几天换套餐就照常发放。起点之前的存量折抵单暂不自动
+     * 补发，由运营逐单处理；要整体补发，把站点设置 commission_discounted_since 设成 0。
+     */
+    const COMMISSION_DISCOUNTED_SINCE = 1793203200;
+
     const TYPE_NEW_PURCHASE = 1; // 新购
     const TYPE_RENEWAL = 2; // 续费
     const TYPE_UPGRADE = 3; // 套餐变更
@@ -91,6 +102,28 @@ class Order extends Model
         self::TYPE_RESET_TRAFFIC => '流量重置',
         self::TYPE_TRAFFIC_TOPUP => '流量加购',
     ];
+
+    public static function commissionDiscountedSince(): int
+    {
+        return (int) admin_setting('commission_discounted_since', self::COMMISSION_DISCOUNTED_SINCE);
+    }
+
+    /**
+     * 计佣口径下「已付款、未退款」的订单：已完成，或起点之后创建的已折抵。
+     * 先 whereIn 两个状态，让 idx_order_commission_scan(commission_status, status, …) 仍能按状态范围扫描。
+     */
+    public function scopeCommissionSettleable(Builder $query): Builder
+    {
+        return $query->whereIn('status', [self::STATUS_COMPLETED, self::STATUS_DISCOUNTED])
+            ->where(fn (Builder $q) => $q->where('status', self::STATUS_COMPLETED)
+                ->orWhere('created_at', '>=', self::commissionDiscountedSince()));
+    }
+
+    public function isCommissionSettleable(): bool
+    {
+        return (int) $this->status === self::STATUS_COMPLETED
+            || ((int) $this->status === self::STATUS_DISCOUNTED && (int) $this->created_at >= self::commissionDiscountedSince());
+    }
 
     /**
      * 获取与订单关联的支付方式

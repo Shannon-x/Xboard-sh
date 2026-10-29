@@ -268,7 +268,7 @@ class InviteController extends Controller
         // 当前生效的比例 / 方式与发佣同一份口径（用户单设 > 阶梯 / 自动周期 > 站点默认）
         $commissionView = CommissionPolicy::view($user);
         $commission_rate = $commissionView['rate'];
-        $uncheck_commission_balance = (int)Order::where('status', 3)
+        $uncheck_commission_balance = (int)Order::commissionSettleable()
             ->where('commission_status', 0)
             ->where('invite_user_id', $user->id)
             ->sum('commission_balance');

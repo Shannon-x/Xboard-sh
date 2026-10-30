@@ -466,7 +466,7 @@ final class McpPlanAdvisor
                 continue;
             }
             $pick = null;
-            foreach ($allowOptional ? $this->customizer->optionalAddonIds($plan) : [] as $gid) {
+            foreach ($allowOptional ? $this->customizer->sellableAddonIds($plan) : [] as $gid) {
                 $price = (int) ($rules[$gid]['price'] ?? 0);
                 if (isset($groupRates[$gid][$rate]) && ($pick === null || $price < $pick[1])) {
                     $pick = [$gid, $price];

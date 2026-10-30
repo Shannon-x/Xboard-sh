@@ -698,6 +698,112 @@ class AddonGroupTest extends TestCase
         }
     }
 
+    // ───────────────────────── 暂停新购 ─────────────────────────
+
+    private function pausedPlan(): Plan
+    {
+        return $this->plan([
+            (string) $this->premium->id => ['mode' => 'optional', 'price' => 500, 'paused' => true],
+            (string) $this->vip->id => ['mode' => 'included'],
+        ]);
+    }
+
+    private function holder(Plan $plan): User
+    {
+        return $this->user(['plan_id' => $plan->id, 'group_id' => $this->base->id, 'plan_options' => $this->resources() + [
+            'addon_groups' => [$this->premium->id], 'granted_groups' => [$this->premium->id, $this->vip->id],
+        ]]);
+    }
+
+    public function test_paused_addon_is_hidden_from_new_buyers_but_shown_to_holders(): void
+    {
+        $plan = $this->pausedPlan();
+        $guest = PlanResource::make($plan)->resolve()['customization']['addon_groups'];
+        $this->assertArrayNotHasKey((string) $this->premium->id, $guest, '访客看不到暂停新购的组');
+        $this->assertArrayHasKey((string) $this->vip->id, $guest, 'included 组不受影响');
+
+        $service = new PlanCustomizationService();
+        $this->assertArrayNotHasKey($this->premium->id, $service->addonGroupsForDisplay($plan, $this->user()));
+        $shown = $service->addonGroupsForDisplay($plan, $this->holder($plan));
+        $this->assertArrayHasKey($this->premium->id, $shown, '已购的人续费时仍要看到并保留它');
+        $this->assertSame(['mode', 'price', 'name', 'server_count', 'rate', 'topup_price_per_gb', 'transfer_price_per_gb', 'admin_granted'], array_keys($shown[$this->premium->id]), '输出键不变');
+        $this->assertSame([], $service->sellableAddonIds($plan));
+        $this->assertSame([$this->premium->id], $service->optionalAddonIds($plan));
+    }
+
+    public function test_paused_addon_cannot_be_newly_bought_or_added_mid_cycle(): void
+    {
+        $plan = $this->pausedPlan();
+        $service = new PlanCustomizationService();
+        $options = $this->resources() + ['addon_groups' => [$this->premium->id]];
+        $nonHolders = [
+            null,
+            $this->user(),
+            $this->user(['plan_id' => $plan->id, 'group_id' => $this->base->id,
+                'plan_options' => $this->resources() + ['addon_groups' => [], 'granted_groups' => [$this->vip->id]]]),
+        ];
+        foreach ($nonHolders as $user) {
+            try {
+                $service->quote($plan, 'monthly', $options, $user);
+                $this->fail('未持有的人不能买暂停新购的组');
+            } catch (ApiException $e) {
+                $this->assertStringContainsString('暂停新购', $e->getMessage());
+            }
+        }
+        $this->assertSame(300, $service->quote($plan, 'monthly', $this->resources() + ['addon_groups' => []])['amount'], '不勾选照常能买');
+    }
+
+    public function test_holders_keep_a_paused_addon_on_renewal_period_change_and_reset(): void
+    {
+        $plan = $this->pausedPlan();
+        $user = $this->holder($plan);
+        $service = new PlanCustomizationService();
+
+        $renew = $service->quote($plan, 'monthly', null, $user);
+        $this->assertSame(800, $renew['amount']);
+        $this->assertSame([$this->premium->id], $renew['options']['addon_groups']);
+
+        $quarterly = $service->quote($plan, 'quarterly', $this->resources() + ['addon_groups' => [$this->premium->id]], $user);
+        $this->assertSame([$this->premium->id], $quarterly['options']['addon_groups']);
+
+        $reset = $service->quote($plan, 'reset_traffic', null, $user);
+        $this->assertSame([$this->premium->id], $reset['options']['addon_groups']);
+
+        $order = OrderService::createFromRequest($user, $plan, 'monthly', null, null);
+        $this->assertSame(800, $order->total_amount);
+
+        $this->assertSame(300, $service->quote($plan, 'monthly', $this->resources() + ['addon_groups' => []], $user)['amount'], '已购的人也可以主动退掉');
+    }
+
+    public function test_paused_flag_must_be_boolean_and_only_on_optional_groups(): void
+    {
+        $service = new PlanCustomizationService();
+        $service->validateConfiguration($this->pausedPlan());
+        $service->validateConfiguration($this->plan([(string) $this->premium->id => ['mode' => 'optional', 'price' => 500, 'paused' => false]]));
+        foreach ([[(string) $this->premium->id => ['mode' => 'optional', 'price' => 500, 'paused' => 1]], [(string) $this->premium->id => ['mode' => 'optional', 'price' => 500, 'paused' => 'true']]] as $bad) {
+            try {
+                $service->validateConfiguration($this->plan($bad));
+                $this->fail('paused 只能是布尔值');
+            } catch (ApiException $e) {
+                $this->assertStringContainsString('暂停新购开关', $e->getMessage());
+            }
+        }
+        $this->expectException(ApiException::class);
+        $this->expectExceptionMessage('不能暂停新购');
+        $service->validateConfiguration($this->plan([(string) $this->vip->id => ['mode' => 'included', 'paused' => true]]));
+    }
+
+    public function test_pausing_an_addon_with_existing_buyers_passes_the_admin_save_guard(): void
+    {
+        $plan = $this->sellablePlan();
+        $this->holder($plan);
+        $paused = $plan->customization;
+        $paused['addon_groups'][(string) $this->premium->id]['paused'] = true;
+        $plan->customization = $paused;
+        (new PlanCustomizationService())->validateExistingSubscribers($plan);
+        $this->assertTrue(true, '暂停新购不能被「已有用户无法续费」拦下');
+    }
+
     public function test_user_observer_reports_lost_addon_groups_to_the_sync_job(): void
     {
         Bus::fake([NodeUserSyncJob::class]);

@@ -30,6 +30,9 @@ class PlanCustomizationService
      *   included → 随套餐赠送，不计价，客户不可取消；
      *   optional → 客户按需勾选，按月加价；长周期随套餐自身折扣比例缩放，
      *              与流量 / 设备 / 速度的加价走同一条规则（见 calculate）；
+     *              paused: true = 暂停新购（线路故障 / 被封时用）：未持有的客户看不到、选不了，
+     *              已购的客户续费 / 重置照常保留，管理员也不必删规则（删规则会被
+     *              validateExistingSubscribers 拦下，因为已购用户将无法续费）；
      *   未列出   → 该套餐不提供该组。
      *
      * 用户此刻生效的增值组（effectiveAddonGroupIds）由三部分实时合成：
@@ -109,6 +112,17 @@ class PlanCustomizationService
         return array_keys(array_filter($this->addonRules($plan), fn ($rule) => ($rule['mode'] ?? null) === 'optional'));
     }
 
+    public function isAddonPaused(array $rule): bool
+    {
+        return ($rule['mode'] ?? null) === 'optional' && ($rule['paused'] ?? false) === true;
+    }
+
+    /** 新客户此刻能勾选的 optional 组：optional 且未暂停新购。 */
+    public function sellableAddonIds(Plan $plan): array
+    {
+        return array_keys(array_filter($this->addonRules($plan), fn ($rule) => ($rule['mode'] ?? null) === 'optional' && !$this->isAddonPaused($rule)));
+    }
+
     /**
      * 可选增值组换算到某个付款周期的价格（分）：[group_id => cents]。
      * 增值组按月定价，长周期按 baseAmount / reference 缩放 —— 与 calculate() 同一条公式，
@@ -151,9 +165,11 @@ class PlanCustomizationService
         $names = self::groupNames();
         $counts = self::serverCountsByGroup();
         $rates = self::serverRatesByGroup();
+        $owned = $user && (int) $user->plan_id === (int) $plan->id ? $user->purchasedAddonGroupIds() : [];
         $display = [];
         foreach ($rules as $groupId => $rule) {
             if (!isset($names[$groupId])) continue; // 组已被删除：不展示也不可选，validateConfiguration 会在下次保存时拦下
+            if ($this->isAddonPaused($rule) && !in_array($groupId, $owned, true)) continue; // 暂停新购：只给已购的人续费时看到
             $label = trim((string) ($rule['label'] ?? ''));
             $display[(string) $groupId] = [
                 'mode' => $rule['mode'],
@@ -820,7 +836,7 @@ class PlanCustomizationService
             if ((int) $groupId === (int) $plan->group_id) {
                 throw new ApiException('套餐的基础权限组不能再作为增值组出售');
             }
-            if (!is_array($rule) || array_diff(array_keys($rule), ['mode', 'price', 'label', 'topup_price_per_gb', 'transfer_price_per_gb', 'topup_final_price_per_gb'])) {
+            if (!is_array($rule) || array_diff(array_keys($rule), ['mode', 'price', 'label', 'paused', 'topup_price_per_gb', 'transfer_price_per_gb', 'topup_final_price_per_gb'])) {
                 throw new ApiException('增值节点组配置包含未知字段');
             }
             $topupSurcharge = $rule['topup_price_per_gb'] ?? 0;
@@ -845,6 +861,12 @@ class PlanCustomizationService
             }
             if ($mode === 'included' && $price !== 0) {
                 throw new ApiException('随套餐包含的增值节点组不能设置加价');
+            }
+            if (array_key_exists('paused', $rule) && !is_bool($rule['paused'])) {
+                throw new ApiException('增值节点组的暂停新购开关必须是 true 或 false');
+            }
+            if ($mode === 'included' && ($rule['paused'] ?? false)) {
+                throw new ApiException('随套餐包含的增值节点组不能暂停新购');
             }
             if (array_key_exists('label', $rule) && $rule['label'] !== null
                 && (!is_string($rule['label']) || mb_strlen(trim($rule['label'])) > 32)) {
@@ -898,6 +920,7 @@ class PlanCustomizationService
         }
         $selected = $this->normalizeSelection($options ?? $this->baseOptions($plan), $hasAddons);
         $this->validateSelection($plan, $selected);
+        $this->assertPausedAddonsOwned($plan, $selected, $current);
         $quote = $this->calculate($plan, $period, $selected, $user);
         $snapshot = [
             'version' => 1, 'name' => $plan->name, 'group_id' => $plan->group_id,
@@ -918,6 +941,21 @@ class PlanCustomizationService
             $snapshot[self::MIGRATION_KEY] = $user->plan_options[self::MIGRATION_KEY];
         }
         return $quote + ['period' => $period, 'options' => $selected, 'snapshot' => $snapshot];
+    }
+
+    /**
+     * 暂停新购的组只允许本套餐已持有它的客户带上（续费 / 换周期 / 重置）。
+     * 新购、从别的套餐换过来、周期中途加购都没有「已持有」，一律拒绝。
+     */
+    private function assertPausedAddonsOwned(Plan $plan, array $selected, ?array $current): void
+    {
+        $owned = array_map('intval', (array) ($current[self::ADDON_KEY] ?? []));
+        $rules = $this->addonRules($plan);
+        foreach ($selected[self::ADDON_KEY] ?? [] as $groupId) {
+            if (isset($rules[$groupId]) && $this->isAddonPaused($rules[$groupId]) && !in_array((int) $groupId, $owned, true)) {
+                throw new ApiException('所选增值节点暂停新购，请取消勾选后再下单');
+            }
+        }
     }
 
     /** Preserve the owner's historic base; optional traffic tiers are priced above that base. */

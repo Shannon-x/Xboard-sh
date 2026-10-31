@@ -100,6 +100,35 @@ class User extends Authenticatable
         return $query->where('email', strtolower(trim($email)));
     }
 
+    /**
+     * 按邮箱精确查找用户：数据库查询只用来缩小范围，最终以字节完全一致为准，
+     * 避免不同数据库排序规则（大小写、重音等）带来的匹配差异。
+     */
+    public static function findByExactEmail(string $email): ?self
+    {
+        $normalized = strtolower(trim($email));
+        foreach (static::byEmail($normalized)->get() as $candidate) {
+            if (hash_equals(strtolower((string) $candidate->email), $normalized)) {
+                return $candidate;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 是否存在排序规则下匹配、但字节不一致的已有账号邮箱。
+     */
+    public static function hasCollationVariantEmail(string $email): bool
+    {
+        $normalized = strtolower(trim($email));
+        foreach (static::byEmail($normalized)->get(['id', 'email']) as $candidate) {
+            if (!hash_equals(strtolower((string) $candidate->email), $normalized)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // 获取邀请人信息
     public function invite_user(): BelongsTo
     {

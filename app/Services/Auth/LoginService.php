@@ -149,9 +149,10 @@ class LoginService
             return [false, [400, __('Incorrect email verification code')]];
         }
 
-        // 查找用户
-        $user = User::byEmail($email)->first();
+        // 查找用户：账号邮箱需与验证码地址完全一致
+        $user = User::findByExactEmail($email);
         if (!$user) {
+            Cache::forget(CacheKey::get('EMAIL_VERIFY_CODE', $email));
             return [false, [400, __('This email is not registered in the system')]];
         }
 

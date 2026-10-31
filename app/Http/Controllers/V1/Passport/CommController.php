@@ -28,6 +28,11 @@ class CommController extends Controller
 
         $email = strtolower(trim((string) $request->input('email')));
 
+        // 与已有账号仅在排序规则下相同的地址不发验证码，保证验证码地址与账号邮箱一致
+        if (User::hasCollationVariantEmail($email)) {
+            return $this->fail([400, __('Email already exists')]);
+        }
+
         // 检查白名单后缀限制
         if ((int) admin_setting('email_whitelist_enable', 0)) {
             $isRegisteredEmail = User::byEmail($email)->exists();

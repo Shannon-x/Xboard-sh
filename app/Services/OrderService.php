@@ -562,7 +562,7 @@ class OrderService
             ->filter(fn(Order $item) => self::periodMonths($item) > 0);
 
         $orders = $completed->filter(
-            fn(Order $item) => Carbon::createFromTimestamp($item->created_at)->addMonths(self::periodMonths($item))->timestamp > time()
+            fn(Order $item) => self::localTime((int) $item->created_at)->addMonths(self::periodMonths($item))->timestamp > time()
         );
 
         // 「下单日 + 周期」只是订单覆盖期的近似：提前续费的单覆盖的是旧到期日之后那一段，
@@ -655,7 +655,7 @@ class OrderService
                 $futurePart = max(0, $segmentEnd - max($segmentStart, $cycleEnd));
                 $itemValue = $unitAmount * ($futurePart / self::SURPLUS_MONTH_SECONDS);
             } else {
-                $coverStart = Carbon::createFromTimestamp($segmentEnd)->subMonthsNoOverflow($months)->timestamp;
+                $coverStart = self::localTime($segmentEnd)->subMonthsNoOverflow($months)->timestamp;
                 $segmentStart = max($now, $coverStart);
                 $futurePart = max(0, $segmentEnd - max($segmentStart, $cycleEnd));
                 $itemValue = $paid * ($futurePart / max(1, $segmentEnd - $coverStart));
@@ -1396,10 +1396,23 @@ class OrderService
 
         if (isset(self::STR_TO_TIME[$periodKey])) {
             $months = self::STR_TO_TIME[$periodKey];
-            return Carbon::createFromTimestamp($timestamp)->addMonths($months)->timestamp;
+            return self::localTime($timestamp)->addMonths($months)->timestamp;
         }
 
         throw new ApiException('无效的套餐周期');
+    }
+
+    /**
+     * 按站点时区把时间戳转成 Carbon，再做「加 N 个月」这类日历运算。
+     *
+     * 站点时区即 PHP 默认时区：Laravel 启动时按 app.timezone 设好，重构前的 strtotime('+1 month') 用的也是它。
+     * Carbon 3 的 createFromTimestamp() 不传时区时却落在 UTC。
+     * 日历月加在 UTC 日期上、用户看的却是站点时区：北京时间 0–8 点下单时两边不在同一天，
+     * 月末就会差出天数——11-01 01:00 买月付到 12-02（多 1 天），03-01 03:00 买月付到 03-29（少 3 天）。
+     */
+    private static function localTime(int $timestamp): Carbon
+    {
+        return Carbon::createFromTimestamp($timestamp, date_default_timezone_get());
     }
 
     private function openEvent($eventId)

@@ -87,9 +87,15 @@ class SurplusPerOrderValuationTest extends TestCase
         return (int) $order->surplus_amount + (int) $order->refund_amount;
     }
 
+    /** 与 OrderService 一样按站点时区做日历运算（Carbon 3 的 createFromTimestamp 默认是 UTC）。 */
+    private function at(int $ts): Carbon
+    {
+        return Carbon::createFromTimestamp($ts, config('app.timezone'));
+    }
+
     private function addMonth(int $ts, int $months = 1): int
     {
-        return Carbon::createFromTimestamp($ts)->addMonths($months)->timestamp;
+        return $this->at($ts)->addMonths($months)->timestamp;
     }
 
     public function test_pricier_stacked_renewal_is_valued_at_its_own_price(): void
@@ -100,14 +106,20 @@ class SurplusPerOrderValuationTest extends TestCase
         $oldEnd = $now + 240;
         $plan = $this->plan(50);
         $user = $this->user($plan, $this->addMonth($oldEnd), $oldEnd, $oldEnd - self::MONTH);
-        $this->paidOrder($user, $plan, 'monthly', 5000, Carbon::createFromTimestamp($oldEnd)->subMonth()->timestamp);
+        $this->paidOrder($user, $plan, 'monthly', 5000, $this->at($oldEnd)->subMonth()->timestamp);
         $this->paidOrder($user, $plan, 'monthly', 9600, $now - 60);
 
         $order = $this->changeTo($user, $this->plan(50));
 
+        // 旧到期日落在 29–31 号时 addMonth 会溢出（10-31 + 1 月 = 12-01），实现按 subMonthsNoOverflow 反推
+        // 新单覆盖期（11-01 起），中间多出的 1–3 天是用户实打实剩下的时间，按旧单单价算给旧单。
+        // 上限把这几天加进去，让断言与运行日期无关；平常日子里这一项是 0。
+        $newCoverStart = $this->at((int) $user->expired_at)->subMonthNoOverflow()->timestamp;
+        $overflowValue = (int) ceil(5000 * max(0, $newCoverStart - $oldEnd) / self::MONTH);
+
         $this->assertSame(Order::TYPE_UPGRADE, (int) $order->type);
         $this->assertGreaterThanOrEqual(9600, $this->credit($order), '一天没用的 ¥96 续费单必须按 ¥96 折抵');
-        $this->assertLessThanOrEqual(9600 + 5, $this->credit($order), '旧单只剩 4 分钟，只值几分钱');
+        $this->assertLessThanOrEqual(9600 + 5 + $overflowValue, $this->credit($order), '旧单只剩 4 分钟，只值几分钱');
     }
 
     public function test_cheaper_stacked_renewal_is_not_overvalued(): void
@@ -115,15 +127,20 @@ class SurplusPerOrderValuationTest extends TestCase
         // 反向：¥96 的单还剩半个月（流量没用），后面叠了一张 ¥50 续费。应 ≈ ¥50 + ¥96×0.5 = ¥98；
         // 旧均价公式会给 ¥73 × 1.5 ≈ ¥110，多折约 ¥12。
         $now = time();
-        $oldEnd = $now + 15 * self::DAY;
+        // 同 test_equal_priced_stacked_orders_match_previous_formula：旧到期日压回 28 号以内，避开 addMonth 溢出。
+        $oldEndAt = $this->at($now + 15 * self::DAY);
+        if ($oldEndAt->day > 28) {
+            $oldEndAt->setDay(28);
+        }
+        $oldEnd = $oldEndAt->timestamp;
         $plan = $this->plan(96);
         $user = $this->user($plan, $this->addMonth($oldEnd), $oldEnd, $oldEnd - self::MONTH);
-        $this->paidOrder($user, $plan, 'monthly', 9600, Carbon::createFromTimestamp($oldEnd)->subMonth()->timestamp);
+        $this->paidOrder($user, $plan, 'monthly', 9600, $this->at($oldEnd)->subMonth()->timestamp);
         $this->paidOrder($user, $plan, 'monthly', 5000, $now - 60);
 
         $order = $this->changeTo($user, $this->plan(30));
 
-        $this->assertEqualsWithDelta(5000 + 4800, $this->credit($order), 10);
+        $this->assertEqualsWithDelta(5000 + 9600 * (($oldEnd - $now) / self::MONTH), $this->credit($order), 10);
     }
 
     public function test_single_order_value_matches_previous_formula_exactly(): void
@@ -135,6 +152,9 @@ class SurplusPerOrderValuationTest extends TestCase
         $expiredAt = $this->addMonth($created, 3);
         $plan = $this->plan(40, ['quarterly' => 114]);
         $user = $this->user($plan, $expiredAt, $cycleEnd, $created, 30);
+        // 保存时流量重置日会按重置规则重算（不溢出：1-29 起的周期在 2-28 重置，而不是 addMonth 的 3-01），
+        // 期望值要用库里实际的重置日，否则在每月 29–31 号起算的周期上差几分钱。
+        $cycleEnd = (int) $user->fresh()->next_reset_at;
         $this->paidOrder($user, $plan, 'quarterly', 11400, $created);
 
         $order = $this->changeTo($user, $this->plan(10));
@@ -152,7 +172,7 @@ class SurplusPerOrderValuationTest extends TestCase
         // 旧到期日落在 29–31 号时 addMonth 会溢出（10-31 + 1 月 = 12-01），而实现按 subMonthsNoOverflow
         // 反推新单覆盖期（11-01 起），中间多出的一天会算给旧单，断言在每月 19–21 号必挂。
         // 把到期日压回 28 号以内，让这条测试与运行日期无关；期望值按实际剩余秒数计算。
-        $oldEndAt = Carbon::createFromTimestamp($now + 10 * self::DAY);
+        $oldEndAt = $this->at($now + 10 * self::DAY);
         if ($oldEndAt->day > 28) {
             $oldEndAt->setDay(28);
         }
@@ -160,7 +180,7 @@ class SurplusPerOrderValuationTest extends TestCase
         $expiredAt = $this->addMonth($oldEnd);
         $plan = $this->plan(40);
         $user = $this->user($plan, $expiredAt, $oldEnd, $oldEnd - self::MONTH);
-        $this->paidOrder($user, $plan, 'monthly', 4000, Carbon::createFromTimestamp($oldEnd)->subMonth()->timestamp);
+        $this->paidOrder($user, $plan, 'monthly', 4000, $this->at($oldEnd)->subMonth()->timestamp);
         $this->paidOrder($user, $plan, 'monthly', 4000, $now - 3600);
 
         $order = $this->changeTo($user, $this->plan(10));
@@ -175,7 +195,13 @@ class SurplusPerOrderValuationTest extends TestCase
         // 流量用尽后续费重开：周期从付款时刻重算，旧单剩下的"零流量空壳"已被放弃。
         // 剩余时间全部属于 ¥50 的新单；旧均价公式会把 ¥30 旧单掺进来，只折 ¥40×0.97。
         $now = time();
-        $restartAt = $now - self::DAY;
+        // 重开日压回 28 号以内（最多再往前挪 3 天）：1-30 重开的月付到 3-02，实现反推新单覆盖期从 2-02 起，
+        // 中间两天会按旧单单价计值，这条断言在每年 1-29～1-31 必挂。理由同 test_equal_priced_stacked_orders_match_previous_formula。
+        $restartAtDate = $this->at($now - self::DAY);
+        if ($restartAtDate->day > 28) {
+            $restartAtDate->setDay(28);
+        }
+        $restartAt = $restartAtDate->timestamp;
         $expiredAt = $this->addMonth($restartAt);
         $plan = $this->plan(30);
         $user = $this->user($plan, $expiredAt, $expiredAt, $restartAt);
@@ -196,7 +222,7 @@ class SurplusPerOrderValuationTest extends TestCase
         $expiredAt = $this->addMonth($oldEnd) + 20 * self::DAY;
         $plan = $this->plan(40);
         $user = $this->user($plan, $expiredAt, $oldEnd, $oldEnd - self::MONTH);
-        $this->paidOrder($user, $plan, 'monthly', 4000, Carbon::createFromTimestamp($oldEnd)->subMonth()->timestamp);
+        $this->paidOrder($user, $plan, 'monthly', 4000, $this->at($oldEnd)->subMonth()->timestamp);
         $this->paidOrder($user, $plan, 'monthly', 6000, $now - 3600);
 
         $order = $this->changeTo($user, $this->plan(10));
@@ -212,7 +238,7 @@ class SurplusPerOrderValuationTest extends TestCase
         $oldEnd = $now + 240;
         $plan = $this->plan(50);
         $user = $this->user($plan, $this->addMonth($oldEnd), $oldEnd, $oldEnd - self::MONTH);
-        $this->paidOrder($user, $plan, 'monthly', 5000, Carbon::createFromTimestamp($oldEnd)->subMonth()->timestamp);
+        $this->paidOrder($user, $plan, 'monthly', 5000, $this->at($oldEnd)->subMonth()->timestamp);
         $this->paidOrder($user, $plan, 'monthly', 9600, $now - 60);
         $target = $this->plan(50);
 

@@ -86,13 +86,13 @@ class OrderPlanChangeTest extends TestCase
 
         $this->invokePrivate($service, 'applyPlanChangeCycle', [$order, $targetPlan]);
 
-        $expectedMin = Carbon::createFromTimestamp($now)->addMonth()->timestamp - 10;
-        $expectedMax = Carbon::createFromTimestamp($now + 5)->addMonth()->timestamp + 10;
+        $expectedMin = Carbon::createFromTimestamp($now, date_default_timezone_get())->addMonth()->timestamp - 10;
+        $expectedMax = Carbon::createFromTimestamp($now + 5, date_default_timezone_get())->addMonth()->timestamp + 10;
 
         $this->assertGreaterThanOrEqual($expectedMin, $user->expired_at);
         $this->assertLessThanOrEqual($expectedMax, $user->expired_at);
         $this->assertLessThan(
-            Carbon::createFromTimestamp($oldExpiredAt)->addMonth()->timestamp,
+            Carbon::createFromTimestamp($oldExpiredAt, date_default_timezone_get())->addMonth()->timestamp,
             $user->expired_at,
             '套餐变更不能从旧到期日后叠加新周期'
         );
@@ -132,11 +132,11 @@ class OrderPlanChangeTest extends TestCase
         $this->assertSame(800 * self::BYTES_PER_GB, $user->transfer_enable);
         $this->assertSame(24, $user->plan_id);
         $this->assertLessThan(
-            Carbon::createFromTimestamp($oldExpiredAt)->addMonth()->timestamp,
+            Carbon::createFromTimestamp($oldExpiredAt, date_default_timezone_get())->addMonth()->timestamp,
             $user->expired_at,
             '升级不能保留旧周期剩余时间再叠加一整月新套餐'
         );
-        $this->assertGreaterThanOrEqual(Carbon::createFromTimestamp($now)->addMonth()->timestamp - 10, $user->expired_at);
+        $this->assertGreaterThanOrEqual(Carbon::createFromTimestamp($now, date_default_timezone_get())->addMonth()->timestamp - 10, $user->expired_at);
     }
 
     public function test_yearly_to_monthly_plan_change_does_not_preserve_yearly_time_remainder(): void
@@ -167,8 +167,8 @@ class OrderPlanChangeTest extends TestCase
 
         $this->invokePrivate($service, 'applyPlanChangeCycle', [$order, $targetPlan]);
 
-        $expectedMin = Carbon::createFromTimestamp($now)->addMonth()->timestamp - 10;
-        $expectedMax = Carbon::createFromTimestamp($now + 5)->addMonth()->timestamp + 10;
+        $expectedMin = Carbon::createFromTimestamp($now, date_default_timezone_get())->addMonth()->timestamp - 10;
+        $expectedMax = Carbon::createFromTimestamp($now + 5, date_default_timezone_get())->addMonth()->timestamp + 10;
 
         $this->assertGreaterThanOrEqual($expectedMin, $user->expired_at);
         $this->assertLessThanOrEqual($expectedMax, $user->expired_at);

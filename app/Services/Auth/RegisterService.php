@@ -29,6 +29,10 @@ class RegisterService
     {
         $email = strtolower(trim((string) $request->input('email')));
 
+        if (!User::isAsciiEmail($email)) {
+            return [false, [400, __('Email format is incorrect')]];
+        }
+
         // 检查IP注册限制
         if ((int) admin_setting('register_limit_by_ip_enable', 0)) {
             $registerCountByIP = Cache::get(CacheKey::get('REGISTER_IP_RATE_LIMIT', $request->ip())) ?? 0;

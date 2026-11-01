@@ -37,7 +37,7 @@ class RestockNotifier
         if (!$existing && PlanRestockNotify::where('email', $email)->whereNull('notified_at')->count() >= self::MAX_PENDING_PER_EMAIL) {
             throw new ApiException('登记的到货提醒太多了，请先取消一些');
         }
-        $userId = $user?->id ?? User::where('email', $email)->value('id');
+        $userId = $user?->id ?? User::findByExactEmail($email)?->id;
         if ($existing) {
             $existing->forceFill(['notified_at' => null, 'user_id' => $userId ?? $existing->user_id])->save();
             return;

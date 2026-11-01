@@ -33,7 +33,7 @@ class AuthController extends Controller
     public function login(AuthLogin $request)
     {
         $email = strtolower(trim((string) $request->input('email')));
-        $user = User::byEmail($email)->first();
+        $user = User::findByExactEmail($email);
 
         if (!$user || !$user->is_admin) {
             password_verify((string) $request->input('password'), self::DUMMY_HASH);

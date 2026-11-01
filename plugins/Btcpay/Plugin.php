@@ -6,6 +6,7 @@ use App\Services\Plugin\AbstractPlugin;
 use App\Contracts\PaymentInterface;
 use App\Exceptions\ApiException;
 use App\Support\PaymentGuard;
+use App\Support\PaymentMetrics;
 
 class Plugin extends AbstractPlugin implements PaymentInterface
 {
@@ -90,7 +91,12 @@ class Plugin extends AbstractPlugin implements PaymentInterface
             throw new ApiException('Invalid BTCPay webhook payload', 400);
         }
 
-        $computedSignature = "sha256=" . \hash_hmac('sha256', $payload, $this->getConfig('btcpay_webhook_key'));
+        $webhookKey = (string) $this->getConfig('btcpay_webhook_key', '');
+        if (trim($webhookKey) === '') {
+            PaymentMetrics::warn('webhook.config_invalid', ['gateway' => 'BTCPay', 'error' => 'btcpay_webhook_key empty']);
+            throw new ApiException('Webhook key is not configured', 400);
+        }
+        $computedSignature = "sha256=" . \hash_hmac('sha256', $payload, $webhookKey);
 
         if (!$this->hashEqual($signraturHeader, $computedSignature)) {
             throw new ApiException('HMAC signature does not match', 400);

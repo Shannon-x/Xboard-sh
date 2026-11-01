@@ -6,6 +6,7 @@ use App\Services\Plugin\AbstractPlugin;
 use App\Contracts\PaymentInterface;
 use App\Exceptions\ApiException;
 use App\Support\PaymentGuard;
+use App\Support\PaymentMetrics;
 
 class Plugin extends AbstractPlugin implements PaymentInterface
 {
@@ -88,7 +89,12 @@ class Plugin extends AbstractPlugin implements PaymentInterface
         $headerName = 'X-Cc-Webhook-Signature';
         $headers = getallheaders();
         $signatureHeader = isset($headers[$headerName]) ? $headers[$headerName] : '';
-        $computedSignature = \hash_hmac('sha256', $payload, $this->getConfig('coinbase_webhook_key'));
+        $webhookKey = (string) $this->getConfig('coinbase_webhook_key', '');
+        if (trim($webhookKey) === '') {
+            PaymentMetrics::warn('webhook.config_invalid', ['gateway' => 'Coinbase', 'error' => 'coinbase_webhook_key empty']);
+            throw new ApiException('Webhook key is not configured', 400);
+        }
+        $computedSignature = \hash_hmac('sha256', $payload, $webhookKey);
 
         if (!$this->hashEqual($signatureHeader, $computedSignature)) {
             throw new ApiException('HMAC signature does not match', 400);

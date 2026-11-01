@@ -6,6 +6,7 @@ use App\Services\Plugin\AbstractPlugin;
 use App\Contracts\PaymentInterface;
 use App\Exceptions\ApiException;
 use App\Support\PaymentGuard;
+use App\Support\PaymentMetrics;
 
 class Plugin extends AbstractPlugin implements PaymentInterface
 {
@@ -92,7 +93,12 @@ class Plugin extends AbstractPlugin implements PaymentInterface
         $headerName = 'Hmac';
         $signHeader = isset($headers[$headerName]) ? $headers[$headerName] : '';
 
-        $hmac = hash_hmac("sha512", $request, trim($this->getConfig('coinpayments_ipn_secret')));
+        $ipnSecret = trim((string) $this->getConfig('coinpayments_ipn_secret', ''));
+        if ($ipnSecret === '') {
+            PaymentMetrics::warn('webhook.config_invalid', ['gateway' => 'CoinPayments', 'error' => 'coinpayments_ipn_secret empty']);
+            throw new ApiException('IPN secret is not configured', 400);
+        }
+        $hmac = hash_hmac("sha512", $request, $ipnSecret);
 
         if (!hash_equals($hmac, $signHeader)) {
             throw new ApiException('HMAC signature does not match', 400);

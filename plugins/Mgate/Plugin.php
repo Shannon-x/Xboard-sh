@@ -6,6 +6,7 @@ use App\Services\Plugin\AbstractPlugin;
 use App\Contracts\PaymentInterface;
 use App\Exceptions\ApiException;
 use App\Support\PaymentGuard;
+use App\Support\PaymentMetrics;
 use Curl\Curl;
 
 class Plugin extends AbstractPlugin implements PaymentInterface
@@ -108,11 +109,18 @@ class Plugin extends AbstractPlugin implements PaymentInterface
 
     public function notify($params): array|bool
     {
+        // 密钥没配时签名谁都算得出来，不认这种回调
+        $secret = (string) $this->getConfig('mgate_app_secret', '');
+        if (trim($secret) === '') {
+            PaymentMetrics::warn('webhook.config_invalid', ['gateway' => 'MGate', 'error' => 'mgate_app_secret empty']);
+            return false;
+        }
+
         $sign = (string) ($params['sign'] ?? '');
         unset($params['sign']);
         ksort($params);
         reset($params);
-        $str = http_build_query($params) . $this->getConfig('mgate_app_secret');
+        $str = http_build_query($params) . $secret;
 
         if (!hash_equals(md5($str), $sign)) {
             return false;

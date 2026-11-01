@@ -53,8 +53,8 @@ class LoginService
             }
         }
 
-        // 查找用户
-        $user = User::byEmail($email)->first();
+        // 查找用户：账号邮箱需与输入地址完全一致（密码错误次数也按这个地址记）
+        $user = User::findByExactEmail($email);
         if (!$user) {
             return [false, [400, __('Incorrect email or password')]];
         }

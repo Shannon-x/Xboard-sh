@@ -418,7 +418,7 @@ class MailService
         $userId = isset($params['user_id']) ? (int) $params['user_id'] : null;
         $category = isset($params['category']) ? (string) $params['category'] : null;
         if (NotificationPreference::isCategory($category)) {
-            $user = $userId ? User::find($userId) : User::where('email', $email)->first();
+            $user = $userId ? User::find($userId) : User::findByExactEmail((string) $email);
             if ($user && !NotificationPreference::allows($user, $category)) {
                 return ['email' => $email, 'subject' => $subject, 'template_name' => $view, 'error' => null, 'category' => 'skipped', 'skipped' => true];
             }
@@ -456,7 +456,7 @@ class MailService
     {
         $headers = [];
         if (NotificationPreference::isCategory($category)) {
-            $user = $userId ? User::find($userId) : User::where('email', $email)->first();
+            $user = $userId ? User::find($userId) : User::findByExactEmail((string) $email);
             if ($user) {
                 $userId = (int) $user->id;
                 $data['manage_url'] = NotificationPreference::manageUrl($user);

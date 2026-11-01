@@ -129,6 +129,15 @@ class User extends Authenticatable
         return false;
     }
 
+    /**
+     * 新地址（注册 / 发注册验证码）只收可打印 ASCII 邮箱。换邮箱用 FILTER_VALIDATE_EMAIL，本来就只收 ASCII，
+     * 这里让注册与之一致；ASCII 地址在常见排序规则下除大小写外不会和别的地址相同。
+     */
+    public static function isAsciiEmail(string $email): bool
+    {
+        return preg_match('/^[\x21-\x7E]+$/', $email) === 1;
+    }
+
     // 获取邀请人信息
     public function invite_user(): BelongsTo
     {

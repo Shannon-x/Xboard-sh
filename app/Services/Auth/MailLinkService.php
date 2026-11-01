@@ -29,7 +29,8 @@ class MailLinkService
             return [false, [429, __('Sending frequently, please try again later')]];
         }
 
-        $user = User::byEmail($email)->first();
+        // 发送间隔按输入地址记，账号也要按同一个地址精确查
+        $user = User::findByExactEmail($email);
         if (!$user) {
             return [true, true]; // 成功但用户不存在，保护用户隐私
         }

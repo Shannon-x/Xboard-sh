@@ -188,7 +188,12 @@ class GoogleLoginService
     private function resolveUser(array $profile, Request $request, ?string $inviteCode): array
     {
         $email = strtolower(trim((string) ($profile['email'] ?? '')));
-        $user = User::byEmail($email)->first();
+        $user = User::findByExactEmail($email);
+
+        // 只在排序规则下相同的已有账号不是这个 Google 邮箱的账号：不登录，也不能再注册一个
+        if (!$user && User::hasCollationVariantEmail($email)) {
+            return [false, [400, __('Email already exists')]];
+        }
 
         if ($user) {
             if ($user->banned) {

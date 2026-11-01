@@ -33,6 +33,11 @@ class CommController extends Controller
             return $this->fail([400, __('Email already exists')]);
         }
 
+        // 新地址只收 ASCII（与注册一致）；已有账号的老地址照常能收找回密码的验证码
+        if (!User::isAsciiEmail($email) && !User::findByExactEmail($email)) {
+            return $this->fail([400, __('Email format is incorrect')]);
+        }
+
         // 检查白名单后缀限制
         if ((int) admin_setting('email_whitelist_enable', 0)) {
             $isRegisteredEmail = User::byEmail($email)->exists();

@@ -72,7 +72,7 @@ final class DeliveryMonitor
     public static function record(string $email, string $subject, string $view, ?string $error, ?int $userId = null): string
     {
         $category = self::classify($error);
-        $user = $userId ? User::find($userId) : User::where('email', $email)->first();
+        $user = $userId ? User::find($userId) : User::findByExactEmail($email);
         try {
             MailLog::create([
                 'email' => $email,

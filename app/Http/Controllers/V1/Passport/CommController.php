@@ -87,7 +87,12 @@ class CommController extends Controller
         //   2) 规避对 status=2 墓碑行做 model save —— InviteCode.status 有 boolean cast，
         //      整模型 save 会把 raw 2 写回 1，破坏「重建同名码恢复」依赖的 getRawOriginal('status')===2。
         //      用条件 increment（不走 model 的 status cast）双重保险，绝不触碰 status 列。
-        InviteCode::where('code', $request->input('invite_code'))
+        //   3) 只认字符串：数字原样进 where 时 MySQL 按数字比较 varchar 列，会给一批不相干的码记 pv。
+        $code = $request->input('invite_code');
+        if (!is_string($code) || $code === '') {
+            return $this->success(true);
+        }
+        InviteCode::where('code', $code)
             ->where('status', InviteCode::STATUS_UNUSED)
             ->increment('pv');
 

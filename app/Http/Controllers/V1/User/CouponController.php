@@ -12,10 +12,12 @@ class CouponController extends Controller
 {
     public function check(Request $request)
     {
-        if (empty($request->input('code'))) {
+        // 只认字符串：JSON 里的数字 / 数组原样进 where 时，MySQL 会按数字比较 varchar 列
+        $code = $request->input('code');
+        if (!is_string($code) || trim($code) === '') {
             return $this->fail([422, __('Coupon cannot be empty')]);
         }
-        $couponService = new CouponService($request->input('code'));
+        $couponService = new CouponService($code);
         $couponService->setPlanId($request->input('plan_id'));
         $couponService->setUserId($request->user()->id);
         $couponService->setPeriod($request->input('period'));

@@ -19,7 +19,11 @@ class CouponService
         // 不在构造函数里 lockForUpdate：构造常发生在事务外（如 V1 CouponController::check
         // 仅做预校验），lockForUpdate 在 autocommit 下立即释放，反而给人虚假安全感。
         // 真正的扣减在 use() 中用条件 UPDATE 原子完成。
-        $this->coupon = Coupon::where('code', $code)->first();
+        // 非字符串一律视为不存在：数字原样进 where 时，MySQL 会把 varchar 列转成数字再比，
+        // 2 能命中所有以 2 开头的码。
+        $this->coupon = is_string($code) && $code !== ''
+            ? Coupon::where('code', $code)->first()
+            : null;
     }
 
     public function use(Order $order): bool

@@ -130,6 +130,10 @@ class ServerSave extends FormRequest
             'alpn' => 'nullable|string',
             'padding_scheme' => 'nullable|array',
             'tls_settings.ech' => 'nullable|array',
+            // Xray 内核（V2bX / v2node）可让 AnyTLS 跑在这些传输上。
+            // 旧前端不传这两个键；空串经 ConvertEmptyStringsToNull 变成 null，按 tcp 处理
+            'network' => 'nullable|string|in:tcp,ws,grpc,httpupgrade,xhttp',
+            'network_settings' => 'nullable|array',
         ],
     ];
 

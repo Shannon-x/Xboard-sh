@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Models\Server;
 use App\Services\Plugin\HookManager;
 
 abstract class AbstractProtocol
@@ -45,6 +46,16 @@ abstract class AbstractProtocol
      * @var array 允许的协议类型（白名单） 为空则不进行过滤
      */
     protected $allowedProtocols = [];
+
+    /**
+     * @var array AnyTLS 外层传输白名单（network 为空视同 tcp）
+     *
+     * AnyTLS 跑在 ws / grpc / httpupgrade / xhttp 上只有 Xray 内核节点（V2bX / v2node）实现，
+     * mihomo / sing-box / Surge 等客户端的 anytls 出站都没有传输层选项：
+     * 照常下发只会多出一条握手必失败的节点，所以默认只放行 tcp。
+     * 哪个客户端将来支持了，在对应子类覆盖本属性，并在它的 buildAnyTLS 里输出传输参数。
+     */
+    protected $anyTlsTransports = ['tcp'];
 
     /**
      * 构造函数
@@ -91,6 +102,7 @@ abstract class AbstractProtocol
     protected function filterServersByVersion()
     {
         $this->filterByAllowedProtocols();
+        $this->filterAnyTlsTransports();
         $hasGlobalConfig = isset($this->protocolRequirements['*']);
         $hasClientConfig = isset($this->protocolRequirements[$this->clientName]);
 
@@ -236,6 +248,25 @@ abstract class AbstractProtocol
                 ->values()
                 ->all();
         }
+    }
+
+    /**
+     * 过滤掉当前客户端不支持其外层传输的 AnyTLS 节点
+     *
+     * @return void
+     */
+    protected function filterAnyTlsTransports(): void
+    {
+        $this->servers = collect($this->servers)
+            ->filter(function ($server) {
+                if (($server['type'] ?? null) !== Server::TYPE_ANYTLS) {
+                    return true;
+                }
+                $network = strtolower(trim((string) data_get($server, 'protocol_settings.network')));
+                return in_array($network === '' ? 'tcp' : $network, $this->anyTlsTransports, true);
+            })
+            ->values()
+            ->all();
     }
 
     /**

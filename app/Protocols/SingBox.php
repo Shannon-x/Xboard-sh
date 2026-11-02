@@ -851,9 +851,21 @@ class SingBox extends AbstractProtocol
             'tls' => [
                 'enabled' => true,
                 'insecure' => (bool) data_get($protocol_settings, 'tls.allow_insecure', false),
-                'alpn' => data_get($protocol_settings, 'alpn', ['h3']),
             ]
         ];
+
+        // AnyTLS 是 TCP 上的 TLS，不能像 hysteria/tuic 那样默认塞 h3：
+        // Xray 内核（V2bX / v2node）的 TLS 监听在未配置 ALPN 时声明 h2 + http/1.1，
+        // 客户端只报 h3 会被 Go TLS 以 no_application_protocol 拒绝握手。
+        // 不带 ALPN 则两种内核都能握手；只有显式配置时才输出。
+        $alpn = data_get($protocol_settings, 'alpn');
+        if (is_string($alpn)) {
+            $alpn = array_map('trim', explode(',', $alpn));
+        }
+        $alpn = array_values(array_filter((array) $alpn, fn($v) => is_string($v) && $v !== ''));
+        if (!empty($alpn)) {
+            $array['tls']['alpn'] = $alpn;
+        }
 
         if ($serverName = data_get($protocol_settings, 'tls.server_name')) {
             $array['tls']['server_name'] = $serverName;

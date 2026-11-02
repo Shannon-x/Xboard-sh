@@ -335,6 +335,11 @@ class Server extends Model
                     "7=500-1000"
                 ]
             ],
+            // 外层传输（V2bX / v2node 的 Xray 内核读取 network + network_settings）。
+            // null 即 tcp；sing-box 内核与现有订阅客户端只认 tcp，
+            // 非 tcp 的节点在订阅里会被过滤（见 AbstractProtocol::filterAnyTlsTransports）。
+            'network' => ['type' => 'string', 'default' => null],
+            'network_settings' => ['type' => 'array', 'default' => null],
             'tls' => self::TLS_CONFIGURATION
         ],
         self::TYPE_SOCKS => [

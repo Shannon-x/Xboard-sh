@@ -6,9 +6,11 @@ use App\Models\BillingDocument;
 use App\Models\CommissionWithdrawal;
 use App\Models\Coupon;
 use App\Models\Order;
+use App\Models\PaygLog;
 use App\Models\Plan;
 use App\Models\User;
 use App\Services\Commission\WithdrawalConfig;
+use App\Services\Payg\PaygConfig;
 use App\Services\PlanCapacity;
 use App\Services\PlanCustomizationService;
 use App\Services\RenewService;
@@ -16,7 +18,7 @@ use Illuminate\Support\Facades\App;
 use Mpdf\Mpdf;
 
 /**
- * 收据 / 续费账单 / 提现结果：组装数据 → 渲染邮件正文与 PDF。
+ * 收据 / 续费账单 / 按量月度保底凭证 / 提现结果：组装数据 → 渲染邮件正文与 PDF。
  *
  * 模板在 resources/views/billing/，刻意不放 resources/views/mail/：生产上那个目录被宿主机挂载覆盖，
  * 放进去的新模板不会生效，也不该受 email_template 主题切换影响。视觉沿用 editorial 的米色纸感 + 衬线标题。
@@ -235,6 +237,128 @@ class BillingDocumentService
             'amount' => max(0, (int) $order->total_amount) + max(0, (int) ($order->balance_amount ?? 0))
                 + max(0, (int) ($order->discount_amount ?? 0)) + max(0, (int) ($order->surplus_amount ?? 0)),
         ];
+    }
+
+    // ---------------------------------------------------------------- 按量月度保底
+
+    /**
+     * 上网按量月度保底的扣费凭证：从预付的按量余额（流量）里补扣的差额，不是新的付款。
+     * 补扣金额为 0（余额本来就空了）或用户没邮箱时返回 null，不开凭证（同 0 元单不开收据）。
+     *
+     * $context 由 PaygService::settleFloor 在扣费那一刻给出（单价 unit_price 分/GB、保底 floor 分、
+     * 扣后剩余 balance_after 字节）；缺了就按套餐 / 站点设置现状补（重建老记录时），扣后剩余拿不到就不写这一行。
+     *
+     * @param array{unit_price?: float|int, floor?: int, balance_after?: int} $context
+     */
+    public function paygFloor(PaygLog $log, array $context = []): ?array
+    {
+        if ($log->type !== PaygLog::TYPE_FLOOR || (int) $log->amount <= 0) return null;
+        $user = User::find($log->user_id);
+        if (!$user || !$user->email) return null;
+
+        $unit = isset($context['unit_price']) ? (float) $context['unit_price'] : null;
+        if ($unit === null) {
+            $plan = $log->plan_id ? Plan::find($log->plan_id) : null;
+            $unit = $plan ? PaygConfig::unitPrice($plan) : null;
+        }
+        $floor = isset($context['floor']) ? (int) $context['floor'] : PaygConfig::fromSettings()->monthlyFloor;
+        $balanceAfter = isset($context['balance_after']) ? max(0, (int) $context['balance_after']) : null;
+
+        $charged = (int) $log->amount;
+        $usage = max(0, (int) $log->usage_bytes);
+        $usedCents = $unit ? PaygConfig::centsFor($unit, $usage) : 0;
+        $short = $floor - $usedCents - $charged;   // > 0：余额不够，扣到 0 为止，没扣足的部分
+        $deductedAt = (int) ($log->created_at ?: time());
+        $month = (string) $log->month;
+        $chargedFmt = $this->money($charged);
+        $bytesFmt = $this->gb((int) $log->bytes);
+
+        $rows = [
+            [__('billing.payg_floor.usage'), __('billing.payg_floor.usage_value', ['bytes' => $this->gb($usage)])],
+        ];
+        if ($unit) {
+            $rows[] = [__('billing.payg_floor.usage_amount'), __('billing.payg_floor.usage_amount_value', [
+                'amount' => $this->money($usedCents), 'unit' => $this->unitPrice($unit),
+            ])];
+        }
+        $rows[] = [__('billing.payg_floor.floor'), $this->money($floor)];
+        $rows[] = [__('billing.payg_floor.charged'), __('billing.payg_floor.charged_value', ['amount' => $chargedFmt, 'bytes' => $bytesFmt]), 'strong' => true];
+        if ($balanceAfter !== null) {
+            $rows[] = [__('billing.payg_floor.balance_after'), $this->gb($balanceAfter)];
+        }
+
+        $data = $this->base() + [
+            'kind' => 'payg_floor',
+            'payg_log_id' => (int) $log->id,
+            'doc_title' => __('billing.payg_floor.doc_title'),
+            'doc_title_en' => __('billing.payg_floor.doc_title_en'),
+            'stamp' => __('billing.payg_floor.stamp'),
+            'stamp_soft' => true,
+            'doc_no' => self::documentNumber('FL', $deductedAt, 'payg_floor:' . $log->id),
+            'issued_at' => $this->date(time()),
+            'month' => $month,
+            'deducted_at' => $this->dateTime($deductedAt),
+            'item_name' => __('billing.payg_floor.item'),
+            'usage_bytes' => $usage,
+            'usage_fmt' => $this->gb($usage),
+            'usage_amount' => $usedCents,
+            'unit_price' => $unit,
+            'floor' => $floor,
+            'floor_fmt' => $this->money($floor),
+            'charged_bytes' => (int) $log->bytes,
+            'charged_bytes_fmt' => $bytesFmt,
+            'balance_after' => $balanceAfter,
+            'balance_after_fmt' => $balanceAfter !== null ? $this->gb($balanceAfter) : null,
+            'rows' => $rows,
+            'bill_to' => ['email' => $user->email, 'id' => (int) $user->id],
+            'items' => [],
+            'totals' => [],
+            'total' => $charged,
+            'payments' => [],
+            'balance_due' => 0,
+            'notes' => array_values(array_filter([
+                __('billing.payg_floor.not_payment_note'),
+                $short > 0 ? __('billing.payg_floor.short_note', ['amount' => $this->money($short)]) : null,
+                __('billing.payg_floor.rule_note', ['floor' => $this->money($floor)]),
+            ])),
+            'headline' => __('billing.payg_floor.headline', ['month' => $month]),
+            'intro' => __('billing.payg_floor.intro', [
+                'month' => $month, 'used' => $this->money($usedCents), 'floor' => $this->money($floor),
+                'amount' => $chargedFmt, 'bytes' => $bytesFmt,
+            ]),
+            'cta_label' => __('billing.payg_floor.cta'),
+            'cta_url' => $this->url('/dashboard'),
+            'has_pdf' => true,
+            'archive_note' => true,
+            'alternatives' => [],
+        ];
+        $data['subject'] = __('billing.payg_floor.subject', ['no' => $data['doc_no'], 'month' => $month, 'app' => $data['app_name']]);
+        $data['meta'] = [
+            [__('billing.payg_floor.doc_no'), $data['doc_no']],
+            [__('billing.payg_floor.month'), $month],
+            [__('billing.payg_floor.deducted_at'), $data['deducted_at']],
+            [__('billing.payg_floor.method'), __('billing.payg_floor.method_value')],
+        ];
+        return $this->decorate($data);
+    }
+
+    /** 流量按 GB 写（保底凭证里的用量 / 补扣 / 剩余）：最多两位小数，27.33 GB、6 GB；不足 0.01 GB 写 < 0.01 GB */
+    private function gb(int $bytes): string
+    {
+        if ($bytes > 0 && $bytes < PaygConfig::BYTES_PER_GB / 100) {
+            return '< 0.01 GB';
+        }
+        $value = number_format(max(0, $bytes) / PaygConfig::BYTES_PER_GB, 2, '.', '');
+        return rtrim(rtrim($value, '0'), '.') . ' GB';
+    }
+
+    /** 每 GB 单价（分，可能带小数）→ ¥0.15、¥0.155：至少两位、最多四位小数 */
+    private function unitPrice(float $cents): string
+    {
+        $symbol = (string) admin_setting('currency_symbol', '¥');
+        $value = rtrim(number_format($cents / 100, 4, '.', ''), '0');
+        [$int, $dec] = array_pad(explode('.', $value, 2), 2, '');
+        return $symbol . $int . '.' . str_pad($dec, 2, '0');
     }
 
     // ---------------------------------------------------------------- 续费账单

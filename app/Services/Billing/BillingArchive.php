@@ -4,7 +4,9 @@ namespace App\Services\Billing;
 
 use App\Models\BillingDocument;
 use App\Models\Order;
+use App\Models\PaygLog;
 use App\Models\User;
+use Illuminate\Database\QueryException;
 
 /**
  * 收据 / 账单的开具记录。不存 PDF 文件：每份记一行，payload 是开具那一刻的内容快照
@@ -27,6 +29,36 @@ final class BillingArchive
             'expired_at' => null,
             'amount' => (int) $data['total'],
         ], $data);
+    }
+
+    /**
+     * 上网按量月度保底凭证：按收据存（面板里就是一张「已付款」的单据），order_id 为空，挂在那一笔 PaygLog 上。
+     * 和收据一样开过就固定：已经有了就原样返回，不覆盖快照。payg_log_id 唯一，并发重复开具时以先写入的那份为准。
+     * 返回的记录 wasRecentlyCreated = 这次新开的（调用方据此决定要不要投递）。
+     */
+    public function storePaygFloor(PaygLog $log, array $data): BillingDocument
+    {
+        $existing = BillingDocument::where('payg_log_id', $log->id)->first();
+        if ($existing) {
+            return $existing;
+        }
+        try {
+            return $this->fill(new BillingDocument(), [
+                'user_id' => (int) $log->user_id,
+                'order_id' => null,
+                'payg_log_id' => (int) $log->id,
+                'kind' => BillingDocument::KIND_RECEIPT,
+                'stage' => null,
+                'expired_at' => null,
+                'amount' => (int) $data['total'],
+            ], $data);
+        } catch (QueryException $e) {
+            $existing = BillingDocument::where('payg_log_id', $log->id)->first();
+            if ($existing) {
+                return $existing;
+            }
+            throw $e;
+        }
     }
 
     /**
@@ -118,9 +150,13 @@ final class BillingArchive
         return $data;
     }
 
-    /** 按订单 / 用户现状重建渲染数据：收据只要订单在就能重建，账单只在仍是当前到期日且还没到期时能。 */
+    /** 按订单 / 用户现状重建渲染数据：收据只要订单在就能重建（保底凭证看那一笔 PaygLog），账单只在仍是当前到期日且还没到期时能。 */
     public function rebuildData(BillingDocument $doc, BillingDocumentService $docs): ?array
     {
+        if ($doc->isPaygFloor()) {
+            $log = PaygLog::find($doc->payg_log_id);
+            return $log ? $docs->paygFloor($log) : null;
+        }
         if ($doc->kind === BillingDocument::KIND_RECEIPT) {
             $order = $doc->order_id ? Order::find($doc->order_id) : null;
             return $order ? $docs->receipt($order) : null;

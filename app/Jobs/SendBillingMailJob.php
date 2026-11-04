@@ -21,7 +21,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * 收据 / 续费账单 / 提现结果 / 到期后通知邮件：payload 只带 id，到 worker 里才组装数据、渲染 PDF
+ * 收据 / 按量月度保底凭证 / 续费账单 / 提现结果 / 到期后通知邮件：payload 只带 id，到 worker 里才组装数据、渲染 PDF
  * （PDF 是二进制，塞进 payload 会让 json_encode 失败）。
  *
  * 顺序是「先记录，再投递」：收据和账单先把内容快照记入 v2_billing_document（不存 PDF 文件，下载时按快照现生成），
@@ -34,6 +34,7 @@ class SendBillingMailJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public const KIND_RECEIPT = 'receipt';
+    public const KIND_PAYG_FLOOR = 'payg_floor';   // 上网按量月度保底凭证：id 是 v2_billing_document 的 id（开具在 PaygService 里已做完）
     public const KIND_INVOICE = 'invoice';
     public const KIND_WITHDRAWAL = 'withdrawal';
     public const KIND_EXPIRED = 'expired';     // 到期当天：服务已暂停
@@ -43,6 +44,7 @@ class SendBillingMailJob implements ShouldQueue
     /** 各类邮件对应的通知类别：收据 / 提现结果是交易类（null，永远发），账单与到期当天归「账单」，挽回归「营销」 */
     public const CATEGORY = [
         self::KIND_RECEIPT => null,
+        self::KIND_PAYG_FLOOR => null,   // 与收据同为交易类：钱包里的钱被扣了，用户关不掉这封
         self::KIND_WITHDRAWAL => null,
         self::KIND_INVOICE => NotificationPreference::BILLING,
         self::KIND_EXPIRED => NotificationPreference::BILLING,
@@ -74,6 +76,17 @@ class SendBillingMailJob implements ShouldQueue
     public static function dispatchReceipt(Order $order): void
     {
         self::dispatch(self::KIND_RECEIPT, (int) $order->id)->afterCommit();
+    }
+
+    /** 保底凭证已记入 v2_billing_document 之后派发；同收据，事务提交后再派发。 */
+    public static function dispatchPaygFloor(BillingDocument $doc): void
+    {
+        self::dispatch(self::KIND_PAYG_FLOOR, (int) $doc->id)->afterCommit();
+    }
+
+    public static function resendPaygFloor(BillingDocument $doc): void
+    {
+        self::dispatch(self::KIND_PAYG_FLOOR, (int) $doc->id, null, null, true);
     }
 
     public static function dispatchInvoice(User $user, string $stage): void
@@ -118,6 +131,7 @@ class SendBillingMailJob implements ShouldQueue
         }
         $this->result = BillingDocumentService::withLocale(fn () => match ($this->kind) {
             self::KIND_RECEIPT => $this->sendReceipt($docs, $archive),
+            self::KIND_PAYG_FLOOR => $this->sendPaygFloor($docs, $archive),
             self::KIND_WITHDRAWAL => $this->sendWithdrawal($docs),
             self::KIND_EXPIRED => $this->sendExpired($docs),
             self::KIND_WINBACK => $this->sendWinback($docs),
@@ -158,6 +172,25 @@ class SendBillingMailJob implements ShouldQueue
             DB::table('v2_order')->where('id', $order->id)->update(['receipt_sent_at' => time()]);
         }
         return $result;
+    }
+
+    /**
+     * 按量月度保底凭证：照开具时的快照发（开具在 PaygService::settleFloor 提交之后已经做完），
+     * 已投递过的不再发（重试 / 重复派发），后台重发 force 除外。
+     */
+    private function sendPaygFloor(BillingDocumentService $docs, BillingArchive $archive): ?string
+    {
+        $doc = BillingDocument::find($this->id);
+        if (!$doc || !$doc->isPaygFloor() || ($doc->sent_at && !$this->force)) {
+            return null;
+        }
+        $user = User::find($doc->user_id);
+        $data = $user ? $archive->data($doc, $docs) : null;
+        if ($data === null) {
+            return null;
+        }
+        $pdf = BillingDocumentService::withLocale(fn () => $docs->pdf($data), $doc->locale ?: null);
+        return $this->notify($user, $data, 'billing.mail.payg_floor', $pdf, $doc, $docs, $archive);
     }
 
     private function sendInvoice(BillingDocumentService $docs, BillingArchive $archive): ?string

@@ -13,11 +13,12 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int $user_id
  * @property int|null $order_id      收据对应的订单
  * @property int|null $pay_order_id  账单通过免登录付款链接下的订单（BillingPayService）；取消了会被下一单覆盖
+ * @property int|null $payg_log_id   上网按量月度保底凭证对应的那一笔 v2_payg_log（kind 仍是 receipt，order_id 为空）
  * @property string $kind            receipt | invoice
- * @property string $doc_no          RC-20261007-7KQ2M9XA / INV-20261105-K3D8W1QZ（见 BillingDocumentService::documentNumber）
+ * @property string $doc_no          RC-20261007-7KQ2M9XA / INV-20261105-K3D8W1QZ / FL-20261101-…（见 BillingDocumentService::documentNumber）
  * @property string|null $stage      账单：first（到期前 N 天）| final（到期前 24 小时）
  * @property int|null $expired_at    账单对应的到期时间戳
- * @property int $amount             收据 = 本单消耗金额，账单 = 应付金额（分）
+ * @property int $amount             收据 = 本单消耗金额，账单 = 应付金额，保底凭证 = 从按量余额补扣的金额（分）
  * @property string $access_key      签下载链接用的随机密钥（不直接出现在链接里）
  * @property array|null $payload     内容快照（BillingDocumentService 产出的渲染数据，不含 logo 图片）
  * @property int $size               快照字节数（后台统计占用用）
@@ -32,6 +33,10 @@ class BillingDocument extends Model
 {
     public const KIND_RECEIPT = 'receipt';
     public const KIND_INVOICE = 'invoice';
+
+    /** 列表接口给前端的细分类型：kind 之外再区分「订单收据」和「按量月度保底凭证」 */
+    public const TYPE_ORDER = 'order';
+    public const TYPE_PAYG_FLOOR = 'payg_floor';
 
     public const CHANNEL_EMAIL = 'email';
     public const CHANNEL_TELEGRAM = 'telegram';
@@ -49,6 +54,7 @@ class BillingDocument extends Model
     protected $casts = [
         // 中文不转义成 \uXXXX：同样内容少占一半多空间
         'payload' => 'json:unicode',
+        'payg_log_id' => 'integer',
         'created_at' => 'timestamp',
         'updated_at' => 'timestamp',
     ];
@@ -102,6 +108,28 @@ class BillingDocument extends Model
     public function payPath(): string
     {
         return '/pay/' . $this->payToken();
+    }
+
+    /** 上网按量的月度保底凭证：按收据存、展示（已付款），但没有订单，内容是从预付流量里的扣除 */
+    public function isPaygFloor(): bool
+    {
+        return $this->payg_log_id !== null;
+    }
+
+    /** 列表里的细分类型：receipt 再分订单收据 / 保底凭证，账单就是 invoice */
+    public function listType(): string
+    {
+        if ($this->isPaygFloor()) {
+            return self::TYPE_PAYG_FLOOR;
+        }
+        return $this->kind === self::KIND_RECEIPT ? self::TYPE_ORDER : $this->kind;
+    }
+
+    /** 快照里的单据名（收据 / 续费账单 / 保底扣费凭证），按开具时的语言；没有快照时为 null */
+    public function listTitle(): ?string
+    {
+        $title = is_array($this->payload) ? ($this->payload['doc_title'] ?? null) : null;
+        return is_string($title) && $title !== '' ? $title : null;
     }
 
     /** 面板里展示的状态：收据恒为 paid；账单看用户现在的到期时间，续过费就是 settled，拖太久就是 void。 */

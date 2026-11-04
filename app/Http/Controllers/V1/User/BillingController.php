@@ -29,7 +29,10 @@ class BillingController extends Controller
         $expires = time() + BillingDocument::LINK_TTL;
         return $this->success($docs->map(fn (BillingDocument $d) => [
             'id' => (int) $d->id,
+            // 按量月度保底凭证也是 kind = receipt（状态恒为 paid）：没改过的面板照收据显示；type / title 给新面板细分用
             'kind' => $d->kind,
+            'type' => $d->listType(),
+            'title' => $d->listTitle(),
             'doc_no' => $d->doc_no,
             'stage' => $d->stage,
             'amount' => (int) $d->amount,

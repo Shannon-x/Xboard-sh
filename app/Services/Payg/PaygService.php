@@ -3,12 +3,15 @@
 namespace App\Services\Payg;
 
 use App\Exceptions\ApiException;
+use App\Jobs\SendBillingMailJob;
 use App\Models\Order;
 use App\Models\PaygLog;
 use App\Models\Plan;
 use App\Models\StatUser;
 use App\Models\TrafficResetLog;
 use App\Models\User;
+use App\Services\Billing\BillingArchive;
+use App\Services\Billing\BillingDocumentService;
 use App\Services\OrderService;
 use App\Services\PlanCustomizationService;
 use App\Services\TrafficResetService;
@@ -222,6 +225,9 @@ class PaygService
      * 结算某个月的保底：这个月有用量、但按单价折算不足保底的，从钱包里补扣差额（余额不够就扣到 0 为止，不欠费）。
      * 没用的月份不扣。每人每月只结算一次（唯一键兜底并发）。
      *
+     * 真的扣了钱（金额 > 0）的，事务提交后在「账单与收据」里开一份保底扣费凭证并按收据的规则投递
+     * （issueFloorDocument）；凭证开不出来、邮件发不出去都只记日志，不影响这次扣费。
+     *
      * @return array{status: string, amount?: int, bytes?: int}
      */
     public function settleFloor(User $user, Carbon $month, bool $dryRun = false, ?PaygConfig $config = null): array
@@ -248,8 +254,9 @@ class PaygService
         $want = PaygConfig::bytesFor($unit, $shortfall);
         if ($dryRun) return ['status' => 'would_charge', 'amount' => $shortfall, 'bytes' => $want];
 
+        $issued = null;   // 事务里写下的那一笔保底 + 开凭证要用的上下文；只在事务成功返回后使用
         try {
-            return DB::transaction(function () use ($user, $plan, $unit, $monthKey, $usage, $shortfall, $want, $config) {
+            $result = DB::transaction(function () use ($user, $plan, $unit, $monthKey, $usage, $shortfall, $want, $config, &$issued) {
                 $locked = User::lockForUpdate()->find($user->id);
                 if (!$locked || !self::isWallet($locked, $config) || (int) $locked->plan_id !== (int) $plan->id) {
                     return ['status' => 'not_wallet'];
@@ -264,18 +271,53 @@ class PaygService
                     }
                 }
                 // 余额已经是 0 也记一行（金额 0）：这个月算结算过了，明细里看得到原因
-                PaygLog::create([
+                $log = PaygLog::create([
                     'user_id' => $locked->id, 'plan_id' => $plan->id, 'type' => PaygLog::TYPE_FLOOR,
                     'month' => $monthKey, 'amount' => $charged, 'bytes' => $take, 'usage_bytes' => $usage,
                 ]);
+                $issued = [$log, [
+                    'unit_price' => $unit,
+                    'floor' => $config->monthlyFloor,
+                    'balance_after' => $remaining - $take,
+                ]];
                 return ['status' => 'charged', 'amount' => $charged, 'bytes' => $take];
             });
         } catch (QueryException $e) {
+            $issued = null;
             // 唯一键冲突 = 另一个进程刚结算了同一个月：事务已回滚，不会扣两次
             if (PaygLog::where('user_id', $user->id)->where('type', PaygLog::TYPE_FLOOR)->where('month', $monthKey)->exists()) {
                 return ['status' => 'settled'];
             }
             throw $e;
+        }
+        if ($issued !== null && (int) $issued[0]->amount > 0) {
+            // 外面若还套着事务（现在没有调用方这样做），等它也提交了再开：回滚了就不会留下一份凭证
+            [$log, $context] = $issued;
+            DB::afterCommit(fn () => $this->issueFloorDocument($log, $context));
+        }
+        return $result;
+    }
+
+    /**
+     * 给一笔已提交的保底补扣开凭证：记入 v2_billing_document（kind = receipt、payg_log_id 指向这一笔），
+     * 再像收据一样派发邮件（退信转 Telegram，都不行就只留在面板）。收据开关关着就都不做，与订单收据一致。
+     * 每笔至多一份（payg_log_id 唯一）；任何失败只记日志 —— 扣费已经提交，不能因为凭证回滚或中断结算。
+     */
+    private function issueFloorDocument(PaygLog $log, array $context): void
+    {
+        if ((int) $log->amount <= 0 || !BillingDocumentService::receiptEnabled()) {
+            return;
+        }
+        try {
+            $doc = BillingDocumentService::withLocale(function () use ($log, $context) {
+                $data = app(BillingDocumentService::class)->paygFloor($log, $context);
+                return $data === null ? null : app(BillingArchive::class)->storePaygFloor($log, $data);
+            });
+            if ($doc !== null && $doc->wasRecentlyCreated) {
+                SendBillingMailJob::dispatchPaygFloor($doc);
+            }
+        } catch (\Throwable $e) {
+            Log::error('payg.floor.document_failed', ['user_id' => $log->user_id, 'payg_log_id' => $log->id, 'error' => $e->getMessage()]);
         }
     }
 

@@ -63,6 +63,9 @@ class BillingController extends Controller
                     'mail_suppressed' => $user?->mail_suppressed_at !== null,
                     'telegram_bound' => (bool) ($user?->telegram_id),
                     'kind' => $d->kind,
+                    'type' => $d->listType(),
+                    'title' => $d->listTitle(),
+                    'payg_log_id' => $d->payg_log_id ? (int) $d->payg_log_id : null,
                     'doc_no' => $d->doc_no,
                     'stage' => $d->stage,
                     'amount' => (int) $d->amount,
@@ -99,7 +102,7 @@ class BillingController extends Controller
         ];
     }
 
-    /** 重发：收据照开具时的快照原样再发；账单只有在仍是当前到期日时才有意义（按当前规格更新后再发）。 */
+    /** 重发：收据（含按量月度保底凭证）照开具时的快照原样再发；账单只有在仍是当前到期日时才有意义（按当前规格更新后再发）。 */
     public function resendDocument(Request $request)
     {
         $request->validate(['id' => 'required|integer']);
@@ -111,7 +114,10 @@ class BillingController extends Controller
         if (!$user || !$user->email) {
             return $this->fail([400, '用户不存在或没有邮箱']);
         }
-        if ($doc->kind === BillingDocument::KIND_RECEIPT) {
+        if ($doc->isPaygFloor()) {
+            // 按量月度保底凭证：没有订单，照开具时的快照重发
+            SendBillingMailJob::resendPaygFloor($doc);
+        } elseif ($doc->kind === BillingDocument::KIND_RECEIPT) {
             $order = $doc->order_id ? Order::find($doc->order_id) : null;
             if (!$order) {
                 return $this->fail([400, '收据对应的订单不存在']);

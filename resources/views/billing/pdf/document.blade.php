@@ -1,4 +1,4 @@
-{{-- 收据 / 续费账单 PDF（mPDF 渲染：只用表格排版，不用 flex/grid；字体名对应 BillingDocumentService 注册的 fontdata） --}}
+{{-- 收据 / 续费账单 / 按量月度保底凭证 PDF（mPDF 渲染：只用表格排版，不用 flex/grid；字体名对应 BillingDocumentService 注册的 fontdata） --}}
 <!DOCTYPE html>
 <html lang="{{ $locale }}">
 <head>
@@ -136,6 +136,9 @@ a { color: #c94f2e; text-decoration: none; }
 <div style="margin-top:3pt">{{ $intro }}</div>
 @if(!empty($pay_note))<div class="faint" style="margin-top:3pt">{{ $pay_note }}</div>@endif
 </div>
+@endif
+@if($kind === 'payg_floor')
+@include('billing.pdf.payg_floor')
 @endif
 @foreach($notes as $note)
 <div class="note" style="margin-top:8pt">{{ $note }}</div>

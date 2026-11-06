@@ -40,6 +40,8 @@ class PaymentGatewayBinding
         // EPay 的行为开关：同一商户的两条配置（支付宝 / 微信入口）只改了其中一条时不能被判成不同源，
         // 否则用户在收银台切换按钮后的合法回调会被拒（2026-07 出过 155 单）
         'api_version',
+        'v1_pay_mode',
+        'mapi_hosts',
         'v2_pay_mode',
         'verify_before_fulfil',
     ];

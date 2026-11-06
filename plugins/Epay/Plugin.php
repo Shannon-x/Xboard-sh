@@ -14,6 +14,7 @@ use App\Support\FeatureFlag;
 use App\Support\PaymentGuard;
 use App\Support\PaymentMetrics;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Plugin\PaymentAttempt\Support\Attempts;
 
@@ -21,6 +22,9 @@ class Plugin extends AbstractPlugin implements PaymentInterface
 {
     /** 统一下单拿到的支付链接缓存时长：同一个支付会话重复 checkout 不再重复建单（网关同号二次建单会报错） */
     private const PAY_URL_TTL = 600;
+
+    /** V1 服务器下单（mapi.php）拿到的收银台地址缓存时长：网关同一单号只能建一次，缓存要盖住一次付款的全程 */
+    private const MAPI_URL_TTL = 3600;
 
     public function boot(): void
     {
@@ -78,6 +82,16 @@ class Plugin extends AbstractPlugin implements PaymentInterface
                 'type' => 'string',
                 'placeholder' => 'alipay / wxpay / qqpay；留空进网关收银台',
             ],
+            'v1_pay_mode' => [
+                'label' => 'V1 下单方式',
+                'type' => 'string',
+                'placeholder' => '留空 = 页面跳转（submit.php）；填 mapi = 服务器下单拿收银台地址直接跳转（需填支付类型）',
+            ],
+            'mapi_hosts' => [
+                'label' => '收银台域名',
+                'type' => 'string',
+                'placeholder' => 'mapi 返回的收银台地址允许的域名，多个用英文逗号分隔；留空只认网关自己的域名',
+            ],
             'v2_pay_mode' => [
                 'label' => 'V2 下单方式',
                 'type' => 'string',
@@ -108,6 +122,10 @@ class Plugin extends AbstractPlugin implements PaymentInterface
         $config = (array) $this->getConfig();
         if (EpayV2::enabledFor($config)) {
             return ['type' => 1, 'data' => $this->payV2($config, $params)];
+        }
+
+        if (isset($params['type']) && strtolower(trim((string) $this->getConfig('v1_pay_mode', ''))) === 'mapi') {
+            return ['type' => 1, 'data' => $this->payV1Mapi($params)];
         }
 
         $params['pid'] = $this->getConfig('pid');
@@ -233,6 +251,85 @@ class Plugin extends AbstractPlugin implements PaymentInterface
 
         Cache::put($cacheKey, $payInfo, self::PAY_URL_TTL);
         return $payInfo;
+    }
+
+    /**
+     * V1 服务器下单：向 mapi.php 下单，把网关返回的收银台地址（qrcode，没有时用 payurl）交给前端直接跳转。
+     * 与 submit.php 相比少了网关的支付方式选择页，下单失败（通道关闭、金额超限）也能当场提示用户换支付方式。
+     * 应答不带签名，所以跳转地址只认网关自己的域名和后台填的收银台域名。
+     */
+    private function payV1Mapi(array $params): string
+    {
+        $cacheKey = 'epay_mapi_pay_url:' . hash('sha256', implode("\0", [
+            (string) $this->getConfig('id'), $params['out_trade_no'], $params['money'], $params['type'],
+        ]));
+        $cached = Cache::get($cacheKey);
+        if (is_string($cached) && $cached !== '') {
+            return $cached;
+        }
+
+        $params['clientip'] = $this->clientIp();
+        $params['pid'] = $this->getConfig('pid');
+        $params['sign'] = EpaySignature::md5($params, (string) $this->getConfig('key'));
+        $params['sign_type'] = 'MD5';
+
+        $body = null;
+        $error = null;
+        try {
+            $response = Http::timeout(10)->asForm()->acceptJson()
+                ->post(rtrim((string) $this->getConfig('url'), '/') . '/mapi.php', $params);
+            $body = $response->json();
+            if (!is_array($body)) {
+                $error = 'HTTP ' . $response->status() . '，应答不是 JSON';
+            }
+        } catch (\Throwable $e) {
+            $error = $e->getMessage();
+        }
+
+        $payUrl = '';
+        if (is_array($body) && (string) ($body['code'] ?? '') === '1') {
+            $payUrl = trim((string) ($body['qrcode'] ?? ''));
+            if ($payUrl === '') {
+                $payUrl = trim((string) ($body['payurl'] ?? ''));
+            }
+        }
+
+        if ($payUrl === '' || !$this->isAllowedCashierUrl($payUrl)) {
+            PaymentMetrics::warn('pay.create_failed', [
+                'gateway' => 'EPay',
+                'mode' => 'mapi',
+                'out_trade_no' => $params['out_trade_no'],
+                'code' => is_array($body) ? ($body['code'] ?? null) : null,
+                'msg' => $error ?? (is_array($body) ? ($body['msg'] ?? null) : null),
+                'pay_host' => $payUrl !== '' ? parse_url($payUrl, PHP_URL_HOST) : null,
+            ]);
+            throw new ApiException('支付通道暂时不可用，请稍后重试或更换支付方式');
+        }
+
+        Cache::put($cacheKey, $payUrl, self::MAPI_URL_TTL);
+        return $payUrl;
+    }
+
+    /** 收银台地址只认 https、网关自己的域名或后台「收银台域名」里列出的域名 */
+    private function isAllowedCashierUrl(string $url): bool
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts) || isset($parts['user']) || isset($parts['pass'])) {
+            return false;
+        }
+        if (strtolower((string) ($parts['scheme'] ?? '')) !== 'https') {
+            return false;
+        }
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        if ($host === '') {
+            return false;
+        }
+        $allowed = array_filter(array_map(
+            fn ($item) => strtolower(trim((string) $item)),
+            explode(',', (string) $this->getConfig('mapi_hosts', ''))
+        ), 'strlen');
+        $allowed[] = strtolower((string) parse_url((string) $this->getConfig('url'), PHP_URL_HOST));
+        return in_array($host, $allowed, true);
     }
 
     private function clientIp(): string

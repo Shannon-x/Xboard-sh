@@ -454,6 +454,12 @@ class Stash extends AbstractProtocol
             }
             $encStr .= '.' . ($encSettings['password'] ?? '');
             $array['encryption'] = $encStr;
+
+            // 加密节点不走 Reality，flow 也要带上，否则服务端按 vision 校验会拒绝连接
+            $flow = data_get($protocol_settings, 'flow');
+            if (!empty($flow) && $flow !== 'none') {
+                $array['flow'] = $flow;
+            }
         }
 
         return $array;

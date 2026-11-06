@@ -16,7 +16,7 @@ use Tests\TestCase;
  * 开了 VLESS Encryption 的节点只下发给能用的客户端。
  *
  *   · 官方 sing-box 遇到未知字段 encryption 会拒绝整份配置；
- *   · NekoBox、小火箭等会把它当普通 VLESS 导入，连不上也不报错。
+ *   · NekoBox、旧版小火箭等会把它当普通 VLESS 导入，连不上也不报错。
  */
 class VlessEncryptionClientFilterTest extends TestCase
 {
@@ -56,6 +56,10 @@ class VlessEncryptionClientFilterTest extends TestCase
         $this->assertContains('enc', $this->names(ClashMeta::class, 'mihomo', '1.19.14'));
         $this->assertContains('enc', $this->names(ClashMeta::class, 'meta', '1.19.33'));
         $this->assertContains('enc', $this->names(ClashMeta::class, 'verge', '2.4.3'));
+        $this->assertContains('enc', $this->names(Shadowrocket::class, 'shadowrocket', '3191'));
+        $this->assertContains('enc', $this->names(Shadowrocket::class, 'shadowrocket', '3220'));
+        $this->assertContains('enc', $this->names(Stash::class, 'stash', '3.6.1'));
+        $this->assertContains('enc', $this->names(Stash::class, 'stash', '3.6.5'));
     }
 
     public function test_unsupported_or_old_clients_drop_only_encrypted_node(): void
@@ -71,7 +75,11 @@ class VlessEncryptionClientFilterTest extends TestCase
             [General::class, null, null],
             [General::class, 'sagernet', '0.8'],
             [Shadowrocket::class, 'shadowrocket', '2592'],
+            [Shadowrocket::class, 'shadowrocket', '3190'],
+            [Shadowrocket::class, 'shadowrocket', null],
             [Stash::class, 'stash', '3.0'],
+            [Stash::class, 'stash', '3.6.0'],
+            [Stash::class, 'stash', null],
             [Loon::class, 'loon', '900'],
             [QuantumultX::class, 'quantumult%20x', '1.5'],
         ];

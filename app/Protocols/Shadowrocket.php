@@ -21,6 +21,14 @@ class Shadowrocket extends AbstractProtocol
         Server::TYPE_SOCKS,
     ];
 
+    /**
+     * VLESS Encryption：小火箭 2.2.78 (3021) 起支持，2.2.81 (3191) 修好了「带 encryption 时关掉 TLS」，
+     * 所以从 3191 起下发。UA 里的数字是构建号（如 Shadowrocket/3191）。
+     */
+    protected $vlessEncryptionClients = [
+        'shadowrocket' => '3191',
+    ];
+
     protected $protocolRequirements = [
         'shadowrocket.hysteria.protocol_settings.version' => [2 => '1993'],
         'shadowrocket.anytls.base_version' => '2592',

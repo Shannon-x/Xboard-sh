@@ -15,6 +15,17 @@ class ClashMeta extends AbstractProtocol
     const CUSTOM_TEMPLATE_FILE = 'resources/rules/custom.clashmeta.yaml';
     const CUSTOM_CLASH_TEMPLATE_FILE = 'resources/rules/custom.clash.yaml';
     const DEFAULT_TEMPLATE_FILE = 'resources/rules/default.clash.yaml';
+
+    /**
+     * VLESS Encryption：mihomo v1.19.14 起是和 Xray 一致的正式格式（v1.19.13 是早期格式）。
+     * Clash Verge Rev 从 v2.4.3 起内置 mihomo v1.19.15。
+     * FlClash / ClashMetaForAndroid 的 App 版本和内核版本对应关系还没核实，NekoBox 不支持，先不下发。
+     */
+    protected $vlessEncryptionClients = [
+        'meta' => '1.19.14',
+        'mihomo' => '1.19.14',
+        'verge' => '2.4.3',
+    ];
     public $allowedProtocols = [
         Server::TYPE_SHADOWSOCKS,
         Server::TYPE_VMESS,

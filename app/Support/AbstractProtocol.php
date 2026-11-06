@@ -58,6 +58,15 @@ abstract class AbstractProtocol
     protected $anyTlsTransports = ['tcp'];
 
     /**
+     * @var array 能用 VLESS Encryption（如 mlkem768x25519plus）的客户端 => 最低版本，'0.0.0' 表示不限版本
+     *
+     * 默认为空：这个下发格式不下发开了 VLESS Encryption 的节点。不认识 encryption 的客户端要么整份配置报错
+     * （官方 sing-box 拒绝未知字段），要么把节点当普通 VLESS 导入、连不上也不报错（NekoBox 等），
+     * 所以只对核实过的客户端放行。客户端名或版本识别不出来时同样不下发。
+     */
+    protected $vlessEncryptionClients = [];
+
+    /**
      * 构造函数
      *
      * @param array $user 用户信息
@@ -103,6 +112,7 @@ abstract class AbstractProtocol
     {
         $this->filterByAllowedProtocols();
         $this->filterAnyTlsTransports();
+        $this->filterVlessEncryption();
         $hasGlobalConfig = isset($this->protocolRequirements['*']);
         $hasClientConfig = isset($this->protocolRequirements[$this->clientName]);
 
@@ -267,6 +277,50 @@ abstract class AbstractProtocol
             })
             ->values()
             ->all();
+    }
+
+    /**
+     * 过滤掉当前客户端用不了的 VLESS Encryption 节点
+     *
+     * @return void
+     */
+    protected function filterVlessEncryption(): void
+    {
+        if ($this->clientSupportsVlessEncryption()) {
+            return;
+        }
+        $this->servers = collect($this->servers)
+            ->reject(fn($server) => self::usesVlessEncryption($server))
+            ->values()
+            ->all();
+    }
+
+    /**
+     * 节点是否开了 VLESS Encryption
+     */
+    public static function usesVlessEncryption($server): bool
+    {
+        if (($server['type'] ?? null) !== Server::TYPE_VLESS) {
+            return false;
+        }
+        $encryption = strtolower(trim((string) data_get($server, 'protocol_settings.encryption')));
+        return $encryption !== '' && $encryption !== 'none';
+    }
+
+    /**
+     * 当前客户端是否在 $vlessEncryptionClients 里且版本够
+     */
+    protected function clientSupportsVlessEncryption(): bool
+    {
+        $clientName = strtolower((string) $this->clientName);
+        if ($clientName === '' || !array_key_exists($clientName, $this->vlessEncryptionClients)) {
+            return false;
+        }
+        $minVersion = (string) $this->vlessEncryptionClients[$clientName];
+        if ($minVersion === '0.0.0') {
+            return true;
+        }
+        return !blank($this->clientVersion) && version_compare($this->clientVersion, $minVersion, '>=');
     }
 
     /**

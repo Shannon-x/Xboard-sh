@@ -62,6 +62,26 @@ class VlessEncryptionClientFilterTest extends TestCase
         $this->assertContains('enc', $this->names(Stash::class, 'stash', '3.6.5'));
     }
 
+    public function test_stash_encrypted_node_keeps_flow(): void
+    {
+        $stash = new Stash(['uuid' => 'uuid-1'], [], 'stash', '3.6.1');
+        $node = $stash->buildVless('uuid-1', [
+            'name' => 'enc',
+            'host' => 'node.example.com',
+            'port' => 443,
+            'protocol_settings' => [
+                'tls' => 0,
+                'flow' => 'xtls-rprx-vision',
+                'network' => 'tcp',
+                'encryption' => 'mlkem768x25519plus',
+                'encryption_settings' => ['mode' => 'native', 'rtt' => '0rtt', 'password' => 'pub'],
+            ],
+        ]);
+
+        $this->assertSame('xtls-rprx-vision', $node['flow'] ?? null);
+        $this->assertSame('mlkem768x25519plus.native.0rtt.pub', $node['encryption']);
+    }
+
     public function test_unsupported_or_old_clients_drop_only_encrypted_node(): void
     {
         $cases = [

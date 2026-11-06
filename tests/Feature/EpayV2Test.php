@@ -380,6 +380,83 @@ class EpayV2Test extends TestCase
         $this->assertTrue(EpaySignature::verifyMd5($query, 'v1-secret'));
     }
 
+    private function mapiConfig(array $overrides = []): array
+    {
+        return $overrides + ['url' => self::URL . '/', 'pid' => '80001', 'key' => 'v1-secret', 'type' => 'wxpay', 'v1_pay_mode' => 'mapi'];
+    }
+
+    public function test_v1_mapi_mode_jumps_straight_to_the_gateway_cashier_and_caches_it(): void
+    {
+        $payment = $this->payment($this->mapiConfig());
+        $this->gateway['/mapi.php'] = Http::response([
+            'code' => 1, 'msg' => 'success', 'trade_no' => '202611061200000001',
+            'qrcode' => self::URL . '/cashier/abc', 'payurl' => self::URL . '/pay/abc',
+        ]);
+        $order = ['trade_no' => '202611060001-ab12cd34', 'total_amount' => 1990,
+            'notify_url' => 'https://panel.test/notify', 'return_url' => 'https://panel.test/orders/1'];
+
+        $first = $this->plugin($payment)->pay($order);
+        $second = $this->plugin($payment)->pay($order);
+
+        $this->assertSame(['type' => 1, 'data' => self::URL . '/cashier/abc'], $first, '应跳转网关返回的 qrcode（收银台地址）');
+        $this->assertSame($first, $second);
+        $this->assertCount(1, $this->requests, '同一支付会话重复 checkout 不应重复向网关建单');
+        $sent = $this->requests[0]['params'];
+        $this->assertSame('/mapi.php', $this->requests[0]['path']);
+        $this->assertSame(['wxpay', '19.90', 'MD5', '80001', 'https://panel.test/orders/1'],
+            [$sent['type'], $sent['money'], $sent['sign_type'], $sent['pid'], $sent['return_url']]);
+        $this->assertNotEmpty($sent['clientip']);
+        $this->assertTrue(EpaySignature::verifyMd5($sent, 'v1-secret'));
+    }
+
+    public function test_v1_mapi_mode_uses_payurl_when_there_is_no_qrcode(): void
+    {
+        $payment = $this->payment($this->mapiConfig());
+        $this->gateway['/mapi.php'] = Http::response(['code' => 1, 'payurl' => self::URL . '/pay/xyz']);
+
+        $result = $this->plugin($payment)->pay(['trade_no' => 'M1', 'total_amount' => 100, 'notify_url' => 'n', 'return_url' => 'r']);
+        $this->assertSame(self::URL . '/pay/xyz', $result['data']);
+    }
+
+    public function test_v1_mapi_mode_rejects_failures_and_foreign_hosts_unless_listed(): void
+    {
+        $order = ['trade_no' => 'M2', 'total_amount' => 100, 'notify_url' => 'n', 'return_url' => 'r'];
+
+        // 网关拒绝下单：当场提示换支付方式
+        $this->gateway['/mapi.php'] = Http::response(['code' => 0, 'msg' => '通道已关闭']);
+        try {
+            $this->plugin($this->payment($this->mapiConfig()))->pay($order);
+            $this->fail('应抛出 ApiException');
+        } catch (ApiException $e) {
+            $this->assertStringContainsString('更换支付方式', $e->getMessage());
+        }
+
+        // 收银台在别的域名：没列进「收银台域名」就拒绝
+        $this->gateway['/mapi.php'] = Http::response(['code' => 1, 'qrcode' => 'https://cashier.other.test/c/1']);
+        try {
+            $this->plugin($this->payment($this->mapiConfig()))->pay(['trade_no' => 'M3'] + $order);
+            $this->fail('未列出的域名应拒绝');
+        } catch (ApiException) {
+        }
+
+        // 列进去之后放行；非 https 一律拒绝
+        $listed = $this->payment($this->mapiConfig(['mapi_hosts' => ' Cashier.Other.test , x.test']));
+        $this->assertSame('https://cashier.other.test/c/1', $this->plugin($listed)->pay(['trade_no' => 'M4'] + $order)['data']);
+
+        $this->gateway['/mapi.php'] = Http::response(['code' => 1, 'qrcode' => 'http://cashier.other.test/c/2']);
+        $this->expectException(ApiException::class);
+        $this->plugin($listed)->pay(['trade_no' => 'M5'] + $order);
+    }
+
+    public function test_v1_mapi_mode_without_payment_type_keeps_the_submit_link(): void
+    {
+        $payment = $this->payment($this->mapiConfig(['type' => '']));
+        $result = $this->plugin($payment)->pay(['trade_no' => 'M6', 'total_amount' => 100, 'notify_url' => 'n', 'return_url' => 'r']);
+
+        $this->assertStringStartsWith(self::URL . '/submit.php?', $result['data']);
+        $this->assertCount(0, $this->requests);
+    }
+
     public function test_disabled_gateway_keeps_accepting_callbacks_for_three_days_only(): void
     {
         // 换网关：旧配置停用后，切换前打开的旧收银台还能付款，回调要能收

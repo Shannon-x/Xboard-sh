@@ -24,6 +24,15 @@ class General extends AbstractProtocol
         Server::TYPE_HTTP,
     ];
 
+    /**
+     * VLESS Encryption：v2rayN / v2rayNG 用 Xray 内核，分享链接的 encryption 参数照原样读。
+     * UA 里只有 App 版本、看不出内核版本，所以不设版本门槛；内核过旧时只影响这一个节点。
+     */
+    protected $vlessEncryptionClients = [
+        'v2rayn' => '0.0.0',
+        'v2rayng' => '0.0.0',
+    ];
+
     protected $protocolRequirements = [
         'v2rayng.hysteria.protocol_settings.version' => [2 => '1.9.5'],
         'v2rayn.hysteria.protocol_settings.version' => [2 => '6.31'],

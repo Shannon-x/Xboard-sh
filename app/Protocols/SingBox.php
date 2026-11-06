@@ -10,6 +10,12 @@ use Log;
 class SingBox extends AbstractProtocol
 {
     public $flags = ['sing-box', 'hiddify', 'sfm'];
+
+    /**
+     * VLESS Encryption：官方 sing-box（含 SFA / SFI / SFM）没有 encryption 字段，遇到未知字段会拒绝整份配置。
+     * Hiddify 的内核分支支持，但从哪个 App 版本起带上还没核实，旧版同样整份报错，所以先不下发。
+     */
+    protected $vlessEncryptionClients = [];
     public $allowedProtocols = [
         Server::TYPE_SHADOWSOCKS,
         Server::TYPE_TROJAN,

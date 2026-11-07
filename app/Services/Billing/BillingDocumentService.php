@@ -14,7 +14,6 @@ use App\Services\Payg\PaygConfig;
 use App\Services\PlanCapacity;
 use App\Services\PlanCustomizationService;
 use App\Services\RenewService;
-use App\Support\ChannelFee;
 use Illuminate\Support\Facades\App;
 use Mpdf\Mpdf;
 
@@ -157,18 +156,12 @@ class BillingDocumentService
         $paidAt = (int) ($order->paid_at ?: $order->updated_at ?: time());
         $isAuto = !empty($order->auto_renew);
 
-        // 支付通道（易支付收银台）在订单金额之上另收的手续费：钱归通道，不是我方收入。
-        // 收据照 Stripe 的写法把它列进明细和合计，告诉客户实际付了多少；
-        // `total` 仍是订单金额（归档金额 / 统计口径不变），客户看到的合计用 grand_total。
-        $channelPct = ChannelFee::percent($order->payment);
-        $channelFee = ChannelFee::amount($cash + $handling, $channelPct);
-
         $payments = [];
         if ($balance > 0) {
             $payments[] = ['label' => __('billing.field.paid_balance'), 'method' => __('billing.payment.balance'), 'amount' => $balance];
         }
         if ($cash + $handling > 0) {
-            $payments[] = ['label' => __('billing.field.paid_online'), 'method' => $order->payment?->name ?: '—', 'amount' => $cash + $handling + $channelFee];
+            $payments[] = ['label' => __('billing.field.paid_online'), 'method' => $order->payment?->name ?: '—', 'amount' => $cash + $handling];
         }
 
         $plan = Plan::find($order->plan_id);
@@ -190,19 +183,11 @@ class BillingDocumentService
                 ['label' => __('billing.field.subtotal'), 'amount' => $subtotal],
                 $discount > 0 ? ['label' => __('billing.field.discount'), 'amount' => -$discount] : null,
                 $surplus > 0 ? ['label' => __('billing.field.surplus'), 'amount' => -$surplus] : null,
-                $handling > 0 ? ['label' => __('billing.field.handling'), 'amount' => $handling] : null,
-                $channelFee > 0 ? [
-                    'label' => __('billing.field.channel_fee', ['percent' => self::percentText($channelPct)]),
-                    'amount' => $channelFee,
-                    'hint' => __('billing.field.channel_fee_hint'),
-                ] : null,
+                $handling > 0 ? ['label' => self::handlingLabel($order), 'amount' => $handling] : null,
             ])),
             'total' => $total,
-            'grand_total' => $total + $channelFee,
-            'amount_paid' => $total + $channelFee,
             'payments' => $payments,
             'balance_due' => 0,
-            'channel_fee' => $channelFee > 0 ? ['amount' => $channelFee, 'note' => __('billing.receipt.channel_fee_note')] : null,
             'notes' => array_values(array_filter([
                 $isAuto ? __('billing.receipt.auto_renew_note') : null,
                 (int) ($order->refund_amount ?? 0) > 0 ? __('billing.receipt.refund_note', ['amount' => $this->money((int) $order->refund_amount)]) : null,
@@ -889,22 +874,25 @@ class BillingDocumentService
         foreach ($data['payments'] as &$row) $row['amount_fmt'] = $this->money((int) $row['amount']);
         unset($item, $row);
         $data['total_fmt'] = $this->money((int) $data['total']);
-        // 收据：含通道手续费的合计与实付（旧归档快照没有这两个字段时模板回落到 total_fmt）
-        if (isset($data['grand_total'])) $data['grand_total_fmt'] = $this->money((int) $data['grand_total']);
-        if (isset($data['amount_paid'])) {
-            $data['amount_paid_fmt'] = $this->money((int) $data['amount_paid']);
-            if (!empty($data['paid_at'])) $data['paid_on'] = __('billing.receipt.paid_on', ['amount' => $data['amount_paid_fmt'], 'date' => $data['paid_at']]);
-        }
         $data['balance_due_fmt'] = $this->money((int) $data['balance_due']);
         if (isset($data['account_balance'])) $data['account_balance_fmt'] = $this->money((int) $data['account_balance']);
         $data['attachment_name'] = $data['has_pdf'] ? $this->attachmentName($data) : null;
         return $data;
     }
 
-    /** 费率展示：3.00 → 3，3.50 → 3.5 */
-    private static function percentText(float $pct): string
+    /**
+     * 「支付手续费」一行的名字：支付方式只按百分比收时带上费率（支付手续费（3.5%）），
+     * 有固定费或支付方式已删时只写「支付手续费」。手续费单独记在 handling_amount，
+     * 不进订单金额 total_amount，所以收入统计和佣金都不含它。
+     */
+    private static function handlingLabel(Order $order): string
     {
-        return rtrim(rtrim(number_format($pct, 2, '.', ''), '0'), '.');
+        $payment = $order->payment;
+        $pct = $payment ? (float) ($payment->handling_fee_percent ?? 0) : 0.0;
+        $fixed = $payment ? (int) ($payment->handling_fee_fixed ?? 0) : 0;
+        if ($pct <= 0 || $pct > 100 || $fixed > 0) return __('billing.field.handling');
+        $text = rtrim(rtrim(number_format($pct, 2, '.', ''), '0'), '.');
+        return __('billing.field.handling_rate', ['percent' => $text]);
     }
 
     public function money(int $cents): string

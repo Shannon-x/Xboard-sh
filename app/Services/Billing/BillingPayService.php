@@ -2,7 +2,6 @@
 
 namespace App\Services\Billing;
 
-use App\Support\ChannelFee;
 use App\Exceptions\ApiException;
 use App\Models\BillingDocument;
 use App\Models\Order;
@@ -240,7 +239,7 @@ final class BillingPayService
     /** 可用的支付方式；订阅式网关（Stripe / PayPal Subscription）会在网关那边开周期扣款，一次性账单不用 */
     private function methods(): array
     {
-        return Payment::select(['id', 'name', 'payment', 'icon', 'handling_fee_fixed', 'handling_fee_percent', 'config'])
+        return Payment::select(['id', 'name', 'payment', 'icon', 'handling_fee_fixed', 'handling_fee_percent'])
             ->where('enable', 1)->orderBy('sort', 'ASC')->get()
             ->reject(fn (Payment $p) => CheckoutService::isSubscriptionGateway($p))
             ->map(fn (Payment $p) => [
@@ -250,7 +249,6 @@ final class BillingPayService
                 'icon' => $p->icon,
                 'handling_fee_fixed' => (int) ($p->handling_fee_fixed ?? 0),
                 'handling_fee_percent' => (float) ($p->handling_fee_percent ?? 0),
-                'channel_fee_percent' => ChannelFee::percent($p),
             ])->values()->all();
     }
 

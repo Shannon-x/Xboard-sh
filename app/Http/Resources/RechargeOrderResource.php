@@ -45,7 +45,6 @@ class RechargeOrderResource extends JsonResource
                 'name' => $this->payment->name,
                 'payment' => $this->payment->payment,
                 'icon' => $this->payment->icon,
-                'channel_fee_percent' => \App\Support\ChannelFee::percent($this->payment),
             ] : null),
             'commission_balance' => 0,
             'commission_status' => null,

@@ -44,8 +44,6 @@ class PaymentGatewayBinding
         'mapi_hosts',
         'v2_pay_mode',
         'verify_before_fulfil',
-        // 通道手续费率只用于给客户展示（ChannelFee），支付宝 / 微信两条入口费率不同也仍是同一商户
-        'channel_fee_percent',
     ];
 
     /**

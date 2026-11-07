@@ -77,11 +77,6 @@ class Plugin extends AbstractPlugin implements PaymentInterface
                 'type' => 'text',
                 'placeholder' => '同一页面的平台公钥，用来验网关返回与回调的签名',
             ],
-            'channel_fee_percent' => [
-                'label' => '通道手续费（%）',
-                'type' => 'string',
-                'placeholder' => '收银台另收的手续费率，如 3 或 3.5；只给客户展示，不加进订单金额；留空 = 不收',
-            ],
             'type' => [
                 'label' => '支付类型',
                 'type' => 'string',

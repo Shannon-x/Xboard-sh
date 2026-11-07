@@ -20,7 +20,6 @@ use App\Services\PlanService;
 use App\Services\BalanceLedger;
 use App\Services\Recharge\RechargeService;
 use App\Services\UserService;
-use App\Support\ChannelFee;
 use App\Support\PaymentSessions;
 use Illuminate\Http\Request;
 
@@ -213,8 +212,7 @@ class OrderController extends Controller
             'payment',
             'icon',
             'handling_fee_fixed',
-            'handling_fee_percent',
-            'config',
+            'handling_fee_percent'
         ])
             ->where('enable', 1)
             ->orderBy('sort', 'ASC')
@@ -225,9 +223,6 @@ class OrderController extends Controller
         $methods->each(function ($method) {
             $method->setAttribute('supports_customization', !CheckoutService::isSubscriptionGateway($method));
             $method->setAttribute('supports_recharge', CheckoutService::supportsRecharge($method));
-            // 通道另收的手续费率（只展示，不进订单金额）；config 里有商户密钥，绝不下发
-            $method->setAttribute('channel_fee_percent', ChannelFee::percent($method));
-            $method->makeHidden('config');
         });
         return $this->success($methods);
     }

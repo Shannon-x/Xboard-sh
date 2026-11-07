@@ -108,6 +108,18 @@ class AdminDashboardStatTest extends TestCase
         $this->assertSame(['month' => 300, 'last_month_same_time' => 700, 'last_month' => 700], $income['commission']);
     }
 
+    public function test_income_excludes_the_panel_handling_fee(): void
+    {
+        // 面板支付手续费记在 handling_amount，客户多付的这部分不算进订单收入
+        //（佣金在下单时按 total_amount 算，那时还没选支付方式，本来就不含手续费）
+        $this->admin();
+        $buyer = $this->user();
+        $this->order($buyer, 2640, '2026-10-15 10:00:00', ['handling_amount' => 92]);
+
+        $income = $this->getJson($this->adminPath('/stat/getDashboard'))->assertOk()->json('data.income');
+        $this->assertSame(['amount' => 2640, 'paid_count' => 1, 'zero_count' => 0], $income['today']);
+    }
+
     public function test_users_subscriptions_and_todo_counts(): void
     {
         $now = now()->getTimestamp();

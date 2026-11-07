@@ -113,15 +113,6 @@ class PaymentGatewayBindingTest extends TestCase
         $this->assertTrue(PaymentGatewayBinding::equivalent($alipay->id, $unset->id));
     }
 
-    public function test_different_channel_fee_does_not_break_equivalence(): void
-    {
-        // 支付宝 / 微信两条入口的通道手续费率不同（3.5% / 3%），只是给客户看的，商户与密钥没变
-        $alipay = $this->makePayment(self::MERCHANT_CONFIG + ['channel_fee_percent' => '3.5']);
-        $wechat = $this->makePayment(self::MERCHANT_CONFIG + ['channel_fee_percent' => '3']);
-
-        $this->assertTrue(PaymentGatewayBinding::equivalent($alipay->id, $wechat->id));
-    }
-
     public function test_config_key_order_does_not_affect_fingerprint(): void
     {
         $a = $this->makePayment(['url' => 'https://g.example/', 'pid' => '1', 'key' => 'k']);

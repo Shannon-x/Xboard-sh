@@ -135,6 +135,18 @@ final class RefundWatchService
                 $this->advance($row, $paidAt);
                 return 'paid';
             default:
+                if ($v2 && ($result['outcome'] ?? null) === EpayOrderQuery::FOUND && $result['status'] === 0) {
+                    // V2 已付的单查出「未支付」：不是退款状态，不处置；但以前只当查询失败静默重试，
+                    // 人一直不知道。第一次见到时告警，之后照旧每小时重查
+                    if ($row->gateway_status !== 0) {
+                        $row->gateway_status = 0;
+                        $this->alertUnpaid($row, $source);
+                    }
+                    $row->last_error = mb_substr($source . '：网关显示未支付', 0, 255);
+                    $row->recheck_at = time() + self::ERROR_BACKOFF;
+                    $row->save();
+                    return 'errors';
+                }
                 $row->last_error = mb_substr('退款回查失败：' . ($result['msg'] ?? ''), 0, 255);
                 $row->recheck_at = time() + self::ERROR_BACKOFF;
                 $row->save();
@@ -228,6 +240,18 @@ final class RefundWatchService
             PaymentEnforcement::kindOf($row) . '：<code>' . $esc(PaymentEnforcement::tradeNoOf($row)) . '</code> ¥' . self::yuan((int) $row->expected_amount),
             '用户：' . ($user ? $esc((string) $user->email) . '（#' . $user->id . '）' : '—'),
             '发现途径：' . $esc($source) . '。转成退款后会自动封号。',
+        ]), 'html', true);
+    }
+
+    private function alertUnpaid(PaymentVerification $row, string $source): void
+    {
+        $esc = [TelegramService::class, 'escapeHtml'];
+        $user = $row->user_id ? User::find($row->user_id) : null;
+        AdminAlert::send(implode("\n", [
+            '❔ <b>一笔已付款的单，网关现在查出来是「未支付」</b>，暂不处置',
+            PaymentEnforcement::kindOf($row) . '：<code>' . $esc(PaymentEnforcement::tradeNoOf($row)) . '</code> ¥' . self::yuan((int) $row->expected_amount),
+            '用户：' . ($user ? $esc((string) $user->email) . '（#' . $user->id . '）' : '—'),
+            '发现途径：' . $esc($source) . '。不是退款状态，每小时再查一次；请在网关后台看下这笔是否被撤单或退款。',
         ]), 'html', true);
     }
 

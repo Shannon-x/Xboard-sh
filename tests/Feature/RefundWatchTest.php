@@ -256,6 +256,21 @@ class RefundWatchTest extends TestCase
         $this->assertCount(1, array_filter($this->alerts(), fn ($t) => str_contains($t, '冻结')));
     }
 
+    public function test_v2_paid_order_turning_unpaid_alerts_once_without_banning(): void
+    {
+        $payment = $this->v2Payment();
+        [$user, $order, $row] = $this->verifiedOrder($payment, 5);
+        $this->v2Says($order, ['status' => 0]);
+
+        $this->assertSame(1, $this->run_()['errors']);
+        $this->assertSame(0, (int) $user->fresh()->banned, 'V2 的「未支付」不是退款状态，不处置');
+        $this->assertSame(0, $row->fresh()->gateway_status);
+
+        $this->travel(2)->hours();
+        $this->run_();
+        $this->assertCount(1, array_filter($this->alerts(), fn ($t) => str_contains($t, '「未支付」')), '只告警一次，之后照旧每小时重查');
+    }
+
     public function test_orders_flagged_at_payment_verification_are_rechecked_then_enforced_or_cleared(): void
     {
         $payment = $this->v1Payment();

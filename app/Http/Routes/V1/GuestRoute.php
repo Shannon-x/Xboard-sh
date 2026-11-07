@@ -2,6 +2,7 @@
 namespace App\Http\Routes\V1;
 
 use App\Http\Controllers\V1\Guest\CommController;
+use App\Http\Controllers\V1\Guest\EpayEventController;
 use App\Http\Controllers\V1\Guest\PaymentController;
 use App\Http\Controllers\V1\Guest\PlanController;
 use App\Http\Controllers\V1\Guest\TelegramController;
@@ -30,6 +31,9 @@ class GuestRoute
             // Telegram
             $router->post('/telegram/webhook', [TelegramController::class, 'webhook']);
             // Payment
+            // 易支付 V2 事件消息订阅（交易投诉 / 订单退款）。挂在回调前缀下，中间件回调白名单直接透传
+            $router->match(['get', 'post'], '/payment/notify/EPay/{uuid}/event', [EpayEventController::class, 'receive'])
+                ->middleware('throttle:epay-event');
             $router->match(['get', 'post'], '/payment/notify/{method}/{uuid}', [PaymentController::class, 'notify']);
             // 余额充值插件时代的回调地址。充值并入核心后与订单共用上面那条；发起时用的是旧地址的在途充值单，
             // 网关仍会回调到这里，保留为别名（同一个处理入口，按 trade_no 分辨订单 / 充值单）

@@ -185,6 +185,11 @@ class RouteServiceProvider extends ServiceProvider
             return Limit::perMinute(30)->by('billing_document_download:ip:' . $request->ip());
         });
 
+        // 易支付事件推送：网关一般一次一条，限流只防有人拿这个地址刷网关查询
+        RateLimiter::for('epay-event', function (Request $request) {
+            return Limit::perMinute(60)->by('epay_event:ip:' . $request->ip());
+        });
+
         // 账单免登录付款：凭据是 128 位签名，限流只防枚举扫描；付款页 4 秒轮询一次状态，远到不了每分钟 60 次
         RateLimiter::for('billing-pay', function (Request $request) {
             return Limit::perMinute(60)->by('billing_pay:ip:' . $request->ip());

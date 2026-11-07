@@ -7,6 +7,7 @@ use App\Models\Order;
 use App\Models\Payment;
 use App\Models\Plan;
 use App\Models\User;
+use App\Support\PaymentLinkStats;
 use App\Support\PaymentGatewayBinding;
 use App\Support\PaymentSessions;
 use Illuminate\Support\Facades\DB;
@@ -175,13 +176,20 @@ class CheckoutService
     ): array {
         $gatewayTradeNo = PaymentSessions::begin($subjectType, $subjectId, $tradeNo, $userId, $payment, $expectedAmount);
 
-        $result = $this->gateway($payment)->pay([
-            'trade_no' => $gatewayTradeNo,
-            'total_amount' => $expectedAmount,
-            'user_id' => $userId,
-            'stripe_token' => $extra['stripe_token'] ?? null,
-            'return_url' => $extra['return_url'] ?? source_base_url('/#/order/' . $tradeNo),
-        ]);
+        PaymentLinkStats::begin();
+        try {
+            $result = $this->gateway($payment)->pay([
+                'trade_no' => $gatewayTradeNo,
+                'total_amount' => $expectedAmount,
+                'user_id' => $userId,
+                'stripe_token' => $extra['stripe_token'] ?? null,
+                'return_url' => $extra['return_url'] ?? source_base_url('/#/order/' . $tradeNo),
+            ]);
+        } catch (\Throwable $e) {
+            PaymentLinkStats::record((int) $payment->id, (string) $gatewayTradeNo, PaymentLinkStats::FAIL, PaymentLinkStats::takeReason($e));
+            throw $e;
+        }
+        PaymentLinkStats::record((int) $payment->id, (string) $gatewayTradeNo, PaymentLinkStats::OK);
         return ['type' => $result['type'], 'data' => $result['data']];
     }
 

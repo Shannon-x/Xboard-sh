@@ -149,7 +149,7 @@ class OrderPayService
 
     private function methods(): array
     {
-        return Payment::select(['id', 'name', 'payment', 'icon', 'handling_fee_fixed', 'handling_fee_percent'])
+        return Payment::select(['id', 'name', 'payment', 'icon', 'handling_fee_fixed', 'handling_fee_percent', 'config'])
             ->where('enable', 1)->orderBy('sort', 'ASC')->get()
             ->reject(fn (Payment $p) => CheckoutService::isSubscriptionGateway($p))
             ->map(fn (Payment $p) => [
@@ -159,6 +159,8 @@ class OrderPayService
                 'icon' => $p->icon,
                 'handling_fee_fixed' => (int) ($p->handling_fee_fixed ?? 0),
                 'handling_fee_percent' => (float) ($p->handling_fee_percent ?? 0),
+                // 单笔上限（分，含手续费）；null = 不限。前端超限时把这个方式置灰
+                'max_amount' => CheckoutService::maxAmount($p),
             ])->values()->all();
     }
 

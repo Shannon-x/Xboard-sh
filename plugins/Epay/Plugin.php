@@ -87,6 +87,11 @@ class Plugin extends AbstractPlugin implements PaymentInterface
                 'type' => 'string',
                 'placeholder' => '留空 = 页面跳转（submit.php）；填 mapi = 服务器下单拿收银台地址直接跳转（需填支付类型）',
             ],
+            'max_amount' => [
+                'label' => '单笔上限（元）',
+                'type' => 'string',
+                'placeholder' => '含手续费，超过的单收银台置灰、不去网关下单；例如 495；留空不限',
+            ],
             'mapi_hosts' => [
                 'label' => '收银台域名',
                 'type' => 'string',

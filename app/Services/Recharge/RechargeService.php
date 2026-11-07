@@ -166,7 +166,11 @@ class RechargeService
                 throw new ApiException('充值金额异常，请重新下单');
             }
 
-            if (CheckoutService::mustRebind($locked->payment_id === null ? null : (int) $locked->payment_id, $payment)) {
+            $rebind = CheckoutService::mustRebind($locked->payment_id === null ? null : (int) $locked->payment_id, $payment);
+            CheckoutService::assertWithinMaxAmount($payment, $rebind
+                ? (int) $locked->deposit_amount + CheckoutService::handlingFee($payment, (int) $locked->deposit_amount)
+                : (int) $locked->pay_amount);
+            if ($rebind) {
                 $handling = CheckoutService::handlingFee($payment, (int) $locked->deposit_amount);
                 $locked->payment_id = $payment->id;
                 $locked->payment_method = (string) $payment->payment;

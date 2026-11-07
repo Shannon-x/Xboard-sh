@@ -212,7 +212,8 @@ class OrderController extends Controller
             'payment',
             'icon',
             'handling_fee_fixed',
-            'handling_fee_percent'
+            'handling_fee_percent',
+            'config',
         ])
             ->where('enable', 1)
             ->orderBy('sort', 'ASC')
@@ -223,6 +224,9 @@ class OrderController extends Controller
         $methods->each(function ($method) {
             $method->setAttribute('supports_customization', !CheckoutService::isSubscriptionGateway($method));
             $method->setAttribute('supports_recharge', CheckoutService::supportsRecharge($method));
+            // 单笔上限（分，含手续费）；null = 不限。只给出这个数，配置本身（密钥）不下发
+            $method->setAttribute('max_amount', CheckoutService::maxAmount($method));
+            $method->makeHidden('config');
         });
         return $this->success($methods);
     }

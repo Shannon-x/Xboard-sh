@@ -26,7 +26,9 @@ class Stash extends AbstractProtocol
     /**
      * VLESS Encryption：Stash iOS 3.6.1 起支持（App Store 更新说明），可与 xtls-rprx-vision 叠加、不需要 TLS。
      */
-    protected $vlessEncryptionClients = [
+    protected $vlessEncryptionFormat = true;
+
+    protected $vlessEncryptionBlockedClients = [
         'stash' => '3.6.1',
     ];
 

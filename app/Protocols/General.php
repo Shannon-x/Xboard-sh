@@ -25,12 +25,16 @@ class General extends AbstractProtocol
     ];
 
     /**
-     * VLESS Encryption：v2rayN / v2rayNG 用 Xray 内核，分享链接的 encryption 参数照原样读。
-     * UA 里只有 App 版本、看不出内核版本，所以不设版本门槛；内核过旧时只影响这一个节点。
+     * VLESS Encryption：分享链接格式，客户端不认识 encryption 参数时只是这一个节点连不上，不影响其它节点，
+     * 所以默认下发（v2rayN / v2rayNG / v2rayTun 等 Xray 系照原样读）。
+     * 黑名单：SagerNet（已停更）、Karing、Husi（sing-box 系内核，未核实支持）。
      */
-    protected $vlessEncryptionClients = [
-        'v2rayn' => '0.0.0',
-        'v2rayng' => '0.0.0',
+    protected $vlessEncryptionFormat = true;
+
+    protected $vlessEncryptionBlockedClients = [
+        'sagernet' => null,
+        'karing' => null,
+        'husi' => null,
     ];
 
     protected $protocolRequirements = [

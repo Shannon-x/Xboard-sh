@@ -58,13 +58,32 @@ abstract class AbstractProtocol
     protected $anyTlsTransports = ['tcp'];
 
     /**
-     * @var array 能用 VLESS Encryption（如 mlkem768x25519plus）的客户端 => 最低版本，'0.0.0' 表示不限版本
+     * VLESS Encryption（如 mlkem768x25519plus）节点按黑名单下发：只有明确不支持的客户端不发。
      *
-     * 默认为空：这个下发格式不下发开了 VLESS Encryption 的节点。不认识 encryption 的客户端要么整份配置报错
-     * （官方 sing-box 拒绝未知字段），要么把节点当普通 VLESS 导入、连不上也不报错（NekoBox 等），
-     * 所以只对核实过的客户端放行。客户端名或版本识别不出来时同样不下发。
+     * @var bool 这个下发格式能不能带加密节点。false = 整个格式都不发，用于读到未知字段就整份配置报错、
+     *           或格式里根本写不出 encryption 的客户端（官方 sing-box、Loon、圈X 等）。
      */
-    protected $vlessEncryptionClients = [];
+    protected $vlessEncryptionFormat = false;
+
+    /**
+     * @var array 黑名单：客户端名 => 最低支持版本；null 表示这个客户端所有版本都不发。
+     *            不在名单里的客户端照发；在名单里但 UA 读不到版本的也照发。
+     */
+    protected $vlessEncryptionBlockedClients = [];
+
+    /**
+     * UA 第一段 => 判断加密节点时用的客户端名。
+     * 这些客户端的 UA 会被 ClientController::getClientInfo 认成别的名字：
+     *   clash-verge/v2.5.10          → 认成 clash（clash 和 verge 一样长、排在前面）
+     *   mihomo.party/v2.0.4          → 认成 mihomo，版本却是 App 版本
+     */
+    const VLESS_ENCRYPTION_UA_ALIASES = [
+        'clash-verge' => 'verge',
+        'mihomo.party' => 'mihomo-party',
+        'mihomo-party' => 'mihomo-party',
+        'karing' => 'karing',
+        'husi' => 'husi',
+    ];
 
     /**
      * 构造函数
@@ -308,35 +327,41 @@ abstract class AbstractProtocol
     }
 
     /**
-     * 判断 VLESS Encryption 时用的客户端名。
-     *
-     * Clash Verge 的 UA 是 clash-verge/v2.5.10：clash-verge 不在标识列表里，按子串匹配时 clash 和 verge
-     * 一样长、clash 排在前面，客户端名被识别成 clash，导致 Verge 永远对不上 verge 这一项。
-     * 这里只在判断加密节点时把它认回 verge，不动其它按客户端名的过滤规则。
+     * 判断 VLESS Encryption 时用的客户端名：先按 UA 第一段查别名，查不到用识别出的客户端名。
+     * 只用于判断加密节点，不动其它按客户端名的过滤规则。
      */
     protected function vlessEncryptionClientName(): string
     {
-        $clientName = strtolower((string) $this->clientName);
-        if ($clientName === 'clash' && stripos((string) $this->userAgent, 'clash-verge') !== false) {
-            return 'verge';
+        $userAgent = strtolower(trim((string) $this->userAgent));
+        if ($userAgent !== '' && preg_match('/^[^\/\s;(]+/', $userAgent, $m)) {
+            $alias = self::VLESS_ENCRYPTION_UA_ALIASES[$m[0]] ?? null;
+            if ($alias !== null) {
+                return $alias;
+            }
         }
-        return $clientName;
+        return strtolower((string) $this->clientName);
     }
 
     /**
-     * 当前客户端是否在 $vlessEncryptionClients 里且版本够
+     * 当前客户端能不能收加密节点：格式支持，且不在黑名单里（或版本已够、或读不到版本）
      */
     protected function clientSupportsVlessEncryption(): bool
     {
-        $clientName = $this->vlessEncryptionClientName();
-        if ($clientName === '' || !array_key_exists($clientName, $this->vlessEncryptionClients)) {
+        if (!$this->vlessEncryptionFormat) {
             return false;
         }
-        $minVersion = (string) $this->vlessEncryptionClients[$clientName];
-        if ($minVersion === '0.0.0') {
+        $clientName = $this->vlessEncryptionClientName();
+        if (!array_key_exists($clientName, $this->vlessEncryptionBlockedClients)) {
             return true;
         }
-        return !blank($this->clientVersion) && version_compare($this->clientVersion, $minVersion, '>=');
+        $minVersion = $this->vlessEncryptionBlockedClients[$clientName];
+        if ($minVersion === null) {
+            return false;
+        }
+        if (blank($this->clientVersion)) {
+            return true;
+        }
+        return version_compare($this->clientVersion, (string) $minVersion, '>=');
     }
 
     /**

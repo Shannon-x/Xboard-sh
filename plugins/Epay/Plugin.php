@@ -246,11 +246,20 @@ class Plugin extends AbstractPlugin implements PaymentInterface
                 'msg' => $response['error'] ?? $response['msg'],
                 'pay_type' => $response['data']['pay_type'] ?? null,
             ]);
+            self::noteLinkFailure($response['ok'] ? '跳转地址不认：' . (parse_url($payInfo, PHP_URL_HOST) ?: '空') : ($response['error'] ?? $response['msg']));
             throw new ApiException('支付通道暂时不可用，请稍后重试或更换支付方式');
         }
 
         Cache::put($cacheKey, $payInfo, self::PAY_URL_TTL);
         return $payInfo;
+    }
+
+    /** 把网关原话交给收款链接统计（日报按原因归类）；核心旧版本没有这个类时跳过 */
+    private static function noteLinkFailure(?string $message): void
+    {
+        if (class_exists(\App\Support\PaymentLinkStats::class)) {
+            \App\Support\PaymentLinkStats::reason(is_string($message) ? $message : null);
+        }
     }
 
     /**
@@ -303,6 +312,7 @@ class Plugin extends AbstractPlugin implements PaymentInterface
                 'msg' => $error ?? (is_array($body) ? ($body['msg'] ?? null) : null),
                 'pay_host' => $payUrl !== '' ? parse_url($payUrl, PHP_URL_HOST) : null,
             ]);
+            self::noteLinkFailure($payUrl !== '' ? '跳转地址不认：' . (parse_url($payUrl, PHP_URL_HOST) ?: '空') : ($error ?? (is_array($body) ? (string) ($body['msg'] ?? '') : '')));
             throw new ApiException('支付通道暂时不可用，请稍后重试或更换支付方式');
         }
 

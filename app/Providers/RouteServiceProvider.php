@@ -40,7 +40,9 @@ class RouteServiceProvider extends ServiceProvider
     protected function configureRateLimiters(): void
     {
         $byEmailOrIp = static function (Request $request, string $tag): string {
-            $email = strtolower(trim((string) $request->input('email', '')));
+            // email 可能被构造成数组（email[]=x），(string) 强转会抛 Array to string 变成 500
+            $email = $request->input('email');
+            $email = is_string($email) ? strtolower(trim($email)) : '';
             return $email !== '' ? "{$tag}:email:{$email}" : "{$tag}:ip:{$request->ip()}";
         };
 

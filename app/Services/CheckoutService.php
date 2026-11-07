@@ -48,7 +48,12 @@ class CheckoutService
                 throw new ApiException('自选套餐请使用单次支付方式');
             }
 
-            if (self::mustRebind($locked->payment_id === null ? null : (int) $locked->payment_id, $payment)) {
+            $rebind = self::mustRebind($locked->payment_id === null ? null : (int) $locked->payment_id, $payment);
+            // 超过通道单笔上限的在绑定前拦下：拿去网关下单只会得到一个报错页，绑上了还换不了别的方式
+            self::assertWithinMaxAmount($payment, (int) $locked->total_amount + ($rebind
+                ? self::handlingFee($payment, (int) $locked->total_amount)
+                : (int) ($locked->handling_amount ?? 0)));
+            if ($rebind) {
                 $handlingAmount = self::handlingFee($payment, (int) $locked->total_amount);
                 $locked->handling_amount = $handlingAmount > 0 ? $handlingAmount : null;
                 $locked->payment_id = $payment->id;
@@ -116,6 +121,29 @@ class CheckoutService
             return false;
         }
         throw new ApiException('订单已绑定其他支付方式，请取消订单后重新下单');
+    }
+
+    /**
+     * 通道单笔上限（分，含手续费）：支付配置里的 max_amount，单位元，留空或 0 表示不限。
+     * 牛牛支付宝一类上游单笔只收到 ¥495，超过的单在网关那边只会报「无满足收款规则金额通道」。
+     */
+    public static function maxAmount(Payment $payment): ?int
+    {
+        $raw = trim((string) (((array) $payment->config)['max_amount'] ?? ''));
+        if ($raw === '' || !is_numeric($raw) || (float) $raw <= 0) {
+            return null;
+        }
+        return (int) round((float) $raw * 100);
+    }
+
+    /** 超过上限就用客户看得懂的话拒绝，不去网关下单 */
+    public static function assertWithinMaxAmount(Payment $payment, int $payAmount): void
+    {
+        $max = self::maxAmount($payment);
+        if ($max !== null && $payAmount > $max) {
+            $limit = rtrim(rtrim(number_format($max / 100, 2, '.', ''), '0'), '.');
+            throw new ApiException("{$payment->name}单笔限额 ¥{$limit}，请使用其他支付方式");
+        }
     }
 
     /** 手续费（分）：按支付配置的固定费 + 百分比，百分比夹在 0–100 */

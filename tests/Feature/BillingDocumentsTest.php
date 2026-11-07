@@ -104,6 +104,36 @@ class BillingDocumentsTest extends TestCase
         $this->assertCount(1, $this->sent());
     }
 
+    public function test_receipt_lists_the_panel_handling_fee_and_what_was_paid(): void
+    {
+        // 面板支付手续费（支付方式的 handling_fee_percent）转嫁给客户：收据像 Stripe 一样
+        // 小计 ¥26.40 → 支付手续费（3.5%）¥0.92 → 合计 / 实付 ¥27.32，不再写「应付余额 ¥0.00」
+        $payment = \App\Models\Payment::create([
+            'uuid' => Str::random(8), 'payment' => 'EPay', 'name' => '支付宝支付', 'enable' => true,
+            'config' => ['url' => 'https://pay.example/', 'pid' => '1', 'key' => 'k'], 'handling_fee_percent' => 3.5,
+        ]);
+        $user = $this->user();
+        $order = $this->order($user, ['total_amount' => 2640, 'handling_amount' => 92, 'payment_id' => $payment->id, 'status' => Order::STATUS_COMPLETED]);
+
+        $docs = app(BillingDocumentService::class);
+        $data = $docs->receipt($order);
+        $this->assertSame(2732, $data['total']);
+        $fee = collect($data['totals'])->firstWhere('amount', 92);
+        $this->assertSame('支付手续费（3.5%）', $fee['label']);
+        $this->assertSame([2732], array_column($data['payments'], 'amount'));
+
+        $html = view('billing.mail.receipt', $data)->render();
+        $this->assertStringContainsString('¥26.40', $html);
+        $this->assertStringContainsString('¥0.92', $html);
+        $this->assertStringContainsString('¥27.32', $html);
+        $this->assertStringNotContainsString('¥0.00', $html);
+        $this->assertStringStartsWith('%PDF', $docs->pdf($data));
+
+        // 有固定费时只写「支付手续费」，不写一个对不上的费率
+        $payment->update(['handling_fee_fixed' => 10]);
+        $this->assertSame('支付手续费', collect($docs->receipt($order->fresh())['totals'])->firstWhere('amount', 92)['label']);
+    }
+
     public function test_free_orders_and_disabled_switch_send_no_receipt(): void
     {
         $user = $this->user();

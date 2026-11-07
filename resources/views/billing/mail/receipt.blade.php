@@ -29,14 +29,15 @@
                                 <tr>
                                     <td style="padding:14px 22px 18px 22px;">
                                         <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                                            {{-- 只有一行小计时它就等于实付，不重复列；有优惠、手续费等多行时连小计一起列，读者能自己加出实付 --}}
+                                            @if(count($totals) > 1)
                                             @foreach($totals as $row)
-                                            @if(!$loop->first)
                                             <tr>
                                                 <td style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#69635e;line-height:1.9;">{{ $row['label'] }}</td>
                                                 <td align="right" style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#69635e;line-height:1.9;">{{ $row['amount_fmt'] }}</td>
                                             </tr>
-                                            @endif
                                             @endforeach
+                                            @endif
                                             <tr>
                                                 <td style="font-family:'Noto Serif SC',Georgia,serif;font-size:14px;color:#2a2520;line-height:2.2;padding-top:4px;">{{ __('billing.field.amount_paid') }}</td>
                                                 <td align="right" style="font-family:'Noto Serif SC',Georgia,serif;font-size:24px;font-weight:700;color:#2a2520;line-height:1.3;padding-top:4px;">{{ $total_fmt }}</td>

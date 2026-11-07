@@ -114,9 +114,10 @@ a { color: #c94f2e; text-decoration: none; }
 @if($kind === 'receipt')
 <tr class="grand"><td>{{ __('billing.field.total') }}</td><td class="right">{{ $total_fmt }}</td></tr>
 @foreach($payments as $row)
-<tr><td class="muted">{{ $row['label'] }} <span class="faint">· {{ $row['method'] }}</span></td><td class="right">-{{ $row['amount_fmt'] }}</td></tr>
+<tr><td class="muted">{{ $row['label'] }} <span class="faint">· {{ $row['method'] }}</span></td><td class="right">{{ $row['amount_fmt'] }}</td></tr>
 @endforeach
-<tr class="due"><td>{{ __('billing.field.balance_due') }}</td><td class="right">{{ $balance_due_fmt }}</td></tr>
+{{-- 照 Stripe 收据：最后一行写客户实际付了多少，不写「应付余额 ¥0.00」 --}}
+<tr class="due"><td>{{ __('billing.field.amount_paid') }}</td><td class="right">{{ $total_fmt }}</td></tr>
 @else
 <tr class="grand {{ empty($closed_note) ? 'due' : '' }}"><td>{{ __('billing.field.amount_due') }}</td><td class="right">{{ $balance_due_fmt }}</td></tr>
 @if($auto_covered)

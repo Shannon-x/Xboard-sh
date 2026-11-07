@@ -122,6 +122,7 @@ return [
         'discount' => '优惠折扣',
         'surplus' => '旧套餐折抵',
         'handling' => '支付手续费',
+        'handling_rate' => '支付手续费（:percent%）',
         'total' => '合计',
         'paid_balance' => '余额支付',
         'paid_online' => '在线支付',

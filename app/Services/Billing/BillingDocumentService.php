@@ -183,7 +183,7 @@ class BillingDocumentService
                 ['label' => __('billing.field.subtotal'), 'amount' => $subtotal],
                 $discount > 0 ? ['label' => __('billing.field.discount'), 'amount' => -$discount] : null,
                 $surplus > 0 ? ['label' => __('billing.field.surplus'), 'amount' => -$surplus] : null,
-                $handling > 0 ? ['label' => __('billing.field.handling'), 'amount' => $handling] : null,
+                $handling > 0 ? ['label' => self::handlingLabel($order), 'amount' => $handling] : null,
             ])),
             'total' => $total,
             'payments' => $payments,
@@ -878,6 +878,21 @@ class BillingDocumentService
         if (isset($data['account_balance'])) $data['account_balance_fmt'] = $this->money((int) $data['account_balance']);
         $data['attachment_name'] = $data['has_pdf'] ? $this->attachmentName($data) : null;
         return $data;
+    }
+
+    /**
+     * 「支付手续费」一行的名字：支付方式只按百分比收时带上费率（支付手续费（3.5%）），
+     * 有固定费或支付方式已删时只写「支付手续费」。手续费单独记在 handling_amount，
+     * 不进订单金额 total_amount，所以收入统计和佣金都不含它。
+     */
+    private static function handlingLabel(Order $order): string
+    {
+        $payment = $order->payment;
+        $pct = $payment ? (float) ($payment->handling_fee_percent ?? 0) : 0.0;
+        $fixed = $payment ? (int) ($payment->handling_fee_fixed ?? 0) : 0;
+        if ($pct <= 0 || $pct > 100 || $fixed > 0) return __('billing.field.handling');
+        $text = rtrim(rtrim(number_format($pct, 2, '.', ''), '0'), '.');
+        return __('billing.field.handling_rate', ['percent' => $text]);
     }
 
     public function money(int $cents): string

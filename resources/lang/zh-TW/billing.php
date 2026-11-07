@@ -121,6 +121,7 @@ return [
         'discount' => '優惠折扣',
         'surplus' => '舊方案折抵',
         'handling' => '支付手續費',
+        'handling_rate' => '支付手續費（:percent%）',
         'total' => '合計',
         'paid_balance' => '餘額支付',
         'paid_online' => '線上支付',

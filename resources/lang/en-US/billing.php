@@ -121,6 +121,7 @@ return [
         'discount' => 'Discount',
         'surplus' => 'Previous plan credit',
         'handling' => 'Processing fee',
+        'handling_rate' => 'Processing fee (:percent%)',
         'total' => 'Total',
         'paid_balance' => 'Paid from balance',
         'paid_online' => 'Paid online',

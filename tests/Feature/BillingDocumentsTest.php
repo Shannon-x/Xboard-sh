@@ -106,7 +106,8 @@ class BillingDocumentsTest extends TestCase
 
     public function test_receipt_lists_channel_fee_without_changing_the_order_total(): void
     {
-        // 易支付收银台在订单金额上另加 3.5%：收据写明手续费与通道实际扣款，订单金额 / 合计不变
+        // 易支付收银台在订单金额上另加 3.5%：收据像 Stripe 一样把顾客实际付的写清楚——
+        // 小计 → 支付通道手续费 → 合计 / 实付 ¥27.32；订单金额（收入、佣金的基数）仍是 ¥26.40
         $payment = \App\Models\Payment::create([
             'uuid' => Str::random(8), 'payment' => 'EPay', 'name' => '支付宝支付', 'enable' => true,
             'config' => ['url' => 'https://pay.example/', 'pid' => '1', 'key' => 'k', 'channel_fee_percent' => '3.5'],
@@ -117,18 +118,27 @@ class BillingDocumentsTest extends TestCase
         $docs = app(BillingDocumentService::class);
         $data = $docs->receipt($order);
         $this->assertSame(2640, $data['total']);
-        $this->assertSame('¥0.92', $data['channel_fee']['amount_fmt']);
-        $this->assertSame('¥27.32', $data['channel_fee']['charged_fmt']);
-        $this->assertStringContainsString('3.5%', $data['channel_fee']['label']);
+        $this->assertSame(2640, (int) $order->fresh()->total_amount);
+        $this->assertSame(2732, $data['grand_total']);
+        $this->assertSame('¥27.32', $data['amount_paid_fmt']);
+        $fee = collect($data['totals'])->firstWhere('amount', 92);
+        $this->assertNotNull($fee);
+        $this->assertStringContainsString('3.5%', $fee['label']);
+        $this->assertSame([2732], array_column($data['payments'], 'amount'));
+        $this->assertStringContainsString('¥27.32', $data['paid_on']);
 
         $html = view('billing.mail.receipt', $data)->render();
         $this->assertStringContainsString('¥0.92', $html);
         $this->assertStringContainsString('¥27.32', $html);
+        $this->assertStringNotContainsString('¥0.00', $html);
         $this->assertStringStartsWith('%PDF', $docs->pdf($data));
 
-        // 没配通道费的支付方式：收据不出这一行
+        // 没配通道费的支付方式：没有手续费行，实付 = 订单金额
         $payment->update(['config' => ['url' => 'https://pay.example/', 'pid' => '1', 'key' => 'k']]);
-        $this->assertNull($docs->receipt($order->fresh())['channel_fee']);
+        $plain = $docs->receipt($order->fresh());
+        $this->assertNull($plain['channel_fee']);
+        $this->assertSame(2640, $plain['grand_total']);
+        $this->assertSame('¥26.40', $plain['amount_paid_fmt']);
     }
 
     public function test_free_orders_and_disabled_switch_send_no_receipt(): void

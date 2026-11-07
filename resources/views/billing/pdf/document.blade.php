@@ -29,6 +29,8 @@ td, th { vertical-align: top; }
 .totals td { padding: 2.5pt 4pt; font-size: 9.5pt; }
 .totals .grand td { border-top: 1.2pt solid #2a2520; padding-top: 6pt; font-family: notoserif; font-size: 12.5pt; }
 .totals .due td { font-family: notoserif; font-size: 12.5pt; color: #c94f2e; }
+.totals .paid td { border-top: 0.6pt solid #e5e0d8; padding-top: 5pt; font-family: notoserif; font-size: 12.5pt; }
+.paidline { font-family: notoserif; font-size: 15pt; color: #2a2520; margin-top: 12pt; }
 .callout { border-left: 2.5pt solid #c94f2e; background-color: #f0d9d1; padding: 7pt 11pt; font-size: 9pt; }
 .note { border-left: 2.5pt solid #c5beb5; background-color: #f1efe9; padding: 7pt 11pt; font-size: 9pt; color: #69635e; }
 .card { border: 0.6pt solid #e5e0d8; background-color: #fbfaf7; }
@@ -69,6 +71,9 @@ a { color: #c94f2e; text-decoration: none; }
 </td>
 </tr></table>
 <div class="rule" style="margin-top:14pt"></div>
+@if($kind === 'receipt' && !empty($paid_on))
+<div class="paidline">{{ $paid_on }}</div>
+@endif
 
 {{-- 寄往 + 编号信息 --}}
 <table width="100%" style="margin-top:12pt"><tr>
@@ -109,19 +114,17 @@ a { color: #c94f2e; text-decoration: none; }
 <table width="100%" style="margin-top:4pt"><tr><td width="52%"></td><td>
 <table class="totals" width="100%">
 @foreach($totals as $row)
-<tr><td class="muted">{{ $row['label'] }}</td><td class="right">{{ $row['amount_fmt'] }}</td></tr>
+<tr><td class="muted">{{ $row['label'] }}@if(!empty($row['hint']))<br><span class="faint" style="font-size:7.5pt">{{ $row['hint'] }}</span>@endif</td><td class="right">{{ $row['amount_fmt'] }}</td></tr>
 @endforeach
 @if($kind === 'receipt')
-<tr class="grand"><td>{{ __('billing.field.total') }}</td><td class="right">{{ $total_fmt }}</td></tr>
+{{-- 合计含支付通道手续费（顾客实际付了多少就写多少）；手续费归通道，订单金额与收入统计不含它 --}}
+<tr class="grand"><td>{{ __('billing.field.total') }}</td><td class="right">{{ $grand_total_fmt ?? $total_fmt }}</td></tr>
 @foreach($payments as $row)
-<tr><td class="muted">{{ $row['label'] }} <span class="faint">· {{ $row['method'] }}</span></td><td class="right">-{{ $row['amount_fmt'] }}</td></tr>
+<tr><td class="muted">{{ $row['label'] }} <span class="faint">· {{ $row['method'] }}</span></td><td class="right">{{ $row['amount_fmt'] }}</td></tr>
 @endforeach
-<tr class="due"><td>{{ __('billing.field.balance_due') }}</td><td class="right">{{ $balance_due_fmt }}</td></tr>
-@if(!empty($channel_fee))
-{{-- 通道另收的手续费：钱归通道，不进合计 --}}
-<tr><td class="muted">{{ $channel_fee['label'] }}</td><td class="right">+{{ $channel_fee['amount_fmt'] }}</td></tr>
-<tr><td class="muted">{{ $channel_fee['charged_label'] }}</td><td class="right">{{ $channel_fee['charged_fmt'] }}</td></tr>
-<tr><td colspan="2" class="faint" style="font-size:8pt">{{ $channel_fee['note'] }}</td></tr>
+<tr class="paid"><td>{{ __('billing.field.amount_paid') }}</td><td class="right">{{ $amount_paid_fmt ?? $total_fmt }}</td></tr>
+@if(!empty($channel_fee['note']))
+<tr><td colspan="2" class="faint" style="font-size:8pt;padding-top:6pt">{{ $channel_fee['note'] }}</td></tr>
 @endif
 @else
 <tr class="grand {{ empty($closed_note) ? 'due' : '' }}"><td>{{ __('billing.field.amount_due') }}</td><td class="right">{{ $balance_due_fmt }}</td></tr>

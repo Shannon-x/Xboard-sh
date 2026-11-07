@@ -157,18 +157,19 @@ class BillingDocumentService
         $paidAt = (int) ($order->paid_at ?: $order->updated_at ?: time());
         $isAuto = !empty($order->auto_renew);
 
+        // 支付通道（易支付收银台）在订单金额之上另收的手续费：钱归通道，不是我方收入。
+        // 收据照 Stripe 的写法把它列进明细和合计，告诉客户实际付了多少；
+        // `total` 仍是订单金额（归档金额 / 统计口径不变），客户看到的合计用 grand_total。
+        $channelPct = ChannelFee::percent($order->payment);
+        $channelFee = ChannelFee::amount($cash + $handling, $channelPct);
+
         $payments = [];
         if ($balance > 0) {
             $payments[] = ['label' => __('billing.field.paid_balance'), 'method' => __('billing.payment.balance'), 'amount' => $balance];
         }
         if ($cash + $handling > 0) {
-            $payments[] = ['label' => __('billing.field.paid_online'), 'method' => $order->payment?->name ?: '—', 'amount' => $cash + $handling];
+            $payments[] = ['label' => __('billing.field.paid_online'), 'method' => $order->payment?->name ?: '—', 'amount' => $cash + $handling + $channelFee];
         }
-
-        // 支付通道另收的手续费（钱归通道，不是本单收入）：单独列一行告诉客户实际被扣了多少，
-        // 不进 totals / total，订单金额与收入统计保持不变
-        $channelPct = ChannelFee::percent($order->payment);
-        $channelFee = ChannelFee::amount($cash + $handling, $channelPct);
 
         $plan = Plan::find($order->plan_id);
         $data = $this->base() + [
@@ -190,17 +191,18 @@ class BillingDocumentService
                 $discount > 0 ? ['label' => __('billing.field.discount'), 'amount' => -$discount] : null,
                 $surplus > 0 ? ['label' => __('billing.field.surplus'), 'amount' => -$surplus] : null,
                 $handling > 0 ? ['label' => __('billing.field.handling'), 'amount' => $handling] : null,
+                $channelFee > 0 ? [
+                    'label' => __('billing.field.channel_fee', ['percent' => self::percentText($channelPct)]),
+                    'amount' => $channelFee,
+                    'hint' => __('billing.field.channel_fee_hint'),
+                ] : null,
             ])),
             'total' => $total,
+            'grand_total' => $total + $channelFee,
+            'amount_paid' => $total + $channelFee,
             'payments' => $payments,
             'balance_due' => 0,
-            'channel_fee' => $channelFee > 0 ? [
-                'label' => __('billing.field.channel_fee', ['percent' => self::percentText($channelPct)]),
-                'amount_fmt' => $this->money($channelFee),
-                'charged_label' => __('billing.field.channel_charged'),
-                'charged_fmt' => $this->money($cash + $handling + $channelFee),
-                'note' => __('billing.receipt.channel_fee_note'),
-            ] : null,
+            'channel_fee' => $channelFee > 0 ? ['amount' => $channelFee, 'note' => __('billing.receipt.channel_fee_note')] : null,
             'notes' => array_values(array_filter([
                 $isAuto ? __('billing.receipt.auto_renew_note') : null,
                 (int) ($order->refund_amount ?? 0) > 0 ? __('billing.receipt.refund_note', ['amount' => $this->money((int) $order->refund_amount)]) : null,
@@ -887,6 +889,12 @@ class BillingDocumentService
         foreach ($data['payments'] as &$row) $row['amount_fmt'] = $this->money((int) $row['amount']);
         unset($item, $row);
         $data['total_fmt'] = $this->money((int) $data['total']);
+        // 收据：含通道手续费的合计与实付（旧归档快照没有这两个字段时模板回落到 total_fmt）
+        if (isset($data['grand_total'])) $data['grand_total_fmt'] = $this->money((int) $data['grand_total']);
+        if (isset($data['amount_paid'])) {
+            $data['amount_paid_fmt'] = $this->money((int) $data['amount_paid']);
+            if (!empty($data['paid_at'])) $data['paid_on'] = __('billing.receipt.paid_on', ['amount' => $data['amount_paid_fmt'], 'date' => $data['paid_at']]);
+        }
         $data['balance_due_fmt'] = $this->money((int) $data['balance_due']);
         if (isset($data['account_balance'])) $data['account_balance_fmt'] = $this->money((int) $data['account_balance']);
         $data['attachment_name'] = $data['has_pdf'] ? $this->attachmentName($data) : null;

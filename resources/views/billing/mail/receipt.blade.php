@@ -29,27 +29,20 @@
                                 <tr>
                                     <td style="padding:14px 22px 18px 22px;">
                                         <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                                            {{-- 只有一行小计时它就等于实付，不重复列；有优惠、手续费等多行时全部列出，读者能自己加出合计 --}}
+                                            @if(count($totals) > 1)
                                             @foreach($totals as $row)
-                                            @if(!$loop->first)
                                             <tr>
-                                                <td style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#69635e;line-height:1.9;">{{ $row['label'] }}</td>
-                                                <td align="right" style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#69635e;line-height:1.9;">{{ $row['amount_fmt'] }}</td>
+                                                <td style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#69635e;line-height:1.9;">{{ $row['label'] }}@if(!empty($row['hint']))<span style="font-size:11px;color:#a09890;"> · {{ $row['hint'] }}</span>@endif</td>
+                                                <td align="right" style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#69635e;line-height:1.9;white-space:nowrap;">{{ $row['amount_fmt'] }}</td>
                                             </tr>
-                                            @endif
                                             @endforeach
+                                            @endif
                                             <tr>
-                                                <td style="font-family:'Noto Serif SC',Georgia,serif;font-size:14px;color:#2a2520;line-height:2.2;padding-top:4px;">{{ !empty($channel_fee) ? __('billing.field.order_amount') : __('billing.field.amount_paid') }}</td>
-                                                <td align="right" style="font-family:'Noto Serif SC',Georgia,serif;font-size:24px;font-weight:700;color:#2a2520;line-height:1.3;padding-top:4px;">{{ $total_fmt }}</td>
+                                                <td style="font-family:'Noto Serif SC',Georgia,serif;font-size:14px;color:#2a2520;line-height:2.2;padding-top:4px;">{{ __('billing.field.amount_paid') }}</td>
+                                                <td align="right" style="font-family:'Noto Serif SC',Georgia,serif;font-size:24px;font-weight:700;color:#2a2520;line-height:1.3;padding-top:4px;">{{ $amount_paid_fmt ?? $total_fmt }}</td>
                                             </tr>
-                                            @if(!empty($channel_fee))
-                                            <tr>
-                                                <td style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#69635e;line-height:1.9;padding-top:8px;">{{ $channel_fee['label'] }}</td>
-                                                <td align="right" style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#69635e;line-height:1.9;padding-top:8px;">+{{ $channel_fee['amount_fmt'] }}</td>
-                                            </tr>
-                                            <tr>
-                                                <td style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#69635e;line-height:1.9;">{{ $channel_fee['charged_label'] }}</td>
-                                                <td align="right" style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#69635e;line-height:1.9;">{{ $channel_fee['charged_fmt'] }}</td>
-                                            </tr>
+                                            @if(!empty($channel_fee['note']))
                                             <tr>
                                                 <td colspan="2" style="font-family:'Noto Sans SC',sans-serif;font-size:12px;color:#a09890;line-height:1.7;">{{ $channel_fee['note'] }}</td>
                                             </tr>

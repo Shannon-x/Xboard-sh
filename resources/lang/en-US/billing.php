@@ -3,7 +3,8 @@
 // Receipt / renewal invoice copy (email body + PDF). Both share the same keys.
 return [
     'receipt' => [
-        'channel_fee_note' => 'The payment channel fee is added by the payment channel at checkout and kept by the channel. It is not part of this order\'s amount.',
+        'channel_fee_note' => 'This fee is charged by the payment channel at checkout and kept by the channel.',
+        'paid_on' => ':amount paid on :date',
         'subject' => 'Payment receipt :no - :app',
         'doc_title' => 'Receipt',
         'doc_title_en' => 'RECEIPT',
@@ -123,8 +124,7 @@ return [
         'surplus' => 'Previous plan credit',
         'handling' => 'Processing fee',
         'channel_fee' => 'Payment channel fee (:percent%)',
-        'order_amount' => 'Order amount',
-        'channel_charged' => 'Total charged by the channel',
+        'channel_fee_hint' => 'Charged by the payment channel',
         'total' => 'Total',
         'paid_balance' => 'Paid from balance',
         'paid_online' => 'Paid online',

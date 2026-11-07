@@ -1119,7 +1119,7 @@ class PlanCustomizationService
     public function validateExistingSubscribers(Plan $plan): void
     {
         $selections = User::where('plan_id', $plan->id)->whereNotNull('plan_options')->cursor()
-            ->map(fn ($user) => [$user->plan_options, $user])
+            ->map(fn ($user) => [$user->plan_options, $user, true])
             ->concat(Order::where('plan_id', $plan->id)->whereNotNull('plan_snapshot')
                 ->whereIn('status', [Order::STATUS_PENDING, Order::STATUS_PROCESSING])->cursor()
                 ->filter(fn ($order) => isset($order->plan_snapshot['options']))
@@ -1128,13 +1128,14 @@ class PlanCustomizationService
                     if (isset($order->plan_snapshot[self::GRANDFATHER_KEY])) {
                         $owned[self::GRANDFATHER_KEY] = $order->plan_snapshot[self::GRANDFATHER_KEY];
                     }
-                    return [$owned, new User(['plan_id' => $plan->id, 'plan_options' => $owned])];
+                    return [$owned, new User(['plan_id' => $plan->id, 'plan_options' => $owned]), false];
                 }));
-        foreach ($selections as [$options, $user]) {
+        foreach ($selections as [$options, $user, $subscribed]) {
             try {
-                // 固定规格的旧值续费时会换成新值（见 alignStaleFixedFields），不再拦管理员改固定规格。
+                // 在订用户固定规格的旧值续费时会换成新值（见 alignStaleFixedFields），不再拦管理员改固定规格；
+                // 待支付订单已按下单时的规格报价，仍须与新规格兼容。
                 $grandfathered = $this->forGrandfatheredUser($plan, $user);
-                $this->validateSelection($grandfathered, $this->alignStaleFixedFields($grandfathered, $options, $options));
+                $this->validateSelection($grandfathered, $subscribed ? $this->alignStaleFixedFields($grandfathered, $options, $options) : $options);
             } catch (ApiException $e) {
                 throw new ApiException('新规格会使已有用户或待处理订单无法续费，请保留其规格或新建套餐');
             }

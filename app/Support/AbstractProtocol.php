@@ -308,11 +308,27 @@ abstract class AbstractProtocol
     }
 
     /**
+     * 判断 VLESS Encryption 时用的客户端名。
+     *
+     * Clash Verge 的 UA 是 clash-verge/v2.5.10：clash-verge 不在标识列表里，按子串匹配时 clash 和 verge
+     * 一样长、clash 排在前面，客户端名被识别成 clash，导致 Verge 永远对不上 verge 这一项。
+     * 这里只在判断加密节点时把它认回 verge，不动其它按客户端名的过滤规则。
+     */
+    protected function vlessEncryptionClientName(): string
+    {
+        $clientName = strtolower((string) $this->clientName);
+        if ($clientName === 'clash' && stripos((string) $this->userAgent, 'clash-verge') !== false) {
+            return 'verge';
+        }
+        return $clientName;
+    }
+
+    /**
      * 当前客户端是否在 $vlessEncryptionClients 里且版本够
      */
     protected function clientSupportsVlessEncryption(): bool
     {
-        $clientName = strtolower((string) $this->clientName);
+        $clientName = $this->vlessEncryptionClientName();
         if ($clientName === '' || !array_key_exists($clientName, $this->vlessEncryptionClients)) {
             return false;
         }

@@ -40,9 +40,9 @@ class VlessEncryptionClientFilterTest extends TestCase
         ];
     }
 
-    private function names(string $class, ?string $client, ?string $version): array
+    private function names(string $class, ?string $client, ?string $version, ?string $userAgent = null): array
     {
-        $protocol = new $class(['uuid' => 'uuid-1'], $this->servers(), $client, $version);
+        $protocol = new $class(['uuid' => 'uuid-1'], $this->servers(), $client, $version, $userAgent);
         $prop = new \ReflectionProperty($protocol, 'servers');
         $prop->setAccessible(true);
 
@@ -56,10 +56,29 @@ class VlessEncryptionClientFilterTest extends TestCase
         $this->assertContains('enc', $this->names(ClashMeta::class, 'mihomo', '1.19.14'));
         $this->assertContains('enc', $this->names(ClashMeta::class, 'meta', '1.19.33'));
         $this->assertContains('enc', $this->names(ClashMeta::class, 'verge', '2.4.3'));
+        $this->assertContains('enc', $this->names(ClashMeta::class, 'flclash', '0.8.89'));
+        $this->assertContains('enc', $this->names(ClashMeta::class, 'flclash', '0.9.3'));
         $this->assertContains('enc', $this->names(Shadowrocket::class, 'shadowrocket', '3191'));
         $this->assertContains('enc', $this->names(Shadowrocket::class, 'shadowrocket', '3220'));
         $this->assertContains('enc', $this->names(Stash::class, 'stash', '3.6.1'));
         $this->assertContains('enc', $this->names(Stash::class, 'stash', '3.6.5'));
+    }
+
+    /**
+     * 线上 Clash Verge 的 UA 是 clash-verge/v2.5.10，客户端名会被识别成 clash（见 ClientController::getClientInfo）。
+     */
+    public function test_clash_verge_user_agent_is_recognized(): void
+    {
+        $this->assertContains('enc', $this->names(ClashMeta::class, 'clash', '2.5.10', 'clash-verge/v2.5.10'));
+        $this->assertContains('enc', $this->names(ClashMeta::class, 'clash', '2.4.3', 'clash-verge/v2.4.3'));
+        $this->assertNotContains('enc', $this->names(ClashMeta::class, 'clash', '2.4.2', 'clash-verge/v2.4.2'));
+        $this->assertNotContains('enc', $this->names(ClashMeta::class, 'clash', '1.6.0', 'clash-verge/v1.6.0'));
+        $this->assertNotContains('enc', $this->names(ClashMeta::class, 'clash', null, 'clash-verge'));
+        // 不是 Verge 的 clash 不受影响
+        $this->assertNotContains('enc', $this->names(ClashMeta::class, 'clash', '2.5.10', 'clash.meta'));
+        // FlClash 的 UA 里也带 clash-verge，但客户端名已识别成 flclash，按 FlClash 自己的版本判断
+        $this->assertNotContains('enc', $this->names(ClashMeta::class, 'flclash', '0.8.88', 'flclash/v0.8.88 clash-verge platform/windows'));
+        $this->assertContains('enc', $this->names(ClashMeta::class, 'flclash', '0.8.92', 'flclash/v0.8.92 clash-verge platform/windows'));
     }
 
     public function test_stash_encrypted_node_keeps_flow(): void
@@ -88,7 +107,9 @@ class VlessEncryptionClientFilterTest extends TestCase
             [SingBox::class, 'sing-box', '1.14.2'],
             [SingBox::class, 'hiddify', '5.5.5'],
             [ClashMeta::class, 'nekobox', '1.4.2'],
-            [ClashMeta::class, 'flclash', '0.8.90'],
+            [ClashMeta::class, 'flclash', '0.8.88'],
+            [ClashMeta::class, 'flclash', '0.8.72'],
+            [ClashMeta::class, 'flclash', null],
             [ClashMeta::class, 'mihomo', '1.19.13'],
             [ClashMeta::class, 'mihomo', null],
             [ClashMeta::class, 'verge', '2.4.2'],

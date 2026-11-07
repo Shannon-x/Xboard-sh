@@ -2,6 +2,7 @@
 
 namespace App\Services\Mcp;
 
+use App\Support\ChannelFee;
 use App\Exceptions\ApiException;
 use App\Models\Order;
 use App\Models\Payment;
@@ -149,7 +150,7 @@ class OrderPayService
 
     private function methods(): array
     {
-        return Payment::select(['id', 'name', 'payment', 'icon', 'handling_fee_fixed', 'handling_fee_percent'])
+        return Payment::select(['id', 'name', 'payment', 'icon', 'handling_fee_fixed', 'handling_fee_percent', 'config'])
             ->where('enable', 1)->orderBy('sort', 'ASC')->get()
             ->reject(fn (Payment $p) => CheckoutService::isSubscriptionGateway($p))
             ->map(fn (Payment $p) => [
@@ -159,6 +160,7 @@ class OrderPayService
                 'icon' => $p->icon,
                 'handling_fee_fixed' => (int) ($p->handling_fee_fixed ?? 0),
                 'handling_fee_percent' => (float) ($p->handling_fee_percent ?? 0),
+                'channel_fee_percent' => ChannelFee::percent($p),
             ])->values()->all();
     }
 

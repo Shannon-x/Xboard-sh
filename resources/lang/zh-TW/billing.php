@@ -3,6 +3,7 @@
 // 收據 / 續費帳單（郵件正文 + PDF）文案。PDF 與郵件共用同一套 key。
 return [
     'receipt' => [
+        'channel_fee_note' => '支付通道手續費由支付通道在付款時另行收取，歸通道所有，不計入本單金額。',
         'subject' => '付款收據 :no - :app',
         'doc_title' => '收據',
         'doc_title_en' => 'RECEIPT',
@@ -121,6 +122,9 @@ return [
         'discount' => '優惠折扣',
         'surplus' => '舊方案折抵',
         'handling' => '支付手續費',
+        'channel_fee' => '支付通道手續費（:percent%，通道收取）',
+        'order_amount' => '訂單金額',
+        'channel_charged' => '通道實際扣款',
         'total' => '合計',
         'paid_balance' => '餘額支付',
         'paid_online' => '線上支付',

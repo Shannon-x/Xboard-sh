@@ -43,6 +43,7 @@ class OrderResource extends JsonResource
                 'name' => $this->payment->name,
                 'payment' => $this->payment->payment,
                 'icon' => $this->payment->icon,
+                'channel_fee_percent' => \App\Support\ChannelFee::percent($this->payment),
             ] : null),
         ];
     }

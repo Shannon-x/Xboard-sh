@@ -3,6 +3,7 @@
 // 收据 / 续费账单（邮件正文 + PDF）文案。PDF 与邮件共用同一套 key。
 return [
     'receipt' => [
+        'channel_fee_note' => '支付通道手续费由支付通道在付款时另行收取，归通道所有，不计入本单金额。',
         'subject' => '付款收据 :no - :app',
         'doc_title' => '收据',
         'doc_title_en' => 'RECEIPT',
@@ -122,6 +123,9 @@ return [
         'discount' => '优惠折扣',
         'surplus' => '旧套餐折抵',
         'handling' => '支付手续费',
+        'channel_fee' => '支付通道手续费（:percent%，通道收取）',
+        'order_amount' => '订单金额',
+        'channel_charged' => '通道实际扣款',
         'total' => '合计',
         'paid_balance' => '余额支付',
         'paid_online' => '在线支付',

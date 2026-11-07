@@ -104,6 +104,33 @@ class BillingDocumentsTest extends TestCase
         $this->assertCount(1, $this->sent());
     }
 
+    public function test_receipt_lists_channel_fee_without_changing_the_order_total(): void
+    {
+        // 易支付收银台在订单金额上另加 3.5%：收据写明手续费与通道实际扣款，订单金额 / 合计不变
+        $payment = \App\Models\Payment::create([
+            'uuid' => Str::random(8), 'payment' => 'EPay', 'name' => '支付宝支付', 'enable' => true,
+            'config' => ['url' => 'https://pay.example/', 'pid' => '1', 'key' => 'k', 'channel_fee_percent' => '3.5'],
+        ]);
+        $user = $this->user();
+        $order = $this->order($user, ['total_amount' => 2640, 'payment_id' => $payment->id, 'status' => Order::STATUS_COMPLETED]);
+
+        $docs = app(BillingDocumentService::class);
+        $data = $docs->receipt($order);
+        $this->assertSame(2640, $data['total']);
+        $this->assertSame('¥0.92', $data['channel_fee']['amount_fmt']);
+        $this->assertSame('¥27.32', $data['channel_fee']['charged_fmt']);
+        $this->assertStringContainsString('3.5%', $data['channel_fee']['label']);
+
+        $html = view('billing.mail.receipt', $data)->render();
+        $this->assertStringContainsString('¥0.92', $html);
+        $this->assertStringContainsString('¥27.32', $html);
+        $this->assertStringStartsWith('%PDF', $docs->pdf($data));
+
+        // 没配通道费的支付方式：收据不出这一行
+        $payment->update(['config' => ['url' => 'https://pay.example/', 'pid' => '1', 'key' => 'k']]);
+        $this->assertNull($docs->receipt($order->fresh())['channel_fee']);
+    }
+
     public function test_free_orders_and_disabled_switch_send_no_receipt(): void
     {
         $user = $this->user();

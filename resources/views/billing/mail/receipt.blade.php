@@ -38,9 +38,22 @@
                                             @endif
                                             @endforeach
                                             <tr>
-                                                <td style="font-family:'Noto Serif SC',Georgia,serif;font-size:14px;color:#2a2520;line-height:2.2;padding-top:4px;">{{ __('billing.field.amount_paid') }}</td>
+                                                <td style="font-family:'Noto Serif SC',Georgia,serif;font-size:14px;color:#2a2520;line-height:2.2;padding-top:4px;">{{ !empty($channel_fee) ? __('billing.field.order_amount') : __('billing.field.amount_paid') }}</td>
                                                 <td align="right" style="font-family:'Noto Serif SC',Georgia,serif;font-size:24px;font-weight:700;color:#2a2520;line-height:1.3;padding-top:4px;">{{ $total_fmt }}</td>
                                             </tr>
+                                            @if(!empty($channel_fee))
+                                            <tr>
+                                                <td style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#69635e;line-height:1.9;padding-top:8px;">{{ $channel_fee['label'] }}</td>
+                                                <td align="right" style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#69635e;line-height:1.9;padding-top:8px;">+{{ $channel_fee['amount_fmt'] }}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#69635e;line-height:1.9;">{{ $channel_fee['charged_label'] }}</td>
+                                                <td align="right" style="font-family:'Noto Sans SC',sans-serif;font-size:13px;color:#69635e;line-height:1.9;">{{ $channel_fee['charged_fmt'] }}</td>
+                                            </tr>
+                                            <tr>
+                                                <td colspan="2" style="font-family:'Noto Sans SC',sans-serif;font-size:12px;color:#a09890;line-height:1.7;">{{ $channel_fee['note'] }}</td>
+                                            </tr>
+                                            @endif
                                             <tr>
                                                 <td colspan="2" style="font-family:'Noto Sans SC',sans-serif;font-size:12px;color:#a09890;line-height:1.8;padding-top:6px;">{{ $payment_method }} · {{ $paid_at }}<br />{{ __('billing.field.trade_no') }} {{ $trade_no }}</td>
                                             </tr>

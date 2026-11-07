@@ -117,6 +117,12 @@ a { color: #c94f2e; text-decoration: none; }
 <tr><td class="muted">{{ $row['label'] }} <span class="faint">· {{ $row['method'] }}</span></td><td class="right">-{{ $row['amount_fmt'] }}</td></tr>
 @endforeach
 <tr class="due"><td>{{ __('billing.field.balance_due') }}</td><td class="right">{{ $balance_due_fmt }}</td></tr>
+@if(!empty($channel_fee))
+{{-- 通道另收的手续费：钱归通道，不进合计 --}}
+<tr><td class="muted">{{ $channel_fee['label'] }}</td><td class="right">+{{ $channel_fee['amount_fmt'] }}</td></tr>
+<tr><td class="muted">{{ $channel_fee['charged_label'] }}</td><td class="right">{{ $channel_fee['charged_fmt'] }}</td></tr>
+<tr><td colspan="2" class="faint" style="font-size:8pt">{{ $channel_fee['note'] }}</td></tr>
+@endif
 @else
 <tr class="grand {{ empty($closed_note) ? 'due' : '' }}"><td>{{ __('billing.field.amount_due') }}</td><td class="right">{{ $balance_due_fmt }}</td></tr>
 @if($auto_covered)

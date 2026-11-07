@@ -14,6 +14,7 @@ use App\Services\Payg\PaygConfig;
 use App\Services\PlanCapacity;
 use App\Services\PlanCustomizationService;
 use App\Services\RenewService;
+use App\Support\ChannelFee;
 use Illuminate\Support\Facades\App;
 use Mpdf\Mpdf;
 
@@ -164,6 +165,11 @@ class BillingDocumentService
             $payments[] = ['label' => __('billing.field.paid_online'), 'method' => $order->payment?->name ?: '—', 'amount' => $cash + $handling];
         }
 
+        // 支付通道另收的手续费（钱归通道，不是本单收入）：单独列一行告诉客户实际被扣了多少，
+        // 不进 totals / total，订单金额与收入统计保持不变
+        $channelPct = ChannelFee::percent($order->payment);
+        $channelFee = ChannelFee::amount($cash + $handling, $channelPct);
+
         $plan = Plan::find($order->plan_id);
         $data = $this->base() + [
             'kind' => 'receipt',
@@ -188,6 +194,13 @@ class BillingDocumentService
             'total' => $total,
             'payments' => $payments,
             'balance_due' => 0,
+            'channel_fee' => $channelFee > 0 ? [
+                'label' => __('billing.field.channel_fee', ['percent' => self::percentText($channelPct)]),
+                'amount_fmt' => $this->money($channelFee),
+                'charged_label' => __('billing.field.channel_charged'),
+                'charged_fmt' => $this->money($cash + $handling + $channelFee),
+                'note' => __('billing.receipt.channel_fee_note'),
+            ] : null,
             'notes' => array_values(array_filter([
                 $isAuto ? __('billing.receipt.auto_renew_note') : null,
                 (int) ($order->refund_amount ?? 0) > 0 ? __('billing.receipt.refund_note', ['amount' => $this->money((int) $order->refund_amount)]) : null,
@@ -878,6 +891,12 @@ class BillingDocumentService
         if (isset($data['account_balance'])) $data['account_balance_fmt'] = $this->money((int) $data['account_balance']);
         $data['attachment_name'] = $data['has_pdf'] ? $this->attachmentName($data) : null;
         return $data;
+    }
+
+    /** 费率展示：3.00 → 3，3.50 → 3.5 */
+    private static function percentText(float $pct): string
+    {
+        return rtrim(rtrim(number_format($pct, 2, '.', ''), '0'), '.');
     }
 
     public function money(int $cents): string

@@ -890,7 +890,12 @@ class PlanCustomizationService
             throw new ApiException('此套餐不支持所选付款周期');
         }
         $this->validateConfiguration($plan);
-        $current = $user && (int) $user->plan_id === (int) $plan->id ? $user->plan_options : null;
+        $owned = $user && (int) $user->plan_id === (int) $plan->id ? $user->plan_options : null;
+        // 固定规格改小 / 改大之后，在订用户的快照还停在旧值（本期流量照旧，月度重置不回写 transfer_enable）。
+        // 报价 / 展示 / 续费 / 重置一律按套餐当前的固定值走：续费即换成新规格，
+        // 而不是抛「固定规格不可更改」把整个订阅（官网显示「尚未订阅」）和续费都挡掉。
+        $current = $this->alignStaleFixedFields($plan, $owned, $owned);
+        $options = $this->alignStaleFixedFields($plan, $options, $owned);
         $hasAddons = $this->hasAddonConfig($plan);
         if (!$this->isEnabled($plan)) {
             if ($options !== null) $this->validateSelection($plan, $options);
@@ -1059,6 +1064,22 @@ class PlanCustomizationService
         return $selected;
     }
 
+    /**
+     * 套餐的固定规格（流量 / 设备 / 限速）改过之后，在订用户 plan_options 里还是旧值。
+     * 只把「与该用户已购快照一致」的旧值换成套餐当前值；其它不符的值照常交给 validateSelection 拒绝，
+     * 客户不能借此改规格。
+     */
+    private function alignStaleFixedFields(Plan $plan, ?array $selected, ?array $owned): ?array
+    {
+        if ($selected === null || $owned === null) return $selected;
+        foreach ($this->baseOptions($plan) as $field => $base) {
+            if ($this->mode($plan, $field) !== 'fixed') continue;
+            if (!array_key_exists($field, $selected) || !array_key_exists($field, $owned)) continue;
+            if ($selected[$field] !== $base && $selected[$field] === $owned[$field]) $selected[$field] = $base;
+        }
+        return $selected;
+    }
+
     /** public：批量迁移命令（xboard:grandfather-addon-group）要在写库前先验一遍将要写入的选择。 */
     public function validateSelection(Plan $plan, array $selected): void
     {
@@ -1098,7 +1119,7 @@ class PlanCustomizationService
     public function validateExistingSubscribers(Plan $plan): void
     {
         $selections = User::where('plan_id', $plan->id)->whereNotNull('plan_options')->cursor()
-            ->map(fn ($user) => [$user->plan_options, $user])
+            ->map(fn ($user) => [$user->plan_options, $user, true])
             ->concat(Order::where('plan_id', $plan->id)->whereNotNull('plan_snapshot')
                 ->whereIn('status', [Order::STATUS_PENDING, Order::STATUS_PROCESSING])->cursor()
                 ->filter(fn ($order) => isset($order->plan_snapshot['options']))
@@ -1107,11 +1128,14 @@ class PlanCustomizationService
                     if (isset($order->plan_snapshot[self::GRANDFATHER_KEY])) {
                         $owned[self::GRANDFATHER_KEY] = $order->plan_snapshot[self::GRANDFATHER_KEY];
                     }
-                    return [$owned, new User(['plan_id' => $plan->id, 'plan_options' => $owned])];
+                    return [$owned, new User(['plan_id' => $plan->id, 'plan_options' => $owned]), false];
                 }));
-        foreach ($selections as [$options, $user]) {
+        foreach ($selections as [$options, $user, $subscribed]) {
             try {
-                $this->validateSelection($this->forGrandfatheredUser($plan, $user), $options);
+                // 在订用户固定规格的旧值续费时会换成新值（见 alignStaleFixedFields），不再拦管理员改固定规格；
+                // 待支付订单已按下单时的规格报价，仍须与新规格兼容。
+                $grandfathered = $this->forGrandfatheredUser($plan, $user);
+                $this->validateSelection($grandfathered, $subscribed ? $this->alignStaleFixedFields($grandfathered, $options, $options) : $options);
             } catch (ApiException $e) {
                 throw new ApiException('新规格会使已有用户或待处理订单无法续费，请保留其规格或新建套餐');
             }

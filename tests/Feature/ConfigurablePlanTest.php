@@ -448,6 +448,29 @@ class ConfigurablePlanTest extends TestCase
         $this->assertNull($calculator->quote($plan, 'monthly', null, $user)['snapshot']);
     }
 
+    public function test_changing_a_fixed_spec_moves_existing_subscribers_to_it_on_renewal(): void
+    {
+        $plan = $this->plan();
+        $rules = $plan->customization;
+        $rules['transfer_enable'] = ['mode' => 'fixed'];
+        $plan->customization = $rules;
+        $plan->save();
+        $purchased = ['transfer_enable' => 100, 'device_limit' => 3, 'speed_limit' => 100];
+        $user = $this->user(['plan_id' => $plan->id, 'plan_options' => $purchased, 'expired_at' => time() + 10 * 86400]);
+        $calculator = new PlanCustomizationService();
+
+        $plan->transfer_enable = 50;
+        $calculator->validateExistingSubscribers($plan);
+        $plan->save();
+
+        $expected = ['transfer_enable' => 50, 'device_limit' => 3, 'speed_limit' => 100];
+        $this->assertEquals($expected, $calculator->quote($plan, 'monthly', null, $user)['snapshot']['options']);
+        $this->assertEquals($expected, $calculator->quote($plan, 'monthly', $purchased, $user)['snapshot']['options']);
+
+        $this->expectException(ApiException::class);
+        $calculator->quote($plan, 'monthly', ['transfer_enable' => 300, 'device_limit' => 3, 'speed_limit' => 100], $user);
+    }
+
     public static function invalidCapacityLists(): array
     {
         return [[[250, 500]], [[100, 100, 500]], [[500, 100]], [[100, 1000001]], [[100, '500']], [[100, 250.5]], [[]]];

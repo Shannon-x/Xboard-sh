@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\EpayGatewayMonitor;
+use App\Services\PaymentLinkReport;
 use App\Services\PaymentVerificationService;
 use App\Support\AdminAlert;
 use Illuminate\Console\Command;
@@ -11,6 +12,7 @@ use Illuminate\Support\Carbon;
 /**
  * 付款核验日报：当天核验了多少笔、各结论分布、异常明细，推送给管理员。Kernel 每天 23:30 跑。
  * 有易支付 V2 商户时，末尾追加网关侧余额与当天收入对账（见 EpayGatewayMonitor::merchantSummary）。
+ * 最后是各支付通道当天拉取收款链接的成功 / 失败次数、失败原因与转化率（见 PaymentLinkReport）。
  */
 class PaymentVerificationReport extends Command
 {
@@ -20,7 +22,7 @@ class PaymentVerificationReport extends Command
 
     protected $description = '付款核验日报';
 
-    public function handle(PaymentVerificationService $service, EpayGatewayMonitor $monitor): int
+    public function handle(PaymentVerificationService $service, EpayGatewayMonitor $monitor, PaymentLinkReport $links): int
     {
         $date = $this->option('date');
         $day = $date ? Carbon::createFromFormat('Y-m-d', (string) $date)->startOfDay() : Carbon::today();
@@ -32,6 +34,7 @@ class PaymentVerificationReport extends Command
                 $report .= "\n\n" . implode("\n", $merchant);
             }
         }
+        $report .= "\n\n" . implode("\n", $links->dailyLines($day));
         $this->line($report);
         if (!$this->option('no-send')) {
             AdminAlert::send($report);

@@ -54,6 +54,8 @@ class Kernel extends ConsoleKernel
         // 付款事后核验：已付 EPay 订单 / 充值单入账 5 分钟后向网关复核一次，异常推管理员；只读网关，不碰开通
         $schedule->command('payment:verify')->everyFiveMinutes()->onOneServer()->withoutOverlapping(30)->runInBackground();
         $schedule->command('payment:verify-report')->dailyAt('23:30')->onOneServer();
+        // 支付通道拉取巡检：失败率高或拉到链接没人付时推管理员（同一通道同类告警 3 小时一次）
+        $schedule->command('payment:link-health')->everyFifteenMinutes()->between('9:00', '23:59')->onOneServer()->withoutOverlapping(10);
         // 易支付 V2 投诉巡检：没有 V2 配置时不访问网关
         $schedule->command('payment:epay-complaints')->everyTenMinutes()->onOneServer()->withoutOverlapping(10)->runInBackground();
         // 退款回查：用户通过投诉等途径退了款就自动封号（见 RefundWatchService）

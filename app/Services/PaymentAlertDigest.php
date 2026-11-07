@@ -149,7 +149,7 @@ final class PaymentAlertDigest
         $reason = $row->refunded_at !== null ? '网关已退款' : (PaymentVerification::LABELS[$row->verdict] ?? $row->verdict);
         $snapshot = (array) $row->enforce_snapshot;
         return sprintf(
-            '%s %s（#%s）%s %s ¥%s —— %s%s',
+            '%s %s（#%s）%s %s ¥%s —— %s%s%s',
             $at ? date('m-d H:i', (int) $at) : '',
             $user ? (string) $user->email : '用户已删除',
             $row->user_id ?? '-',
@@ -157,7 +157,8 @@ final class PaymentAlertDigest
             PaymentEnforcement::tradeNoOf($row),
             PaymentEnforcement::yuan((int) $row->expected_amount),
             $reason,
-            isset($snapshot['plan_id']) ? '；原套餐 #' . $snapshot['plan_id'] : ''
+            isset($snapshot['plan_id']) ? '；原套餐 #' . $snapshot['plan_id'] : '',
+            PaymentEnforcement::commissionSummary(isset($snapshot['commission']) ? (array) $snapshot['commission'] : null)
         );
     }
 }

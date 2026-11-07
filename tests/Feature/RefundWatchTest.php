@@ -2,7 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Console\Commands\CheckCommission;
 use App\Jobs\SendTelegramJob;
+use App\Models\BalanceLog;
+use App\Models\CommissionLog;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\PaymentVerification;
@@ -289,6 +292,89 @@ class RefundWatchTest extends TestCase
         $alert = $this->alerts()[0];
         $this->assertStringContainsString('充值单：<code>R20261024</code>', $alert);
         $this->assertStringContainsString('余额 ¥50.00 未扣回', $alert);
+    }
+
+    // ───────────────────────── 邀请佣金 ─────────────────────────
+
+    public function test_refund_voids_commission_that_was_not_paid_yet(): void
+    {
+        $payment = $this->v1Payment();
+        $inviter = $this->customer();
+        [, $order, $row] = $this->verifiedOrder($payment, 8, [
+            'commission_balance' => 1056, 'invite_user_id' => $inviter->id, 'commission_status' => 0,
+        ]);
+        $this->gatewaySays($order, 0, 0);
+
+        $this->assertSame(1, $this->run_()['refunded']);
+
+        $this->assertSame(3, (int) $order->fresh()->commission_status, '退款单的佣金作废');
+        $this->assertSame(0, $row->fresh()->enforce_snapshot['commission']['status_before']);
+        $this->assertStringContainsString('该单佣金：¥10.56 还没发放，已作废', $this->alerts()[0]);
+
+        // 满 3 天后结算任务也不会再发
+        $this->travel(4)->days();
+        (new CheckCommission())->handle();
+        $this->assertSame(0, (int) $inviter->fresh()->commission_balance);
+        $this->assertSame(0, CommissionLog::where('trade_no', $order->trade_no)->count());
+    }
+
+    public function test_refund_takes_back_paid_commission_from_commission_then_balance(): void
+    {
+        $payment = $this->v1Payment();
+        $full = $this->customer();
+        $full->forceFill(['commission_balance' => 5000])->save();
+        $partial = $this->customer();
+        $partial->forceFill(['commission_balance' => 500, 'balance' => 300])->save();
+
+        [, $fullOrder] = $this->verifiedOrder($payment, 8, [
+            'commission_balance' => 1056, 'invite_user_id' => $full->id, 'commission_status' => 2, 'actual_commission_balance' => 1056,
+        ]);
+        [, $partialOrder, $partialRow] = $this->verifiedOrder($payment, 8, [
+            'commission_balance' => 1056, 'invite_user_id' => $partial->id, 'commission_status' => 2, 'actual_commission_balance' => 1056,
+        ]);
+        foreach ([[$fullOrder, $full], [$partialOrder, $partial]] as [$order, $inviter]) {
+            CommissionLog::create([
+                'invite_user_id' => $inviter->id, 'user_id' => $order->user_id, 'trade_no' => $order->trade_no,
+                'order_amount' => 3520, 'get_amount' => 1056,
+            ]);
+            $this->gatewaySays($order, 0, 0);
+        }
+
+        $this->assertSame(2, $this->run_()['refunded']);
+
+        $this->assertSame([3944, 0], [(int) $full->fresh()->commission_balance, (int) $full->fresh()->balance]);
+        $this->assertSame([0, 0], [(int) $partial->fresh()->commission_balance, (int) $partial->fresh()->balance], '余额不扣成负数');
+        $this->assertSame([3, 3], [(int) $fullOrder->fresh()->commission_status, (int) $partialOrder->fresh()->commission_status]);
+
+        $taken = $partialRow->fresh()->enforce_snapshot['commission']['clawback'][0];
+        $this->assertSame([500, 300, 256], [$taken['from_commission'], $taken['from_balance'], $taken['short']], '留下扣回明细，误判时照此退回');
+        $log = BalanceLog::where('user_id', $partial->id)->sole();
+        $this->assertSame([-300, 300, 0], [(int) $log->amount, (int) $log->balance_before, (int) $log->balance_after]);
+        $this->assertSame($partialOrder->trade_no, $log->ref_id);
+        $this->assertSame(0, BalanceLog::where('user_id', $full->id)->count(), '只动佣金余额时不记余额流水');
+
+        $alerts = implode("\n", $this->alerts());
+        $this->assertStringContainsString('已从佣金余额扣回', $alerts);
+        $this->assertStringContainsString('扣回 ¥8.00，还差 ¥2.56 扣不回', $alerts);
+
+        // 再跑一遍不重复扣
+        $this->run_();
+        $this->assertSame(3944, (int) $full->fresh()->commission_balance);
+    }
+
+    public function test_orders_without_inviter_or_with_zero_commission_are_left_alone(): void
+    {
+        $payment = $this->v1Payment();
+        $inviter = $this->customer();
+        [, $plain, $plainRow] = $this->verifiedOrder($payment, 8);
+        [, $zero] = $this->verifiedOrder($payment, 8, ['commission_balance' => 0, 'invite_user_id' => $inviter->id, 'commission_status' => 2]);
+        $this->gatewaySays($plain, 0, 0);
+        $this->gatewaySays($zero, 0, 0);
+
+        $this->assertSame(2, $this->run_()['refunded']);
+        $this->assertArrayNotHasKey('commission', $plainRow->fresh()->enforce_snapshot);
+        $this->assertSame(2, (int) $zero->fresh()->commission_status);
+        $this->assertStringNotContainsString('该单佣金', implode("\n", $this->alerts()));
     }
 
     // ───────────────────────── 投诉触发 ─────────────────────────

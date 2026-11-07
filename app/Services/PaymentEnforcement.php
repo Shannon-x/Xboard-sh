@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use App\Models\BalanceLog;
+use App\Models\CommissionLog;
 use App\Models\Order;
 use App\Models\PaymentVerification;
 use App\Models\RechargeOrder;
@@ -14,6 +16,7 @@ use Laravel\Sanctum\PersonalAccessToken;
 /**
  * 付款异常的账户处置，退款回查（RefundWatchService）与付款事后核验（PaymentVerificationService）共用：
  * 封号、收回套餐、重置订阅、踢下线，处置前的状态存进核验行的 enforce_snapshot，误判时照此恢复。
+ * 订单带来的邀请佣金一并收回：还没发的作废，已经发了的从邀请人那里扣回（见 revokeCommission）。
  *
  * 管理员不常看 Telegram（2026-10-24）：所以确认异常就直接处置，不等人看；告警同时推给客服，
  * 并进每日邮件汇总（PaymentAlertDigest）。删号不在这里做，由管理员看过后在后台确认。
@@ -34,6 +37,8 @@ final class PaymentEnforcement
             if (!$locked || $locked->refunded_at !== null || $locked->enforce_snapshot !== null) {
                 return null;
             }
+            // 先处理佣金再封号：锁顺序与佣金结算（订单 → 邀请人）一致
+            $commission = $this->revokeCommission($locked);
             $user = $locked->user_id ? User::find($locked->user_id) : null;
             $snapshot = $user
                 ? $this->suspend($user, sprintf(
@@ -41,6 +46,9 @@ final class PaymentEnforcement
                     date('Y-m-d H:i'), $reason, self::kindOf($locked), self::tradeNoOf($locked)
                 ))
                 : ['user_missing' => true];
+            if ($commission !== null) {
+                $snapshot['commission'] = $commission;
+            }
             $mark($locked);
             $locked->enforce_snapshot = $snapshot;
             $locked->save();
@@ -48,6 +56,81 @@ final class PaymentEnforcement
             return ['user' => $user, 'snapshot' => $snapshot];
         });
     }
+
+    /**
+     * 收回这张订单带来的邀请佣金。须在事务里调用。
+     *
+     * - 还没发（待确认 / 发放中）：佣金状态置为无效，结算任务不会再发；
+     * - 已经发了：按佣金记录逐个邀请人扣回，先扣佣金余额，不够再扣账户余额（佣金可能已划转到余额），
+     *   都不够的部分（多半已提现）记为未扣回，交给管理员处理；佣金状态同样置为无效。
+     *
+     * 充值单不返佣，不处理。返回写进 enforce_snapshot 的记录，误判时照此退回；没有可处理的佣金返回 null。
+     *
+     * @return array{trade_no: string, status_before: int, amount: int, clawback: list<array{invite_user_id: int, amount: int, from_commission: int, from_balance: int, short: int}>}|null
+     */
+    public function revokeCommission(PaymentVerification $row): ?array
+    {
+        if ($row->subject_type !== PaymentVerification::SUBJECT_ORDER) {
+            return null;
+        }
+        $order = Order::lockForUpdate()->find($row->subject_id);
+        if (!$order || (int) $order->commission_status === self::COMMISSION_INVALID) {
+            return null;
+        }
+        $statusBefore = (int) $order->commission_status;
+        $clawback = [];
+        if ($statusBefore === self::COMMISSION_PAID) {
+            $logs = CommissionLog::where('trade_no', $order->trade_no)->orderBy('id')->get();
+            foreach ($logs as $log) {
+                $clawback[] = $this->clawBack($log, $order);
+            }
+        }
+        if ($clawback === [] && (!$order->invite_user_id || (int) ($order->commission_balance ?? 0) <= 0)) {
+            return null;
+        }
+        $order->commission_status = self::COMMISSION_INVALID;
+        $order->save();
+
+        return [
+            'trade_no' => (string) $order->trade_no,
+            'status_before' => $statusBefore,
+            'amount' => $statusBefore === self::COMMISSION_PAID
+                ? (int) array_sum(array_column($clawback, 'amount'))
+                : (int) ($order->commission_balance ?? 0),
+            'clawback' => $clawback,
+        ];
+    }
+
+    /** 从一位邀请人那里扣回一条佣金记录的金额，余额不为负 */
+    private function clawBack(CommissionLog $log, Order $order): array
+    {
+        $amount = max(0, (int) $log->get_amount);
+        $inviter = $log->invite_user_id ? User::lockForUpdate()->find($log->invite_user_id) : null;
+        if (!$inviter || $amount === 0) {
+            return [
+                'invite_user_id' => (int) $log->invite_user_id, 'amount' => $amount,
+                'from_commission' => 0, 'from_balance' => 0, 'short' => $amount,
+            ];
+        }
+        $fromCommission = min($amount, max(0, (int) $inviter->commission_balance));
+        $fromBalance = min($amount - $fromCommission, max(0, (int) $inviter->balance));
+        $inviter->commission_balance = (int) $inviter->commission_balance - $fromCommission;
+        $inviter->balance = (int) $inviter->balance - $fromBalance;
+        $inviter->save();
+        if ($fromBalance > 0) {
+            BalanceLedger::record($inviter, BalanceLog::TYPE_ADMIN_ADJUST, -$fromBalance,
+                BalanceLedger::orderCtx($order, '邀请订单退款，扣回已划转到余额的佣金'));
+        }
+        return [
+            'invite_user_id' => (int) $inviter->id, 'amount' => $amount,
+            'from_commission' => $fromCommission, 'from_balance' => $fromBalance,
+            'short' => $amount - $fromCommission - $fromBalance,
+        ];
+    }
+
+    /** 订单 commission_status：2 已发放，3 无效（与后台订单管理一致） */
+    private const COMMISSION_PAID = 2;
+    private const COMMISSION_INVALID = 3;
 
     /** 封号、收回套餐、重置订阅、踢下线；返回处置前的状态快照。须在事务里调用 */
     public function suspend(User $user, string $remark): array
@@ -94,7 +177,7 @@ final class PaymentEnforcement
         $lines[] = self::kindOf($row) . '：<code>' . $esc(self::tradeNoOf($row)) . '</code> ¥' . self::yuan((int) $row->expected_amount);
         array_push($lines, ...$details);
 
-        $commission = self::commissionLine($row);
+        $commission = self::commissionLine($row, $snapshot['commission'] ?? null);
         if ($commission !== null) {
             $lines[] = $commission;
         }
@@ -106,7 +189,7 @@ final class PaymentEnforcement
                 $isRecharge ? '；充值进去的余额 ¥' . self::yuan((int) $snapshot['balance']) . ' 未扣回' : ''
             );
             $lines[] = '确认删号：到后台「用户」里删除 #' . $user->id . '，或回复「执行删号 ' . $user->id . '」。'
-                . '若属误判：解封并按上面的原值恢复套餐。';
+                . '若属误判：解封并按上面的原值恢复套餐' . (isset($snapshot['commission']) ? '，佣金按核验记录里的快照退回' : '') . '。';
         }
         AdminAlert::send(implode("\n", $lines), 'html', true);
     }
@@ -124,20 +207,57 @@ final class PaymentEnforcement
         return (string) Order::where('id', $row->subject_id)->value('trade_no');
     }
 
-    /** 这张单给邀请人发的佣金（订单表 / 充值表都有 commission_balance、invite_user_id），HTML 已转义 */
-    public static function commissionLine(PaymentVerification $row): ?string
+    /**
+     * 这张单的邀请佣金怎么处理的（HTML 已转义）。$revoked 是 revokeCommission 的结果；
+     * 没给（老数据 / 没走处置）时只说明佣金额度与邀请人。
+     */
+    public static function commissionLine(PaymentVerification $row, ?array $revoked = null): ?string
     {
+        $esc = [TelegramService::class, 'escapeHtml'];
+        $who = static function (int $id) use ($esc): string {
+            $inviter = User::find($id);
+            return $inviter ? $esc((string) $inviter->email) . '（#' . $inviter->id . '）' : '#' . $id;
+        };
+        if ($revoked !== null) {
+            if ((int) $revoked['status_before'] !== self::COMMISSION_PAID) {
+                return '该单佣金：¥' . self::yuan((int) $revoked['amount']) . ' 还没发放，已作废';
+            }
+            $parts = [];
+            foreach ($revoked['clawback'] as $c) {
+                $part = $who((int) $c['invite_user_id']) . ' ¥' . self::yuan((int) $c['amount']);
+                $taken = (int) $c['from_commission'] + (int) $c['from_balance'];
+                if ((int) $c['short'] > 0) {
+                    $part .= '，扣回 ¥' . self::yuan($taken) . '，还差 ¥' . self::yuan((int) $c['short']) . ' 扣不回（多半已提现），请人工处理';
+                } elseif ((int) $c['from_balance'] > 0) {
+                    $part .= '，已扣回（其中 ¥' . self::yuan((int) $c['from_balance']) . ' 从余额扣）';
+                } else {
+                    $part .= '，已从佣金余额扣回';
+                }
+                $parts[] = $part;
+            }
+            return '该单佣金已发放，已作废并扣回：' . ($parts === [] ? '无佣金记录' : implode('；', $parts));
+        }
         $subject = $row->subject_type === PaymentVerification::SUBJECT_RECHARGE
             ? RechargeOrder::find($row->subject_id)
             : Order::find($row->subject_id);
         if (!$subject || (int) ($subject->commission_balance ?? 0) <= 0 || !$subject->invite_user_id) {
             return null;
         }
-        $inviter = User::find($subject->invite_user_id);
-        $esc = [TelegramService::class, 'escapeHtml'];
-        return '该单佣金：¥' . self::yuan((int) $subject->commission_balance) . ' → 邀请人 '
-            . ($inviter ? $esc((string) $inviter->email) . '（#' . $inviter->id . '）' : '#' . $subject->invite_user_id)
-            . '，是否扣回请自行决定';
+        return '该单佣金：¥' . self::yuan((int) $subject->commission_balance) . ' → 邀请人 ' . $who((int) $subject->invite_user_id);
+    }
+
+    /** 日报里的一句话：佣金作废 / 扣回了多少，扣不回的金额 */
+    public static function commissionSummary(?array $revoked): string
+    {
+        if ($revoked === null) {
+            return '';
+        }
+        if ((int) $revoked['status_before'] !== self::COMMISSION_PAID) {
+            return '；佣金 ¥' . self::yuan((int) $revoked['amount']) . ' 已作废';
+        }
+        $short = (int) array_sum(array_column($revoked['clawback'], 'short'));
+        return '；佣金 ¥' . self::yuan((int) $revoked['amount']) . ' 已扣回'
+            . ($short > 0 ? '，¥' . self::yuan($short) . ' 扣不回需人工处理' : '');
     }
 
     public static function yuan(int $minor): string

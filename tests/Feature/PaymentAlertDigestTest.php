@@ -110,7 +110,11 @@ class PaymentAlertDigestTest extends TestCase
     {
         $banned = $this->user(['banned' => 1, 'email' => 'refunder@example.test']);
         $this->enforcedRow($banned);
-        $old = $this->enforcedRow($this->user(['banned' => 1, 'email' => 'old@example.test']), ['refunded_at' => time() - 5 * 86400]);
+        $old = $this->enforcedRow($this->user(['banned' => 1, 'email' => 'old@example.test']), ['refunded_at' => time() - 5 * 86400,
+            'enforce_snapshot' => ['plan_id' => 38, 'expired_at' => time() + 86400, 'balance' => 0, 'commission' => [
+                'trade_no' => 'T1', 'status_before' => 2, 'amount' => 1320,
+                'clawback' => [['invite_user_id' => 5, 'amount' => 1320, 'from_commission' => 1000, 'from_balance' => 0, 'short' => 320]],
+            ]]]);
         $this->enforcedRow(null);   // 用户已删除：不再算待删
         PaymentVerification::create([
             'subject_type' => 'recharge', 'subject_id' => 1, 'payment_id' => 1, 'callback_no' => 'GWOK',
@@ -128,6 +132,7 @@ class PaymentAlertDigestTest extends TestCase
         $this->assertStringContainsString('【待你确认删号】2 个', $digest['content']);
         $this->assertStringContainsString('old@example.test', $digest['content'], '早先封的、还没删的也要继续列出来');
         $this->assertStringContainsString('原套餐 #45', $digest['content']);
+        $this->assertStringContainsString('原套餐 #38；佣金 ¥13.20 已扣回，¥3.20 扣不回需人工处理', $digest['content']);
         $this->assertStringContainsString('投诉 #55 wxpay ¥35.20 申请退款', $digest['content']);
         $this->assertStringNotContainsString('13800000000', $digest['content'], '不外发手机号');
         $this->assertStringContainsString('一致 1', $digest['content']);

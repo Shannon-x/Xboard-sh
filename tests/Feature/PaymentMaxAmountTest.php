@@ -31,6 +31,10 @@ class PaymentMaxAmountTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // 系统设置缓存固定走 redis 存储：测试里换成内存
+        config(['cache.stores.redis' => ['driver' => 'array']]);
+        Cache::forgetDriver('redis');
+        app()->forgetScopedInstances();
         Cache::flush();
         $calls = &$this->gatewayCalls;
         app()->instance(CheckoutService::class, new class ($calls) extends CheckoutService {

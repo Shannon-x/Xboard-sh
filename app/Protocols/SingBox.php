@@ -13,9 +13,9 @@ class SingBox extends AbstractProtocol
 
     /**
      * VLESS Encryption：官方 sing-box（含 SFA / SFI / SFM）没有 encryption 字段，遇到未知字段会拒绝整份配置。
-     * Hiddify 的内核分支支持，但从哪个 App 版本起带上还没核实，旧版同样整份报错，所以先不下发。
+     * Hiddify、Karing、GUI.for.SingBox 也走这个格式，从哪个版本起支持还没核实，旧版同样整份报错。
+     * 所以整个格式不下发（$vlessEncryptionFormat 保持 false）。
      */
-    protected $vlessEncryptionClients = [];
     public $allowedProtocols = [
         Server::TYPE_SHADOWSOCKS,
         Server::TYPE_TROJAN,

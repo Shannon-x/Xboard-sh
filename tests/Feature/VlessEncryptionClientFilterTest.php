@@ -13,9 +13,10 @@ use App\Protocols\Stash;
 use Tests\TestCase;
 
 /**
- * 开了 VLESS Encryption 的节点只下发给能用的客户端。
+ * 开了 VLESS Encryption 的节点按黑名单下发：只有明确不支持的客户端不发。
  *
- *   · 官方 sing-box 遇到未知字段 encryption 会拒绝整份配置；
+ *   · 官方 sing-box 遇到未知字段 encryption 会拒绝整份配置，整个格式不发；
+ *   · mihomo 1.19.13 是早期格式，会整份报错，内核是它的客户端版本必须拦；
  *   · NekoBox、旧版小火箭等会把它当普通 VLESS 导入，连不上也不报错。
  */
 class VlessEncryptionClientFilterTest extends TestCase
@@ -49,36 +50,116 @@ class VlessEncryptionClientFilterTest extends TestCase
         return array_column($prop->getValue($protocol), 'name');
     }
 
-    public function test_supported_clients_keep_encrypted_node(): void
+    /**
+     * [下发格式, 识别出的客户端名, 版本, 原始 UA]，UA 取自线上订阅日志
+     */
+    private function delivered(): array
     {
-        $this->assertContains('enc', $this->names(General::class, 'v2rayn', '7.15.0'));
-        $this->assertContains('enc', $this->names(General::class, 'v2rayng', null));
-        $this->assertContains('enc', $this->names(ClashMeta::class, 'mihomo', '1.19.14'));
-        $this->assertContains('enc', $this->names(ClashMeta::class, 'meta', '1.19.33'));
-        $this->assertContains('enc', $this->names(ClashMeta::class, 'verge', '2.4.3'));
-        $this->assertContains('enc', $this->names(ClashMeta::class, 'flclash', '0.8.89'));
-        $this->assertContains('enc', $this->names(ClashMeta::class, 'flclash', '0.9.3'));
-        $this->assertContains('enc', $this->names(Shadowrocket::class, 'shadowrocket', '3191'));
-        $this->assertContains('enc', $this->names(Shadowrocket::class, 'shadowrocket', '3220'));
-        $this->assertContains('enc', $this->names(Stash::class, 'stash', '3.6.1'));
-        $this->assertContains('enc', $this->names(Stash::class, 'stash', '3.6.5'));
+        return [
+            [ClashMeta::class, 'clash', '2.5.10', 'clash-verge/v2.5.10'],
+            [ClashMeta::class, 'clash', '2.4.3', 'clash-verge/v2.4.3'],
+            [ClashMeta::class, 'clash', '2.5.8', 'clash-verge/v2.5.8+autobuild.1214.195f470'],
+            [ClashMeta::class, 'clash', null, 'clash-verge'],
+            [ClashMeta::class, 'flclash', '0.8.89', 'flclash/v0.8.89 clash-verge platform/android'],
+            [ClashMeta::class, 'flclash', '0.9.3', 'flclash/v0.9.3 clash-verge platform/windows'],
+            [ClashMeta::class, 'clashmetaforandroid', '2.11.17', 'clashmetaforandroid/2.11.17.meta'],
+            [ClashMeta::class, 'clashmetaforandroid', '2.11.28', 'clashmetaforandroid/2.11.28.meta'],
+            [ClashMeta::class, 'mihomo', '2.0.4', 'mihomo.party/v2.0.4 (clash.meta)'],
+            [ClashMeta::class, 'mihomo', '1.8.8', 'mihomo.party/v1.8.8 (clash.meta)'],
+            [ClashMeta::class, 'mihomo', '1.19.27', 'clashmeta/1.19.27; mihomo/1.19.27'],
+            [ClashMeta::class, 'meta', '1.19.14', 'clash.meta/v1.19.14'],
+            [ClashMeta::class, 'mihomo', '1.19.33', 'mihomo/1.19.33'],
+            [ClashMeta::class, 'clash', null, 'clash.meta'],
+            [ClashMeta::class, 'clash', null, 'clash.meta/alpha-2d94970'],
+            [General::class, 'v2rayn', '7.15.0', 'v2rayn/7.15.0'],
+            [General::class, 'v2rayng', null, 'v2rayng'],
+            [General::class, null, null, 'v2raytun/android'],
+            [General::class, null, '2.21.0', 'egern/2.21.0 (ios 27.2; build/788)'],
+            [General::class, null, null, null],
+            [Shadowrocket::class, 'shadowrocket', '3191', 'shadowrocket/3191'],
+            [Shadowrocket::class, 'shadowrocket', '3220', 'shadowrocket/3220'],
+            [Shadowrocket::class, 'shadowrocket', null, 'shadowrocket'],
+            [Stash::class, 'stash', '3.6.1', 'stash/3.6.1'],
+            [Stash::class, 'stash', null, 'stash'],
+        ];
+    }
+
+    private function dropped(): array
+    {
+        return [
+            [ClashMeta::class, 'clash', '2.4.2', 'clash-verge/v2.4.2'],
+            [ClashMeta::class, 'clash', '1.6.0', 'clash-verge/v1.6.0 mozilla/5.0 chrome/124'],
+            [ClashMeta::class, 'flclash', '0.8.88', 'flclash/v0.8.88 clash-verge platform/android'],
+            [ClashMeta::class, 'verge', '0.8.61', 'flc/0.8.61/meta/verge/android 16'],
+            [ClashMeta::class, 'clashmetaforandroid', '2.11.16', 'clashmetaforandroid/2.11.16.meta'],
+            [ClashMeta::class, 'mihomo', '1.8.7', 'mihomo.party/v1.8.7 (clash.meta)'],
+            [ClashMeta::class, 'meta', '1.19.13', 'clash.meta/v1.19.13'],
+            [ClashMeta::class, 'mihomo', '1.19.13', 'mihomo/1.19.13'],
+            [ClashMeta::class, 'nekobox', '1.4.2', 'nekobox/android/1.4.2 (prefer clashmeta format)'],
+            [ClashMeta::class, 'flclash', '1.2.23', 'karing/1.2.23.2606 platform/android;mihomo/1.19.28;clashmeta;clash-verge'],
+            [General::class, 'sagernet', '0.8', 'sagernet/0.8'],
+            [General::class, null, '1.2.23', 'karing/1.2.23.2606 platform/android'],
+            [SingBox::class, 'sing-box', '1.14.2', 'sing-box/1.14.2'],
+            [SingBox::class, 'hiddify', '5.5.5', 'hiddify/5.5.5'],
+            [SingBox::class, 'sing-box', '4.0.0', 'hiddifynext/4.0.0 (ios) like clashmeta v2ray sing-box'],
+            [Shadowrocket::class, 'shadowrocket', '3190', 'shadowrocket/3190'],
+            [Stash::class, 'stash', '3.6.0', 'stash/3.6.0'],
+            [Loon::class, 'loon', '900', 'loon/900'],
+            [QuantumultX::class, 'quantumult%20x', '1.5', 'quantumult%20x/1.5'],
+        ];
+    }
+
+    public function test_clients_not_blacklisted_get_encrypted_node(): void
+    {
+        foreach ($this->delivered() as [$class, $client, $version, $ua]) {
+            $this->assertContains('enc', $this->names($class, $client, $version, $ua), class_basename($class) . ' ' . $ua);
+        }
+    }
+
+    public function test_blacklisted_clients_drop_only_encrypted_node(): void
+    {
+        foreach ($this->dropped() as [$class, $client, $version, $ua]) {
+            $names = $this->names($class, $client, $version, $ua);
+            $label = class_basename($class) . ' ' . $ua;
+            $this->assertNotContains('enc', $names, $label);
+            $this->assertContains('plain', $names, $label);
+            $this->assertContains('none', $names, $label);
+        }
     }
 
     /**
-     * 线上 Clash Verge 的 UA 是 clash-verge/v2.5.10，客户端名会被识别成 clash（见 ClientController::getClientInfo）。
+     * 用线上真实 UA 走一遍 ClientController 的识别和格式匹配，确认上面手填的客户端名、版本没写错
      */
-    public function test_clash_verge_user_agent_is_recognized(): void
+    public function test_real_user_agents_through_client_detection(): void
     {
-        $this->assertContains('enc', $this->names(ClashMeta::class, 'clash', '2.5.10', 'clash-verge/v2.5.10'));
-        $this->assertContains('enc', $this->names(ClashMeta::class, 'clash', '2.4.3', 'clash-verge/v2.4.3'));
-        $this->assertNotContains('enc', $this->names(ClashMeta::class, 'clash', '2.4.2', 'clash-verge/v2.4.2'));
-        $this->assertNotContains('enc', $this->names(ClashMeta::class, 'clash', '1.6.0', 'clash-verge/v1.6.0'));
-        $this->assertNotContains('enc', $this->names(ClashMeta::class, 'clash', null, 'clash-verge'));
-        // 不是 Verge 的 clash 不受影响
-        $this->assertNotContains('enc', $this->names(ClashMeta::class, 'clash', '2.5.10', 'clash.meta'));
-        // FlClash 的 UA 里也带 clash-verge，但客户端名已识别成 flclash，按 FlClash 自己的版本判断
-        $this->assertNotContains('enc', $this->names(ClashMeta::class, 'flclash', '0.8.88', 'flclash/v0.8.88 clash-verge platform/windows'));
-        $this->assertContains('enc', $this->names(ClashMeta::class, 'flclash', '0.8.92', 'flclash/v0.8.92 clash-verge platform/windows'));
+        $controller = app(\App\Http\Controllers\V1\Client\ClientController::class);
+        $detect = new \ReflectionMethod($controller, 'getClientInfo');
+        $cases = [
+            'clash-verge/v2.5.10' => true,
+            'clash-verge/v2.4.2' => false,
+            'FlClash/v0.8.92 clash-verge Platform/windows' => true,
+            'FlClash/v0.8.88 clash-verge Platform/android' => false,
+            'ClashMetaForAndroid/2.11.28.Meta' => true,
+            'ClashMetaForAndroid/2.11.16.Meta' => false,
+            'mihomo.party/v2.0.4 (clash.meta)' => true,
+            'mihomo.party/v1.8.7 (clash.meta)' => false,
+            'clash.meta/v1.19.33' => true,
+            'clash.meta/v1.19.13' => false,
+            'ClashMeta/1.19.27; mihomo/1.19.27' => true,
+            'NekoBox/Android/1.4.2 (Prefer ClashMeta Format)' => false,
+            'Karing/1.2.23.2606 platform/android;mihomo/1.19.28;ClashMeta;clash-verge;NekoBox/Android/1.4.1 (Prefer ClashMeta Format);HiddifyNext;v2ray;FLClash' => false,
+            'HiddifyNext/4.0.0 (ios) like ClashMeta v2ray sing-box' => false,
+            'Shadowrocket/3191' => true,
+            'Stash/3.6.1' => true,
+            'v2rayN/7.15.0' => true,
+        ];
+        foreach ($cases as $ua => $expected) {
+            $request = \Illuminate\Http\Request::create('/', 'GET', [], [], [], ['HTTP_USER_AGENT' => $ua]);
+            $info = $detect->invoke($controller, $request);
+            $class = app('protocols.manager')->matchProtocolClassName($info['flag']) ?? General::class;
+            $names = $this->names($class, $info['name'] ?? null, $info['version'] ?? null, $info['flag']);
+            $this->assertSame($expected, in_array('enc', $names, true), $ua . ' → ' . class_basename($class));
+        }
     }
 
     public function test_stash_encrypted_node_keeps_flow(): void
@@ -99,37 +180,5 @@ class VlessEncryptionClientFilterTest extends TestCase
 
         $this->assertSame('xtls-rprx-vision', $node['flow'] ?? null);
         $this->assertSame('mlkem768x25519plus.native.0rtt.pub', $node['encryption']);
-    }
-
-    public function test_unsupported_or_old_clients_drop_only_encrypted_node(): void
-    {
-        $cases = [
-            [SingBox::class, 'sing-box', '1.14.2'],
-            [SingBox::class, 'hiddify', '5.5.5'],
-            [ClashMeta::class, 'nekobox', '1.4.2'],
-            [ClashMeta::class, 'flclash', '0.8.88'],
-            [ClashMeta::class, 'flclash', '0.8.72'],
-            [ClashMeta::class, 'flclash', null],
-            [ClashMeta::class, 'mihomo', '1.19.13'],
-            [ClashMeta::class, 'mihomo', null],
-            [ClashMeta::class, 'verge', '2.4.2'],
-            [General::class, null, null],
-            [General::class, 'sagernet', '0.8'],
-            [Shadowrocket::class, 'shadowrocket', '2592'],
-            [Shadowrocket::class, 'shadowrocket', '3190'],
-            [Shadowrocket::class, 'shadowrocket', null],
-            [Stash::class, 'stash', '3.0'],
-            [Stash::class, 'stash', '3.6.0'],
-            [Stash::class, 'stash', null],
-            [Loon::class, 'loon', '900'],
-            [QuantumultX::class, 'quantumult%20x', '1.5'],
-        ];
-        foreach ($cases as [$class, $client, $version]) {
-            $names = $this->names($class, $client, $version);
-            $label = $class . ' ' . $client . '/' . $version;
-            $this->assertNotContains('enc', $names, $label);
-            $this->assertContains('plain', $names, $label);
-            $this->assertContains('none', $names, $label);
-        }
     }
 }

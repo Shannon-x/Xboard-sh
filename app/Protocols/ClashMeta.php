@@ -17,17 +17,32 @@ class ClashMeta extends AbstractProtocol
     const DEFAULT_TEMPLATE_FILE = 'resources/rules/default.clash.yaml';
 
     /**
-     * VLESS Encryption：mihomo v1.19.14 起是和 Xray 一致的正式格式（v1.19.13 是早期格式）。
-     * Clash Verge Rev 从 v2.4.3 起内置 mihomo v1.19.15。
-     * FlClash 从 v0.8.89 起内置的内核（chen08209/Clash.Meta 的 FlClash 分支）已包含 mihomo v1.19.14，
-     * v0.8.88 还是 v1.19.13。UA 形如 FlClash/v0.8.92 clash-verge Platform/windows，按 App 版本判断。
-     * ClashMetaForAndroid 的对应关系还没核实，NekoBox 不支持，先不下发。
+     * VLESS Encryption：mihomo v1.19.14 起是和 Xray 一致的正式格式。v1.19.13 是早期格式，
+     * 解析失败会让整份配置报错，所以内核正好是 1.19.13 的版本一定要拦；更早的内核不认识 encryption，
+     * 只会把节点当普通 VLESS（连不上），不影响其它节点。
+     *
+     * 黑名单（UA 里能读到版本的按版本拦，读不到版本的照发）：
+     *   mihomo / meta（UA 是内核版本，如 clash.meta/v1.19.33）  < 1.19.14
+     *   Clash Verge Rev（clash-verge/v2.5.10）                  < 2.4.3，2.4.3 起内置 mihomo 1.19.15
+     *   FlClash（FlClash/v0.8.92 clash-verge Platform/…）       < 0.8.89，v0.8.88 内核是 1.19.13，
+     *       v0.8.89 起含 1.19.14（chen08209/Clash.Meta FlClash 分支，transport/vless 与 1.19.14 相同）
+     *   ClashMetaForAndroid（ClashMetaForAndroid/2.11.28.Meta）  < 2.11.17，v2.11.16 的内核还是早期格式，
+     *       v2.11.17 起与 1.19.14 相同（MetaCubeX/ClashMetaForAndroid 的 core 子模块）
+     *   Mihomo Party（mihomo.party/v2.0.4）                      < 1.8.8，构建时打包当时最新的 mihomo，
+     *       v1.8.7（2025-09-10）早于 1.19.14（2025-09-24）
+     *   NekoBox、Karing                                          全部不发（sing-box 系内核，未核实）
      */
-    protected $vlessEncryptionClients = [
-        'meta' => '1.19.14',
+    protected $vlessEncryptionFormat = true;
+
+    protected $vlessEncryptionBlockedClients = [
         'mihomo' => '1.19.14',
+        'meta' => '1.19.14',
         'verge' => '2.4.3',
         'flclash' => '0.8.89',
+        'clashmetaforandroid' => '2.11.17',
+        'mihomo-party' => '1.8.8',
+        'nekobox' => null,
+        'karing' => null,
     ];
     public $allowedProtocols = [
         Server::TYPE_SHADOWSOCKS,

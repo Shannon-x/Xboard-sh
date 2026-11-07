@@ -122,7 +122,7 @@ return [
         'discount' => 'Discount',
         'surplus' => 'Previous plan credit',
         'handling' => 'Processing fee',
-        'channel_fee' => 'Payment channel fee (:percent%, charged by the channel)',
+        'channel_fee' => 'Payment channel fee (:percent%)',
         'order_amount' => 'Order amount',
         'channel_charged' => 'Total charged by the channel',
         'total' => 'Total',

@@ -123,7 +123,7 @@ return [
         'discount' => '优惠折扣',
         'surplus' => '旧套餐折抵',
         'handling' => '支付手续费',
-        'channel_fee' => '支付通道手续费（:percent%，通道收取）',
+        'channel_fee' => '支付通道手续费（:percent%）',
         'order_amount' => '订单金额',
         'channel_charged' => '通道实际扣款',
         'total' => '合计',

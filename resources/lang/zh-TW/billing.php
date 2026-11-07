@@ -122,7 +122,7 @@ return [
         'discount' => '優惠折扣',
         'surplus' => '舊方案折抵',
         'handling' => '支付手續費',
-        'channel_fee' => '支付通道手續費（:percent%，通道收取）',
+        'channel_fee' => '支付通道手續費（:percent%）',
         'order_amount' => '訂單金額',
         'channel_charged' => '通道實際扣款',
         'total' => '合計',

@@ -28,6 +28,7 @@ use App\Http\Controllers\V2\Admin\CommissionPeriodController;
 use App\Http\Controllers\V2\Admin\WithdrawController;
 use App\Http\Controllers\V2\Admin\BillingController;
 use App\Http\Controllers\V2\Admin\MailController;
+use App\Http\Controllers\V2\Admin\McpController;
 use Illuminate\Contracts\Routing\Registrar;
 
 class AdminRoute
@@ -167,6 +168,16 @@ class AdminRoute
                 // 访问会抛 BadMethodCallException → 500 + 栈泄露。直接删掉死路由。
                 // admin 端修改邀请人的能力已经合并进 /user/update（接收 invite_user_email 字段）。
                 $router->post('/destroy', [UserController::class, 'destroy']);
+            });
+
+            // Mcp：客户 AI 助手的调用记录、AI 建的单、客户连着的 AI 软件（可替客户断开）
+            $router->group([
+                'prefix' => 'mcp'
+            ], function ($router) {
+                $router->get('/stats', [McpController::class, 'stats']);
+                $router->any('/log/fetch', [McpController::class, 'fetchLog']);
+                $router->any('/connection/fetch', [McpController::class, 'fetchConnections']);
+                $router->post('/connection/revoke', [McpController::class, 'revokeConnection']);
             });
 
             // Stat

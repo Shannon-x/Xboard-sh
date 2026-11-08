@@ -24,4 +24,5 @@ Route::middleware([ApplyRuntimeSettings::class])->group(function () {
     Route::post('/oauth/register', [OAuthController::class, 'register'])->middleware('throttle:mcp-oauth-register');
     Route::get('/oauth/authorize', [OAuthController::class, 'authorize'])->middleware('throttle:mcp-oauth');
     Route::post('/oauth/token', [OAuthController::class, 'token'])->middleware('throttle:mcp-oauth');
+    Route::post('/oauth/revoke', [OAuthController::class, 'revoke'])->middleware('throttle:mcp-oauth');
 });

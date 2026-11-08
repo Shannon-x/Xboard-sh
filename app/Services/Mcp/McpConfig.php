@@ -20,9 +20,9 @@ final class McpConfig
         'mcp_endpoint_url' => '',
         // 允许 AI 替客户操作（总闸）；关掉后 mcp:order 令牌也只剩查询
         'mcp_order_enable' => 1,
-        // 每个令牌每天最多建几单（新购 / 续费 / 换套餐 / 充值合计）
+        // 每个账号每天最多通过 AI 建几单（新购 / 续费 / 换套餐 / 充值合计，账号下所有令牌合计）
         'mcp_daily_order_limit' => 10,
-        // 每个令牌的调用频率
+        // 每个账号的调用频率（账号下所有令牌合计）
         'mcp_rate_per_minute' => 60,
         'mcp_rate_per_day' => 2000,
         // 令牌多少天没用就失效

@@ -57,10 +57,16 @@ class McpTokenService
         return $paid ? null : self::REASON_NOT_PAID;
     }
 
-    /** @return \Illuminate\Support\Collection<int, PersonalAccessToken> */
+    /**
+     * 还有效的 AI 助手令牌。闲置过期的不算：它们已经不能用了，不该占「最多几枚」的名额，也不再列给客户
+     * （库里的过期令牌由每天的 sanctum:prune-expired 清掉）。
+     * @return \Illuminate\Support\Collection<int, PersonalAccessToken>
+     */
     public function tokens(User $user)
     {
-        return $user->tokens()->where('name', 'like', self::NAME_PREFIX . '%')->orderByDesc('id')->get()
+        return $user->tokens()->where('name', 'like', self::NAME_PREFIX . '%')
+            ->where(fn ($q) => $q->whereNull('expires_at')->orWhere('expires_at', '>', now()))
+            ->orderByDesc('id')->get()
             ->filter(fn (PersonalAccessToken $t) => AuthService::isMcpToken($t))
             ->values();
     }

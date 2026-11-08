@@ -69,6 +69,10 @@ class Kernel extends ConsoleKernel
         $schedule->command('ticket:clean-attachments')->dailyAt('3:20')->onOneServer()->withoutOverlapping(120);
         // 收据 / 账单归档：收据 PDF 过保留期只删文件（可重建），已结清 / 失效的旧账单连记录删，防止归档无限膨胀
         $schedule->command('billing:prune-documents')->dailyAt('3:40')->onOneServer()->withoutOverlapping(120);
+        // 闲置过期的登录 / AI 助手令牌：过期一天后从库里删掉（Sanctum 本来就不认，留着只会越积越多）
+        $schedule->command('sanctum:prune-expired', ['--hours' => 24])->dailyAt('3:50')->onOneServer()->withoutOverlapping(60);
+        // 客户 AI 助手：调用记录过保留期、长期没用过的 AI 软件登记、令牌已删的授权
+        $schedule->command('mcp:prune')->dailyAt('3:55')->onOneServer()->withoutOverlapping(60);
         // 周期返佣资格巡检：有效付费被邀请人低于门槛的取消资格（发佣 / 打开邀请页时也会当场检查）
         $schedule->command('commission:period-sweep')->dailyAt('4:10')->onOneServer()->withoutOverlapping(60);
         // Redis TTL expiration does not execute PHP, so reconcile the DB display snapshot.

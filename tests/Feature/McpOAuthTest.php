@@ -178,6 +178,7 @@ class McpOAuthTest extends TestCase
         $this->assertTrue($meta['client_id_metadata_document_supported']);
         $this->assertTrue($meta['authorization_response_iss_parameter_supported']);
         $this->assertContains('none', $meta['token_endpoint_auth_methods_supported']);
+        $this->assertSame(self::ISSUER . '/oauth/revoke', $meta['revocation_endpoint']);
 
         // 没带令牌连 /mcp：401 里指明去哪儿授权，ChatGPT / Claude 据此弹出授权
         $this->postJson('/mcp', ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list'])->assertStatus(401)
@@ -452,6 +453,86 @@ class McpOAuthTest extends TestCase
         $this->assertNull($fetcher->fetch('https://localhost/client.json', 'localhost'));
         $this->assertNull($fetcher->fetch('https://127.0.0.1/client.json', '127.0.0.1'));
         $this->assertNull($fetcher->fetch('https://10.0.0.8/client.json', '10.0.0.8'));
+    }
+
+    public function test_ai_app_can_revoke_its_connection(): void
+    {
+        $this->enable();
+        $user = $this->user();
+        $connected = $this->connect($user);
+        $clientId = $connected['client']['client_id'];
+        $access = $connected['tokens']['access_token'];
+
+        // 别的软件拿这枚令牌来吊销：照规范回 200，但什么都不动
+        $other = $this->registerClient();
+        $this->revoke(['token' => $access, 'client_id' => $other['client_id']])->assertOk();
+        $this->assertContains('get_account_overview', $this->toolNames($access));
+
+        // 不认识的令牌也回 200；缺 token 参数是 invalid_request
+        $this->revoke(['token' => Str::random(40), 'client_id' => $clientId])->assertOk();
+        $this->revoke(['client_id' => $clientId])->assertStatus(400)->assertJsonPath('error', 'invalid_request');
+
+        // 本软件拿 access token 吊销：令牌和授权一起没了，refresh token 也换不到新的
+        $this->revoke(['token' => $access, 'token_type_hint' => 'access_token', 'client_id' => $clientId])->assertOk();
+        $this->rpc($access, 'tools/list')->assertStatus(401);
+        $this->assertSame(0, McpOauthGrant::count());
+        $this->exchange(['grant_type' => 'refresh_token', 'refresh_token' => $connected['tokens']['refresh_token'], 'client_id' => $clientId])
+            ->assertStatus(400)->assertJsonPath('error', 'invalid_grant');
+
+        // 拿 refresh token 吊销同样有效
+        $again = $this->connect($user);
+        $this->revoke(['token' => $again['tokens']['refresh_token'], 'client_id' => $again['client']['client_id']])->assertOk();
+        $this->rpc($again['tokens']['access_token'], 'tools/list')->assertStatus(401);
+        $this->assertSame(0, McpTokenService::make()->tokens($user)->count());
+    }
+
+    public function test_a_reused_old_refresh_token_removes_the_connection(): void
+    {
+        $this->enable();
+        $user = $this->user();
+        $connected = $this->connect($user);
+        $clientId = $connected['client']['client_id'];
+        $old = $connected['tokens']['refresh_token'];
+        $fresh = $this->exchange(['grant_type' => 'refresh_token', 'refresh_token' => $old, 'client_id' => $clientId])->assertOk()->json();
+
+        // 刚换过就拿旧的重试：只拒绝，新令牌照常能用
+        $this->exchange(['grant_type' => 'refresh_token', 'refresh_token' => $old, 'client_id' => $clientId])
+            ->assertStatus(400)->assertJsonPath('error', 'invalid_grant');
+        $this->assertContains('get_account_overview', $this->toolNames($fresh['access_token']));
+
+        // 过了重试宽限期还拿旧的来换：当作外泄，整份授权作废，要回 AI 里重新连接
+        McpOauthGrant::query()->update(['refreshed_at' => time() - 600]);
+        $this->exchange(['grant_type' => 'refresh_token', 'refresh_token' => $old, 'client_id' => $clientId])
+            ->assertStatus(400)->assertJsonPath('error', 'invalid_grant');
+        $this->assertSame(0, McpOauthGrant::count());
+        $this->rpc($fresh['access_token'], 'tools/list')->assertStatus(401);
+        $this->exchange(['grant_type' => 'refresh_token', 'refresh_token' => $fresh['refresh_token'], 'client_id' => $clientId])
+            ->assertStatus(400)->assertJsonPath('error', 'invalid_grant');
+    }
+
+    public function test_prune_keeps_live_connections_and_drops_dead_ones(): void
+    {
+        $this->enable();
+        $user = $this->user();
+        $live = $this->connect($user);
+        $dead = $this->connect($this->user());
+        $unused = $this->registerClient();
+
+        // 一份授权的令牌没了；一个登记很久没人用、也没有授权
+        PersonalAccessToken::whereKey(McpOauthGrant::where('client_id', $dead['client']['client_id'])->value('token_id'))->delete();
+        McpOauthClient::query()->update(['updated_at' => time() - 200 * 86400]);
+
+        $this->artisan('mcp:prune')->assertSuccessful();
+        $this->assertSame(1, McpOauthGrant::count());
+        $this->assertNotNull(McpOauthClient::where('client_id', $live['client']['client_id'])->first(), '有授权挂着的登记不删');
+        $this->assertNull(McpOauthClient::where('client_id', $unused['client_id'])->first());
+        $this->assertContains('get_account_overview', $this->toolNames($live['tokens']['access_token']));
+    }
+
+    private function revoke(array $params)
+    {
+        $this->app['auth']->forgetGuards();
+        return $this->withHeaders(['Authorization' => ''])->post('/oauth/revoke', $params, ['Accept' => 'application/json']);
     }
 
     public function test_refresh_is_refused_after_the_idle_window(): void

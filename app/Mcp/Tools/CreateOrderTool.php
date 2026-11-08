@@ -52,10 +52,14 @@ class CreateOrderTool extends McpTool
 
     protected function run(Request $request, User $user): Response|ResponseFactory
     {
-        $user = User::findOrFail($user->id);
+        return self::oneOrderAtATime((int) $user->id, fn () => $this->place($request, User::findOrFail($user->id)));
+    }
+
+    private function place(Request $request, User $user): Response|ResponseFactory
+    {
         $limit = McpConfig::fromSettings()->dailyOrderLimit;
-        if ($this->token && McpAudit::ordersToday((int) $this->token->id) >= $limit) {
-            throw new ApiException("这个令牌今天已经建了 {$limit} 单，达到上限。请明天再试，或到面板下单。");
+        if (McpAudit::ordersToday((int) $user->id) >= $limit) {
+            throw new ApiException("你的账号今天已经通过 AI 助手建了 {$limit} 单，达到上限。请明天再试，或到面板下单。");
         }
 
         $pending = Order::where('user_id', $user->id)->whereIn('status', [Order::STATUS_PENDING, Order::STATUS_PROCESSING])->orderByDesc('id')->first();

@@ -8,6 +8,7 @@ use App\Services\AuthService;
 use App\Services\Mcp\McpAudit;
 use App\Services\Mcp\McpConfig;
 use App\Services\Mcp\McpTokenService;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Validation\ValidationException;
@@ -95,6 +96,27 @@ abstract class McpTool extends Tool
             throw new ApiException($message);
         }
         RateLimiter::hit($key, $decaySeconds);
+    }
+
+    /**
+     * 建单类工具的串行锁：同一账号同一时间只处理一次建单。「先数今天建了几单 / 有没有待付单、再建单」
+     * 不加锁的话，AI 并发发几次调用能一起通过检查，多建出几单。拿不到锁就请 AI 稍后再试。
+     *
+     * @template T
+     * @param callable(): T $callback
+     * @return T
+     */
+    protected static function oneOrderAtATime(int $userId, callable $callback): mixed
+    {
+        $lock = Cache::lock("mcp:order-lock:user:{$userId}", 30);
+        if (!$lock->get()) {
+            throw new ApiException('上一笔下单还在处理中，请稍等几秒再试。');
+        }
+        try {
+            return $callback();
+        } finally {
+            $lock->release();
+        }
     }
 
     /** 改动类工具的二次确认：没带 confirm=true 时只说明后果，不动账户 */

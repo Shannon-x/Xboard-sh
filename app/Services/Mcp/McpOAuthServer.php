@@ -6,6 +6,7 @@ use App\Exceptions\ApiException;
 use App\Models\McpCallLog;
 use App\Models\McpOauthGrant;
 use App\Models\User;
+use App\Services\AuthService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -31,6 +32,11 @@ class McpOAuthServer
     private const CODE_TTL = 300;
     /** 告诉 AI 软件的令牌有效期：到期它会用 refresh token 换新；令牌本身照旧按「多少天没用就失效」滑动 */
     private const ACCESS_TTL = 7 * 86400;
+    /**
+     * 换掉的旧 refresh token 在这么多秒内又来换：多半是 AI 软件没收到上一次的响应在重试，只拒绝不处理。
+     * 超过这个时间还拿旧的来换，当作 refresh token 外泄，整份授权连同令牌一起作废（OAuth 2.1 §4.3.1）。
+     */
+    private const REFRESH_REUSE_GRACE = 60;
 
     public function __construct(
         private readonly McpConfig $config,
@@ -87,6 +93,8 @@ class McpOAuthServer
             'grant_types_supported' => ['authorization_code', 'refresh_token'],
             'code_challenge_methods_supported' => ['S256'],
             'token_endpoint_auth_methods_supported' => McpOAuthClients::AUTH_METHODS,
+            'revocation_endpoint' => $issuer . '/oauth/revoke',
+            'revocation_endpoint_auth_methods_supported' => McpOAuthClients::AUTH_METHODS,
             'client_id_metadata_document_supported' => true,
             'authorization_response_iss_parameter_supported' => true,
         ];
@@ -250,13 +258,15 @@ class McpOAuthServer
             if ($this->tokens->isFull($user, $old->first()?->token_id)) {
                 throw new McpOAuthError('invalid_grant', 'Too many AI assistant connections; remove one on the website first.');
             }
+            $issued = $this->tokens->issue($user, McpOAuthClients::displayName($data['app']), (bool) $data['can_order']);
             foreach ($old as $grant) {
                 if ($grant->token_id) {
+                    // 当天的调用记录跟到新令牌上（与 refresh 一样），面板上「最后一次 IP」不因为重新连接而清空
+                    McpCallLog::where('token_id', $grant->token_id)->where('created_at', '>=', time() - 86400)->update(['token_id' => $issued['id']]);
                     PersonalAccessToken::whereKey($grant->token_id)->delete();
                 }
                 $grant->delete();
             }
-            $issued = $this->tokens->issue($user, McpOAuthClients::displayName($data['app']), (bool) $data['can_order']);
             $refresh = Str::random(64);
             McpOauthGrant::create([
                 'user_id' => $user->id,
@@ -275,6 +285,9 @@ class McpOAuthServer
     {
         $refresh = (string) ($input['refresh_token'] ?? '');
         $grant = $refresh === '' ? null : McpOauthGrant::where('refresh_hash', hash('sha256', $refresh))->first();
+        if (!$grant && $refresh !== '') {
+            $this->rejectReusedRefreshToken($client, $refresh);
+        }
         if (!$grant || !hash_equals($grant->client_key, self::clientKey($client->clientId))) {
             throw new McpOAuthError('invalid_grant', 'The refresh token is invalid or was revoked.');
         }
@@ -295,7 +308,12 @@ class McpOAuthServer
         return DB::transaction(function () use ($grant, $refresh, $next, $old, $user, $canOrder) {
             // 先抢占旧 refresh token：同一个 refresh token 并发换新，只有一个成功
             $taken = McpOauthGrant::whereKey($grant->id)->where('refresh_hash', hash('sha256', $refresh))
-                ->update(['refresh_hash' => hash('sha256', $next), 'updated_at' => time()]);
+                ->update([
+                    'refresh_hash' => hash('sha256', $next),
+                    'prev_refresh_hash' => hash('sha256', $refresh),
+                    'refreshed_at' => time(),
+                    'updated_at' => time(),
+                ]);
             if ($taken !== 1) {
                 throw new McpOAuthError('invalid_grant', 'The refresh token was already used.');
             }
@@ -306,6 +324,70 @@ class McpOAuthServer
             $old->delete();
             McpOauthGrant::whereKey($grant->id)->update(['token_id' => $issued['id']]);
             return $this->tokenResponse($issued['token'], $next, $canOrder);
+        });
+    }
+
+    /**
+     * 拿已经换掉的上一枚 refresh token 来换：宽限期内（AI 软件重试）只拒绝；过了宽限期当作外泄，
+     * 整份授权连同当前令牌一起作废，客户要回 AI 里重新连接。总是抛 invalid_grant。
+     * @throws McpOAuthError
+     */
+    private function rejectReusedRefreshToken(McpOAuthClientInfo $client, string $refresh): void
+    {
+        $grant = McpOauthGrant::where('prev_refresh_hash', hash('sha256', $refresh))->first();
+        if (!$grant || !hash_equals($grant->client_key, self::clientKey($client->clientId))) {
+            return;
+        }
+        if ((int) $grant->refreshed_at >= time() - self::REFRESH_REUSE_GRACE) {
+            throw new McpOAuthError('invalid_grant', 'The refresh token was already used.');
+        }
+        DB::transaction(function () use ($grant) {
+            if ($grant->token_id) {
+                PersonalAccessToken::whereKey($grant->token_id)->delete();
+            }
+            McpOauthGrant::whereKey($grant->id)->delete();
+        });
+        throw new McpOAuthError('invalid_grant', 'This refresh token was already used; the connection was removed for safety. Connect again.');
+    }
+
+    /**
+     * /oauth/revoke（RFC 7009）：AI 软件里「断开连接」时调用，传 access token 或 refresh token 都行，
+     * 作废的是这份授权和它的令牌（与客户在网站上断开一样）。不认识的令牌、别的软件的令牌照规范一律当成功，
+     * 不告诉调用方令牌存不存在。
+     * @param array{0: string|null, 1: string|null} $basic
+     * @throws McpOAuthError
+     */
+    public function revoke(array $input, array $basic): void
+    {
+        $client = $this->authenticateClient($input, $basic);
+        $value = $input['token'] ?? null;
+        if (!is_string($value) || $value === '' || strlen($value) > 512) {
+            throw new McpOAuthError('invalid_request', 'The token parameter is required.');
+        }
+        $clientKey = self::clientKey($client->clientId);
+        $hint = (string) ($input['token_type_hint'] ?? '');
+
+        $grant = null;
+        if ($hint !== 'access_token') {
+            $grant = McpOauthGrant::where('refresh_hash', hash('sha256', $value))->first();
+        }
+        if (!$grant) {
+            $token = PersonalAccessToken::findToken($value);
+            if (AuthService::isMcpToken($token)) {
+                $grant = McpOauthGrant::where('token_id', $token->id)->first();
+            }
+        }
+        if (!$grant && $hint === 'access_token') {
+            $grant = McpOauthGrant::where('refresh_hash', hash('sha256', $value))->first();
+        }
+        if (!$grant || !hash_equals($grant->client_key, $clientKey)) {
+            return;
+        }
+        DB::transaction(function () use ($grant) {
+            if ($grant->token_id) {
+                PersonalAccessToken::whereKey($grant->token_id)->delete();
+            }
+            McpOauthGrant::whereKey($grant->id)->delete();
         });
     }
 

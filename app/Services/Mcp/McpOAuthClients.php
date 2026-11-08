@@ -105,6 +105,11 @@ class McpOAuthClients
         if (!$row) {
             return null;
         }
+        // 记一下「最近还在用」（一天最多写一次库）：mcp:prune 只删长期没人用的登记
+        $touched = (int) $row->getRawOriginal('updated_at');
+        if ($touched < time() - 86400) {
+            McpOauthClient::whereKey($row->id)->update(['updated_at' => time()]);
+        }
         return new McpOAuthClientInfo(
             clientId: $row->client_id,
             name: $row->name,

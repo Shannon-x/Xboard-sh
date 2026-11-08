@@ -13,7 +13,7 @@ use Laravel\Sanctum\PersonalAccessToken;
 
 /**
  * /mcp 的门：只认客户 AI 助手令牌（mcp:read），面板会话令牌、后台令牌都不放行。
- * 依次检查：功能开关 → 令牌 → 账号（封禁 / 白名单 / 付过款）→ 频率。
+ * 依次检查：功能开关 → 令牌 → 账号（封禁 / 白名单 / 付过款）→ 频率（按账号）。
  * 失败一律回 JSON（AI 客户端会把 message 原样给客户看），不回面板那套 403 跳登录。
  */
 class McpAuth
@@ -36,8 +36,9 @@ class McpAuth
             return self::deny(403, '这个账号暂时不能使用 AI 助手。');
         }
 
+        // 频率按账号算：一个账号可以有好几枚令牌，重新一键授权也会换新令牌，按令牌算的话换一枚额度就满了
         foreach ([['m', 60, $config->ratePerMinute], ['d', 86400, $config->ratePerDay]] as [$suffix, $decay, $limit]) {
-            $key = "mcp:{$suffix}:{$token->id}";
+            $key = "mcp:{$suffix}:user:{$user->id}";
             if (RateLimiter::tooManyAttempts($key, $limit)) {
                 return self::deny(429, '调用太频繁，请稍后再试。')
                     ->header('Retry-After', (string) RateLimiter::availableIn($key));

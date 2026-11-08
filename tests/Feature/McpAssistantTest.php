@@ -20,6 +20,7 @@ use App\Models\UserNotificationPref;
 use App\Models\UserPayoutProfile;
 use App\Services\AuthService;
 use App\Services\CheckoutService;
+use App\Services\Mcp\McpConfig;
 use App\Services\Mcp\McpTicketRef;
 use App\Services\Mcp\McpTokenService;
 use App\Services\Mcp\OrderPayService;
@@ -32,6 +33,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Laravel\Sanctum\PersonalAccessToken;
 use Tests\TestCase;
 
 /**
@@ -371,12 +373,59 @@ class McpAssistantTest extends TestCase
         $this->assertTrue($second['error']);
         $this->assertStringContainsString('上限', $second['text']);
 
+        // 上限按账号算：同一个账号再开一枚令牌也不能多建
+        $another = $this->mcpToken($user, true);
+        $third = $this->tool($another, 'create_order', ['mode' => 'renew']);
+        $this->assertTrue($third['error']);
+        $this->assertStringContainsString('上限', $third['text']);
+        // 别的账号不受影响
+        $other = $this->tool($this->mcpToken($this->user(), true), 'create_order', ['mode' => 'renew']);
+        $this->assertFalse($other['error'], $other['text']);
+
         // 后台关掉「允许 AI 替客户操作」：下单类工具整个消失，查询照常
         admin_setting(['mcp_order_enable' => 0, 'mcp_daily_order_limit' => 10]);
         $names = $this->toolNames($token);
         $this->assertNotContains('create_order', $names);
         $this->assertContains('get_account_overview', $names);
         $this->assertTrue($this->tool($token, 'create_order', ['mode' => 'renew'])['error']);
+    }
+
+    public function test_call_rate_is_shared_by_all_tokens_of_an_account(): void
+    {
+        $this->enable(['mcp_rate_per_minute' => 2]);
+        $user = $this->user();
+        $first = $this->mcpToken($user);
+        $second = $this->mcpToken($user);
+        $this->rpc($first, 'tools/list')->assertOk();
+        $this->rpc($second, 'tools/list')->assertOk();
+        $this->rpc($second, 'tools/list')->assertStatus(429);
+        $this->rpc($this->mcpToken($this->user()), 'tools/list')->assertOk();
+    }
+
+    public function test_expired_tokens_free_their_slot_and_old_records_are_pruned(): void
+    {
+        $this->enable();
+        $user = $this->user();
+        $service = McpTokenService::make();
+        for ($i = 0; $i < McpConfig::MAX_TOKENS_PER_USER; $i++) {
+            $this->mcpToken($user);
+        }
+        $this->assertTrue($service->isFull($user));
+
+        // 闲置过期的令牌不占名额、不再列出，客户不用先手动删
+        PersonalAccessToken::where('tokenable_id', $user->id)->update(['expires_at' => now()->subDays(2)]);
+        $this->assertFalse($service->isFull($user));
+        $this->assertSame([], $service->list($user));
+        $this->mcpToken($user);
+
+        // 清理：过保留期的调用记录删掉，近期的留着
+        McpCallLog::create(['user_id' => $user->id, 'token_id' => 1, 'tool' => 'list_plans', 'ok' => 1, 'created_at' => time() - 200 * 86400]);
+        McpCallLog::create(['user_id' => $user->id, 'token_id' => 1, 'tool' => 'list_plans', 'ok' => 1, 'created_at' => time() - 3600]);
+        $this->artisan('sanctum:prune-expired', ['--hours' => 24])->assertSuccessful();
+        $this->artisan('mcp:prune')->assertSuccessful();
+        $this->assertSame(1, McpCallLog::count());
+        $this->assertSame(1, $service->tokens($user)->count());
+        $this->assertSame(1, PersonalAccessToken::where('tokenable_id', $user->id)->count());
     }
 
     // ───────────────────────── 只碰令牌主人自己的账户 ─────────────────────────

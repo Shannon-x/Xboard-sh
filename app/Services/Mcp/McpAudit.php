@@ -31,10 +31,13 @@ class McpAudit
         }
     }
 
-    /** 这个令牌今天（站点时区）成功建了几单 */
-    public static function ordersToday(int $tokenId): int
+    /**
+     * 这个账号今天（站点时区）通过 AI 助手成功建了几单。按账号数而不是按令牌：
+     * 一个账号能有好几枚令牌，重新一键授权也会换一枚新的，按令牌数的话多开几枚、重连一次计数就清零了。
+     */
+    public static function ordersToday(int $userId): int
     {
-        return McpCallLog::where('token_id', $tokenId)
+        return McpCallLog::where('user_id', $userId)
             ->whereIn('tool', self::ORDER_TOOLS)
             ->where('ok', 1)
             ->whereNotNull('ref')

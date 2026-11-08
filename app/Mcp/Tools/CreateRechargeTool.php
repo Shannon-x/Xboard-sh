@@ -42,9 +42,14 @@ class CreateRechargeTool extends McpTool
 
     protected function run(Request $request, User $user): Response|ResponseFactory
     {
+        return self::oneOrderAtATime((int) $user->id, fn () => $this->place($request, $user));
+    }
+
+    private function place(Request $request, User $user): Response|ResponseFactory
+    {
         $limit = McpConfig::fromSettings()->dailyOrderLimit;
-        if ($this->token && McpAudit::ordersToday((int) $this->token->id) >= $limit) {
-            throw new ApiException("这个令牌今天已经建了 {$limit} 单，达到上限。请明天再试，或到面板充值。");
+        if (McpAudit::ordersToday((int) $user->id) >= $limit) {
+            throw new ApiException("你的账号今天已经通过 AI 助手建了 {$limit} 单，达到上限。请明天再试，或到面板充值。");
         }
         $amount = $request->get('amount_yuan');
         if (!is_numeric($amount) || (float) $amount <= 0) {

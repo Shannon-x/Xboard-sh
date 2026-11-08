@@ -11,7 +11,7 @@ use Illuminate\Routing\Controller;
 
 /**
  * 一键授权（OAuth）给 AI 软件用的几个公开地址，挂在接入地址同一个域名下（见 routes/ai.php）：
- * 两份 well-known 元数据、动态注册、授权入口（转到网站授权页）、换令牌。
+ * 两份 well-known 元数据、动态注册、授权入口（转到网站授权页）、换令牌、吊销令牌。
  * 客户在授权页点「允许 / 拒绝」走的是面板接口（V1\User\McpAuthorizeController）。
  *
  * 功能没开（mcp_enable、mcp_oauth_enable 任一为 0，或接入地址没填）时一律 404，等于这些地址不存在。
@@ -68,6 +68,23 @@ class OAuthController extends Controller
         $basic = array_map(fn ($v) => $v === null ? null : urldecode($v), $basic);
         try {
             return self::json($server->token($request->all(), $basic));
+        } catch (McpOAuthError $e) {
+            $response = self::json($e->toArray(), $e->status);
+            return $e->status === 401 ? $response->header('WWW-Authenticate', 'Basic realm="mcp"') : $response;
+        }
+    }
+
+    /** RFC 7009：AI 软件里「断开连接」。成功一律 200 空体，不说令牌存不存在 */
+    public function revoke(Request $request): JsonResponse
+    {
+        $server = McpOAuthServer::make();
+        if (!$server->config()->oauthActive()) {
+            return self::notFound();
+        }
+        $basic = array_map(fn ($v) => $v === null ? null : urldecode($v), [$request->getUser(), $request->getPassword()]);
+        try {
+            $server->revoke($request->all(), $basic);
+            return self::json([]);
         } catch (McpOAuthError $e) {
             $response = self::json($e->toArray(), $e->status);
             return $e->status === 401 ? $response->header('WWW-Authenticate', 'Basic realm="mcp"') : $response;

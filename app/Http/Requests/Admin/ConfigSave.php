@@ -35,6 +35,9 @@ class ConfigSave extends FormRequest
         'commission_withdraw_chains.*.fee' => 'nullable|numeric|min:0|max:10000',
         'commission_withdraw_rate_source' => 'nullable|in:auto,manual',
         'commission_withdraw_usdt_rate' => 'nullable|numeric|min:0|max:100000',
+        'commission_withdraw_rate_markup_type' => 'nullable|in:percent,fixed',
+        // 百分比上限 50（见 WithdrawalConfig::MARKUP_PERCENT_MAX）；固定值按站点货币计，同样只做粗挡，细的在归一化里
+        'commission_withdraw_rate_markup' => 'nullable|numeric|min:0|max:100000',
         'commission_withdraw_require_qrcode' => 'boolean',
         'commission_withdraw_thanks' => 'nullable|string|max:1000',
         'commission_withdraw_min_invitees' => 'nullable|integer|min:0|max:100000',
@@ -280,6 +283,7 @@ class ConfigSave extends FormRequest
         $validator->after(function (Validator $validator) {
             $this->validateRecharge($validator);
             $this->validatePayg($validator);
+            $this->validateWithdrawMarkup($validator);
             if (!(int) $this->input('commission_distribution_enable', 0)) {
                 return;
             }
@@ -294,6 +298,19 @@ class ConfigSave extends FormRequest
                 $validator->errors()->add('commission_distribution_l1', '三级分销比例合计不能超过 100%');
             }
         });
+    }
+
+    /** 汇率上浮按百分比时最多 50%：再高多半是把固定值误填成了百分比 */
+    private function validateWithdrawMarkup(Validator $validator): void
+    {
+        // 只改数值、没带方式时按已存的方式判断
+        $type = $this->input('commission_withdraw_rate_markup_type')
+            ?? admin_setting('commission_withdraw_rate_markup_type', 'percent');
+        $value = $this->input('commission_withdraw_rate_markup');
+        if ($type !== 'fixed' && is_numeric($value)
+            && (float) $value > \App\Services\Commission\WithdrawalConfig::MARKUP_PERCENT_MAX) {
+            $validator->errors()->add('commission_withdraw_rate_markup', '汇率上浮按百分比时不能超过 50%');
+        }
     }
 
     /** 余额充值：最高不能低于最低；单档赠送不能超过该档门槛（防止把 100:10 手误成 10:100 白送钱） */
@@ -368,6 +385,8 @@ class ConfigSave extends FormRequest
             'commission_withdraw_chains.*.preset.in' => '地址格式预设只能是 tron / evm / solana / ton / aptos / none',
             'commission_withdraw_chains.*.fee.numeric' => '通道费必须是数字（以 USDT 计）',
             'commission_withdraw_rate_source.in' => '汇率来源只能是 auto（自动获取）或 manual（手动固定）',
+            'commission_withdraw_rate_markup_type.in' => '汇率上浮方式只能是 percent（百分比）或 fixed（固定值）',
+            'commission_withdraw_rate_markup.*' => '汇率上浮必须是不小于 0 的数字',
             'commission_withdraw_chains.max' => '提现链最多配置 20 条',
             'recharge_min_amount.*' => '最低充值金额须为 0.01–1000000 元，最多两位小数',
             'recharge_max_amount.*' => '最高充值金额须为 0.01–1000000 元，最多两位小数',

@@ -37,6 +37,9 @@ class RefreshUsdtRate extends Command
             $snapshot['source_label'],
             $snapshot['is_stale'] ? '，为过期缓存' : ''
         ));
+        if ($config->hasMarkup()) {
+            $this->info(sprintf('上浮 %s 后按 1 USDT = %s %s 折算', $config->markupLabel(), $config->applyMarkup($snapshot)['rate'], $config->currency));
+        }
         return self::SUCCESS;
     }
 }

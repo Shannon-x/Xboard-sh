@@ -11,6 +11,7 @@ use App\Models\InviteCode;
 use App\Models\Order;
 use App\Models\User;
 use App\Services\Commission\CommissionPolicy;
+use App\Services\Commission\EarningsSummary;
 use App\Services\Commission\EmailMask;
 use App\Services\Commission\InviteDiscount;
 use App\Services\Commission\InviteFunnel;
@@ -304,6 +305,8 @@ class InviteController extends Controller
             'funnel' => InviteFunnel::forUser($user),
             // 月度榜单（additive，可开关）：关着时只有 {enable:false}
             'leaderboard' => Leaderboard::forUser($user),
+            // 我的收益（additive）：累计 / 去向（已提现、提现中、转余额、可提现）/ 近 6 个月走势
+            'earnings' => EarningsSummary::forUser($user, (int) $uncheck_commission_balance),
         ];
         return $this->success($data);
     }

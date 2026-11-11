@@ -13,6 +13,12 @@ namespace App\Services\Commission;
  * 地址格式只在服务端校验，正则通过公开配置一并下发给前端做即时提示，单一真源。
  *
  * 汇率不在这里存值：见 UsdtRateService，后台那个数字只是接口全挂时的兜底。
+ *
+ * 汇率上浮：自动行情（人民币取币安 C2C 场外价）是「用户卖 USDT 能换到的价」，站长自己买 USDT
+ * 打款要付更高的价，按场外价折算每笔都要倒贴差价和手续费。后台可以在行情价上加一个上浮：
+ * 按百分比（6.70 × (1 + 3%) = 6.901）或固定值（6.70 + 0.20 = 6.90）。汇率是「1 USDT 折合
+ * 多少人民币」，数字越大，同样的佣金折出的 USDT 越少。上浮只作用于自动行情；手动固定汇率与
+ * 兜底汇率都是站长自己填的数，原样使用。
  */
 final class WithdrawalConfig
 {
@@ -56,6 +62,11 @@ final class WithdrawalConfig
     public const RATE_SOURCE_AUTO = 'auto';
     public const RATE_SOURCE_MANUAL = 'manual';
 
+    public const MARKUP_PERCENT = 'percent';
+    public const MARKUP_FIXED = 'fixed';
+    /** 上浮百分比上限：再高就不是「覆盖差价」而是填错了 */
+    public const MARKUP_PERCENT_MAX = 50.0;
+
     public const DEFAULT_THANKS = '感谢你对我们的支持！佣金已按你提交的地址打款，请注意查收；到账通常需要几分钟到一小时不等。';
 
     public const DEFAULTS = [
@@ -65,6 +76,9 @@ final class WithdrawalConfig
         'commission_withdraw_chains' => null, // null → 用 defaultChains()
         'commission_withdraw_rate_source' => self::RATE_SOURCE_AUTO,
         'commission_withdraw_usdt_rate' => 0,
+        // 自动行情的上浮：percent = 在行情价上加 N%；fixed = 在行情价上加 N（站点货币）。0 = 不上浮
+        'commission_withdraw_rate_markup_type' => self::MARKUP_PERCENT,
+        'commission_withdraw_rate_markup' => 0,
         'commission_withdraw_require_qrcode' => 0,
         'commission_withdraw_thanks' => self::DEFAULT_THANKS,
         // 提现人数门槛：不同付费被邀请人 ≥ N 才能提现（0 = 不限）；以及佣金划转到余额是否同样受限
@@ -91,6 +105,8 @@ final class WithdrawalConfig
         public readonly string $currencySymbol,
         public readonly int $minInvitees = 0,
         public readonly bool $transferRequireInvitees = false,
+        public readonly string $markupType = self::MARKUP_PERCENT,
+        public readonly float $markup = 0.0,
     ) {
     }
 
@@ -102,6 +118,10 @@ final class WithdrawalConfig
         if ($rateSource !== self::RATE_SOURCE_MANUAL) {
             $rateSource = self::RATE_SOURCE_AUTO;
         }
+        [$markupType, $markup] = self::normalizeMarkup(
+            $get('commission_withdraw_rate_markup_type'),
+            $get('commission_withdraw_rate_markup')
+        );
 
         return new self(
             enable: !(bool) $get('withdraw_close_enable'),
@@ -116,7 +136,65 @@ final class WithdrawalConfig
             currencySymbol: (string) admin_setting('currency_symbol', '¥'),
             minInvitees: max(0, (int) $get('commission_withdraw_min_invitees')),
             transferRequireInvitees: (bool) (int) $get('commission_transfer_require_invitees'),
+            markupType: $markupType,
+            markup: $markup,
         );
+    }
+
+    /**
+     * 上浮方式与数值归一：未知方式按百分比；负数、非数字一律当 0；百分比封顶 MARKUP_PERCENT_MAX。
+     *
+     * @return array{0: string, 1: float}
+     */
+    public static function normalizeMarkup(mixed $type, mixed $value): array
+    {
+        $type = strtolower(trim((string) $type)) === self::MARKUP_FIXED ? self::MARKUP_FIXED : self::MARKUP_PERCENT;
+        $value = is_numeric($value) ? (float) $value : 0.0;
+        if (!is_finite($value) || $value < 0) {
+            $value = 0.0;
+        }
+        if ($type === self::MARKUP_PERCENT) {
+            $value = min($value, self::MARKUP_PERCENT_MAX);
+        }
+        return [$type, round($value, 4)];
+    }
+
+    public function hasMarkup(): bool
+    {
+        return $this->rateSource === self::RATE_SOURCE_AUTO && $this->markup > 0;
+    }
+
+    /**
+     * 把一份自动行情快照换算成实际用来折算的汇率，并留下行情原价供后台对照。
+     * 手动 / 兜底汇率不经过这里。
+     *
+     * @param  array{rate: float|null, source: string, source_label: string, fetched_at: int|null, is_live: bool, is_stale: bool} $snapshot
+     * @return array{rate: float|null, source: string, source_label: string, fetched_at: int|null, is_live: bool, is_stale: bool, market_rate: float|null, markup_applied: bool}
+     */
+    public function applyMarkup(array $snapshot): array
+    {
+        $market = $snapshot['rate'];
+        $snapshot['market_rate'] = $market;
+        $snapshot['markup_applied'] = false;
+        if ($market === null || $market <= 0 || !$this->hasMarkup()) {
+            return $snapshot;
+        }
+        $rate = $this->markupType === self::MARKUP_FIXED
+            ? $market + $this->markup
+            : $market * (1 + $this->markup / 100);
+        $snapshot['rate'] = round($rate, 4);
+        $snapshot['markup_applied'] = true;
+        return $snapshot;
+    }
+
+    /** 后台说明用：「+3%」「+0.2」 */
+    public function markupLabel(): string
+    {
+        if ($this->markup <= 0) {
+            return '';
+        }
+        $num = rtrim(rtrim(number_format($this->markup, 4, '.', ''), '0'), '.');
+        return $this->markupType === self::MARKUP_FIXED ? "+{$num}" : "+{$num}%";
     }
 
     /**
@@ -332,7 +410,7 @@ final class WithdrawalConfig
         if ($live['rate'] === null) {
             return $this->rateSnapshot = $this->manualSnapshot();
         }
-        return $this->rateSnapshot = $live;
+        return $this->rateSnapshot = $this->applyMarkup($live);
     }
 
     /**
@@ -347,6 +425,8 @@ final class WithdrawalConfig
             'fetched_at' => null,
             'is_live' => false,
             'is_stale' => false,
+            'market_rate' => null,
+            'markup_applied' => false,
         ];
     }
 
@@ -399,8 +479,9 @@ final class WithdrawalConfig
             'min_amount' => $this->minCents,
             'max_amount' => $this->maxCents,
             'usdt_rate' => $rate['rate'],
-            'usdt_rate_source' => $rate['source'],
-            'usdt_rate_source_label' => $rate['source_label'],
+            // 上浮后的数字已经不是行情原价，不能再标「币安 C2C 场外价」，来源名留空让前端不显示那一行
+            'usdt_rate_source' => !empty($rate['markup_applied']) ? 'site' : $rate['source'],
+            'usdt_rate_source_label' => !empty($rate['markup_applied']) ? '' : $rate['source_label'],
             'usdt_rate_updated_at' => $rate['fetched_at'],
             'usdt_rate_is_live' => $rate['is_live'],
             'require_qrcode' => $this->requireQrcode,
@@ -439,6 +520,8 @@ final class WithdrawalConfig
             ], $this->chains),
             'commission_withdraw_rate_source' => $this->rateSource,
             'commission_withdraw_usdt_rate' => $this->fallbackRate,
+            'commission_withdraw_rate_markup_type' => $this->markupType,
+            'commission_withdraw_rate_markup' => $this->markup,
             'commission_withdraw_require_qrcode' => $this->requireQrcode,
             'commission_withdraw_thanks' => $this->thanks,
             'commission_withdraw_min_invitees' => $this->minInvitees,

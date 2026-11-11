@@ -62,8 +62,9 @@ class WithdrawController extends Controller
         $config = WithdrawalConfig::fromSettings();
         $force = $request->boolean('force');
         $service = new UsdtRateService();
+        // 自动行情要过一遍上浮：设置页显示「行情价 → 折算价」，结算弹窗预填的实付金额也按折算价算
         $snapshot = $config->rateSource === WithdrawalConfig::RATE_SOURCE_AUTO
-            ? $service->snapshot($config->currency, $force)
+            ? $config->applyMarkup($service->snapshot($config->currency, $force))
             : $config->rateSnapshot();
         // 取不到时把原因一并回显：服务器缺 CA 证书 / 出不了网时，只说「取不到」等于没说
         $error = $snapshot['rate'] === null ? $service->lastError() : null;
@@ -81,6 +82,12 @@ class WithdrawController extends Controller
             'currency' => $config->currency,
             'currency_symbol' => $config->currencySymbol,
             'rate_source_mode' => $config->rateSource,
+            // 行情原价与上浮：没上浮时 market_rate 等于 rate
+            'market_rate' => $snapshot['market_rate'] ?? $snapshot['rate'],
+            'markup_applied' => (bool) ($snapshot['markup_applied'] ?? false),
+            'markup_type' => $config->markupType,
+            'markup' => $config->markup,
+            'markup_label' => $config->hasMarkup() ? $config->markupLabel() : '',
             'error' => $error,
         ];
 

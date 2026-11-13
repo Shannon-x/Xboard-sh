@@ -1,0 +1,387 @@
+# Clash Mi 专用精简模板（UA 形如 "ClashMeta/1.19.32; mihomo/1.19.32"）
+#
+# iOS 只给 VPN 扩展约 50MB 内存，完整 clashmeta 模板（29 个分组、10 个自动测速组、21 个规则集、
+# 嗅探、fake-ip-filter 带 geosite:cn）在 mihomo 里要占 110MB 以上，Clash Mi 一连就被系统杀掉。
+# 这份模板保留同名的主要分组和分流去向，去掉规则集、嗅探和不必要的自动测速组：
+#   · 规则全部内联，国内靠 DOMAIN-SUFFIX,cn + GEOIP,CN 直连；
+#   · 自动测速组只留三个且都是 lazy（用到才测）；
+#   · 谷歌走代理、苹果和微软默认直连，和完整模板一致；没有广告拦截，测速地址不会被拦。
+# 分组成员的写法（正则、'/(?!)/' 占位）和完整模板相同，由 ClashMeta::handle() 填节点。
+mixed-port: 7890
+allow-lan: false
+mode: rule
+ipv6: true
+log-level: warning
+external-controller: 127.0.0.1:9090
+unified-delay: true
+tcp-concurrent: true
+find-process-mode: 'off'
+keep-alive-interval: 30
+profile:
+  store-selected: true
+  store-fake-ip: false
+geo-auto-update: false
+geox-url:
+  geoip: https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb
+  geosite: https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat
+  mmdb: https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb
+  asn: https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb
+hosts:
+  dns.alidns.com: [223.5.5.5, 223.6.6.6]
+  doh.pub: [1.12.12.12, 120.53.53.53]
+sniffer:
+  enable: false
+dns:
+  enable: true
+  ipv6: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  use-hosts: true
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver:
+    - https://223.5.5.5/dns-query
+    - https://1.12.12.12/dns-query
+  proxy-server-nameserver:
+    - https://223.5.5.5/dns-query
+    - https://1.12.12.12/dns-query
+  fake-ip-filter:
+    - '*.lan'
+    - '*.local'
+    - '*.localhost'
+    - '*.test'
+    - '+.msftncsi.com'
+    - '+.msftconnecttest.com'
+    - 'localhost.ptlogin2.qq.com'
+    - '+.stun.*.*'
+    - '+.stun.*.*.*'
+    - '+.stun.*.*.*.*'
+    - 'lens.l.google.com'
+    - '*.srv.nintendo.net'
+    - '+.stun.playstation.net'
+    - 'xbox.*.*.microsoft.com'
+    - '*.*.xboxlive.com'
+    - '+.push.apple.com'
+    - '+.cn'
+
+proxies:
+
+proxy-groups:
+  - name: $app_name
+    type: select
+    proxies:
+      - 自动选择
+      - 🇭🇰 香港节点
+      - 🇹🇼 台湾节点
+      - 🇯🇵 日本节点
+      - 🇺🇸 美国节点
+      - 🇸🇬 新加坡节点
+      - 🇰🇷 韩国节点
+      - 🌍 其他地区
+      - DIRECT
+  - name: 自动选择
+    type: url-test
+    lazy: true
+    url: http://www.gstatic.com/generate_204
+    interval: 600
+    timeout: 12000
+    tolerance: 150
+    proxies:
+      - REJECT
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置|过滤掉|5x|6x|7x|10x))(?!^中转[|]尼日利亚家宽🇳🇬$)(?!^美国AT&T家宽无限流量🇺🇸vless$).+/iu'
+  - name: 🇭🇰 香港节点
+    type: select
+    proxies:
+      - 自动选择
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置))(?=.*(香港|HK|🇭🇰)).+/iu'
+  - name: 🇹🇼 台湾节点
+    type: select
+    proxies:
+      - 自动选择
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置))(?=.*(台湾|🇹🇼)).+/iu'
+  - name: 🇯🇵 日本节点
+    type: select
+    proxies:
+      - 自动选择
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置))(?!^【3x】中转[|]日本NTT家宽$)(?!^【3x】中转[|]日本sony家宽$)(?!^【3x】中转[|]日本softbank家宽$)(?!^【6x】透传专线[|]日本NTT家宽$)(?!^【6x】透传专线[|]日本sony家宽$)(?!^【6x】透传专线[|]日本softbank家宽$)(?!^cf加速[|]日本动态家宽🇯🇵$)(?!^cf加速[|]日本KDDI家宽🇯🇵$)(?!^cf加速[|]日本softbank家宽🇯🇵$)(?=.*(日本|🇯🇵)).+/iu'
+  - name: 🇺🇸 美国节点
+    type: select
+    proxies:
+      - 自动选择
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置))(?=.*(美国|🇺🇸|frontier)).+/iu'
+  - name: 🇸🇬 新加坡节点
+    type: select
+    proxies:
+      - 自动选择
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置))(?=.*(新加坡|狮城|🇸🇬)).+/iu'
+  - name: 🇰🇷 韩国节点
+    type: select
+    proxies:
+      - 自动选择
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置))(?=.*(韩国|🇰🇷)).+/iu'
+  - name: 🌍 其他地区
+    type: select
+    proxies:
+      - 自动选择
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置))(?!.*(香港|HK|🇭🇰|台湾|🇹🇼|日本|🇯🇵|美国|🇺🇸|frontier|新加坡|狮城|🇸🇬|韩国|🇰🇷)).+/iu'
+  - name: 🧠 AI自动
+    type: url-test
+    hidden: true
+    lazy: true
+    url: http://www.gstatic.com/generate_204
+    interval: 600
+    timeout: 12000
+    tolerance: 150
+    proxies:
+      - REJECT
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置))(?!.*(香港|🇭🇰))(?!^【3x】中转[|]日本NTT家宽$)(?!^【3x】中转[|]日本sony家宽$)(?!^【3x】中转[|]日本softbank家宽$)(?!^【6x】透传专线[|]日本NTT家宽$)(?!^【6x】透传专线[|]日本sony家宽$)(?!^【6x】透传专线[|]日本softbank家宽$)(?!.*(5x|6x|7x|10x))(?:(?=.*中转)(?=.*(日本|台湾|🇯🇵|🇹🇼))).+/iu'
+  - name: 🤖 AI服务
+    type: select
+    proxies:
+      - 🧠 AI自动
+      - 🇺🇸 美国节点
+      - 🇯🇵 日本节点
+      - $app_name
+      - 自动选择
+      - 🇹🇼 台湾节点
+      - 🇸🇬 新加坡节点
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置))(?!.*(香港|🇭🇰))(?!^【3x】中转[|]日本NTT家宽$)(?!^【3x】中转[|]日本sony家宽$)(?!^【3x】中转[|]日本softbank家宽$)(?!^【6x】透传专线[|]日本NTT家宽$)(?!^【6x】透传专线[|]日本sony家宽$)(?!^【6x】透传专线[|]日本softbank家宽$)(?:(?=.*10x)|(?=.*中转)(?=.*(日本|台湾|🇯🇵|🇹🇼))).+/iu'
+  - name: 📲 电报消息
+    type: select
+    proxies:
+      - '/(?!)/'
+      - $app_name
+      - 自动选择
+      - 🇭🇰 香港节点
+      - 🇹🇼 台湾节点
+      - 🇯🇵 日本节点
+      - 🇺🇸 美国节点
+      - 🇸🇬 新加坡节点
+  - name: 📹 油管视频
+    type: select
+    proxies:
+      - '/(?!)/'
+      - 🇯🇵 日本节点
+      - $app_name
+      - 🇭🇰 香港节点
+      - 自动选择
+      - 🇹🇼 台湾节点
+      - 🇺🇸 美国节点
+      - 🇸🇬 新加坡节点
+  - name: 🎬 解锁节点
+    type: url-test
+    hidden: true
+    lazy: true
+    url: http://www.gstatic.com/generate_204
+    interval: 600
+    timeout: 12000
+    tolerance: 150
+    proxies:
+      - REJECT
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置|过滤掉|5x|6x|7x|10x))(?=.*(新加坡0[12]|日本樱花(?!10gbps)|独享webarena$|[|]台湾(🇹🇼)?$|美国一|美国二|美国洛杉矶|KDDI|biglobe|日本星链)).+/iu'
+  - name: 🎥 流媒体
+    type: select
+    proxies:
+      - '/(?!)/'
+      - 🎬 解锁节点
+      - 🇯🇵 日本节点
+      - $app_name
+      - 自动选择
+      - 🇭🇰 香港节点
+      - 🇹🇼 台湾节点
+      - 🇺🇸 美国节点
+      - 🇸🇬 新加坡节点
+  - name: 📢 谷歌服务
+    type: select
+    proxies:
+      - '/(?!)/'
+      - 🇯🇵 日本节点
+      - $app_name
+      - 自动选择
+      - DIRECT
+      - 🇺🇸 美国节点
+  - name: 🍎 苹果服务
+    type: select
+    proxies:
+      - '/(?!)/'
+      - DIRECT
+      - $app_name
+      - 🇺🇸 美国节点
+  - name: Ⓜ️ 微软服务
+    type: select
+    proxies:
+      - '/(?!)/'
+      - DIRECT
+      - $app_name
+      - 🇺🇸 美国节点
+  - name: 🐟 漏网之鱼
+    type: select
+    proxies:
+      - '/(?!)/'
+      - $app_name
+      - 自动选择
+      - DIRECT
+
+rules:
+  # 本机和局域网
+  - DOMAIN-SUFFIX,local,DIRECT
+  - DOMAIN-SUFFIX,lan,DIRECT
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,100.64.0.0/10,DIRECT,no-resolve
+  - IP-CIDR,169.254.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,224.0.0.0/4,DIRECT,no-resolve
+  - IP-CIDR6,::1/128,DIRECT,no-resolve
+  - IP-CIDR6,fc00::/7,DIRECT,no-resolve
+  - IP-CIDR6,fe80::/10,DIRECT,no-resolve
+  # 自家域名
+  - DOMAIN-SUFFIX,sufe.uk,DIRECT
+  - DOMAIN-SUFFIX,sufe.us,$app_name
+  - DOMAIN-SUFFIX,sufe.pro,$app_name
+  # AI
+  - DOMAIN-SUFFIX,openai.com,🤖 AI服务
+  - DOMAIN-SUFFIX,chatgpt.com,🤖 AI服务
+  - DOMAIN-SUFFIX,oaistatic.com,🤖 AI服务
+  - DOMAIN-SUFFIX,oaiusercontent.com,🤖 AI服务
+  - DOMAIN-SUFFIX,sora.com,🤖 AI服务
+  - DOMAIN-SUFFIX,anthropic.com,🤖 AI服务
+  - DOMAIN-SUFFIX,claude.ai,🤖 AI服务
+  - DOMAIN-SUFFIX,claude.com,🤖 AI服务
+  - DOMAIN-SUFFIX,claudeusercontent.com,🤖 AI服务
+  - DOMAIN-SUFFIX,perplexity.ai,🤖 AI服务
+  - DOMAIN-SUFFIX,grok.com,🤖 AI服务
+  - DOMAIN-SUFFIX,x.ai,🤖 AI服务
+  - DOMAIN-SUFFIX,copilot.microsoft.com,🤖 AI服务
+  - DOMAIN-SUFFIX,stripe.com,$app_name
+  # Telegram
+  - DOMAIN-SUFFIX,telegram.org,📲 电报消息
+  - DOMAIN-SUFFIX,telegram.me,📲 电报消息
+  - DOMAIN-SUFFIX,t.me,📲 电报消息
+  - DOMAIN-SUFFIX,telegra.ph,📲 电报消息
+  - DOMAIN-SUFFIX,telesco.pe,📲 电报消息
+  - DOMAIN-SUFFIX,cdn-telegram.org,📲 电报消息
+  - DOMAIN-SUFFIX,tdesktop.com,📲 电报消息
+  - IP-CIDR,91.105.192.0/23,📲 电报消息,no-resolve
+  - IP-CIDR,91.108.4.0/22,📲 电报消息,no-resolve
+  - IP-CIDR,91.108.8.0/21,📲 电报消息,no-resolve
+  - IP-CIDR,91.108.16.0/21,📲 电报消息,no-resolve
+  - IP-CIDR,91.108.56.0/22,📲 电报消息,no-resolve
+  - IP-CIDR,95.161.64.0/20,📲 电报消息,no-resolve
+  - IP-CIDR,149.154.160.0/20,📲 电报消息,no-resolve
+  - IP-CIDR,185.76.151.0/24,📲 电报消息,no-resolve
+  - IP-CIDR6,2001:67c:4e8::/48,📲 电报消息,no-resolve
+  - IP-CIDR6,2001:b28:f23c::/47,📲 电报消息,no-resolve
+  - IP-CIDR6,2001:b28:f23f::/48,📲 电报消息,no-resolve
+  - IP-CIDR6,2a0a:f280::/32,📲 电报消息,no-resolve
+  # TikTok 默认走日本
+  - DOMAIN-SUFFIX,tiktok.com,🇯🇵 日本节点
+  - DOMAIN-SUFFIX,tiktokv.com,🇯🇵 日本节点
+  - DOMAIN-SUFFIX,tiktokcdn.com,🇯🇵 日本节点
+  - DOMAIN-SUFFIX,tiktokcdn-us.com,🇯🇵 日本节点
+  - DOMAIN-SUFFIX,byteoversea.com,🇯🇵 日本节点
+  - DOMAIN-SUFFIX,ibytedtos.com,🇯🇵 日本节点
+  - DOMAIN-SUFFIX,ttwstatic.com,🇯🇵 日本节点
+  # YouTube
+  - DOMAIN-SUFFIX,youtube.com,📹 油管视频
+  - DOMAIN-SUFFIX,youtu.be,📹 油管视频
+  - DOMAIN-SUFFIX,yt.be,📹 油管视频
+  - DOMAIN-SUFFIX,ytimg.com,📹 油管视频
+  - DOMAIN-SUFFIX,googlevideo.com,📹 油管视频
+  - DOMAIN-SUFFIX,youtube-nocookie.com,📹 油管视频
+  - DOMAIN-SUFFIX,youtubei.googleapis.com,📹 油管视频
+  # 奈飞、迪士尼、HBO
+  - DOMAIN-SUFFIX,netflix.com,🎥 流媒体
+  - DOMAIN-SUFFIX,netflix.net,🎥 流媒体
+  - DOMAIN-SUFFIX,nflxext.com,🎥 流媒体
+  - DOMAIN-SUFFIX,nflximg.com,🎥 流媒体
+  - DOMAIN-SUFFIX,nflximg.net,🎥 流媒体
+  - DOMAIN-SUFFIX,nflxso.net,🎥 流媒体
+  - DOMAIN-SUFFIX,nflxvideo.net,🎥 流媒体
+  - DOMAIN-SUFFIX,fast.com,🎥 流媒体
+  - DOMAIN-SUFFIX,disneyplus.com,🎥 流媒体
+  - DOMAIN-SUFFIX,disney-plus.net,🎥 流媒体
+  - DOMAIN-SUFFIX,dssott.com,🎥 流媒体
+  - DOMAIN-SUFFIX,bamgrid.com,🎥 流媒体
+  - DOMAIN-SUFFIX,hbo.com,🎥 流媒体
+  - DOMAIN-SUFFIX,hbomax.com,🎥 流媒体
+  - DOMAIN-SUFFIX,max.com,🎥 流媒体
+  # GitHub、OneDrive 走代理
+  - DOMAIN-SUFFIX,github.com,$app_name
+  - DOMAIN-SUFFIX,github.io,$app_name
+  - DOMAIN-SUFFIX,githubusercontent.com,$app_name
+  - DOMAIN-SUFFIX,githubassets.com,$app_name
+  - DOMAIN-SUFFIX,onedrive.live.com,$app_name
+  - DOMAIN-SUFFIX,storage.live.com,$app_name
+  - DOMAIN-SUFFIX,1drv.ms,$app_name
+  - DOMAIN-SUFFIX,onedrive.com,$app_name
+  # 微软（默认直连）
+  - DOMAIN-SUFFIX,microsoft.com,Ⓜ️ 微软服务
+  - DOMAIN-SUFFIX,windows.com,Ⓜ️ 微软服务
+  - DOMAIN-SUFFIX,windowsupdate.com,Ⓜ️ 微软服务
+  - DOMAIN-SUFFIX,live.com,Ⓜ️ 微软服务
+  - DOMAIN-SUFFIX,office.com,Ⓜ️ 微软服务
+  - DOMAIN-SUFFIX,office.net,Ⓜ️ 微软服务
+  - DOMAIN-SUFFIX,office365.com,Ⓜ️ 微软服务
+  - DOMAIN-SUFFIX,microsoftonline.com,Ⓜ️ 微软服务
+  - DOMAIN-SUFFIX,sharepoint.com,Ⓜ️ 微软服务
+  - DOMAIN-SUFFIX,bing.com,Ⓜ️ 微软服务
+  - DOMAIN-SUFFIX,xbox.com,Ⓜ️ 微软服务
+  # 苹果（默认直连）
+  - DOMAIN-SUFFIX,apple.com,🍎 苹果服务
+  - DOMAIN-SUFFIX,icloud.com,🍎 苹果服务
+  - DOMAIN-SUFFIX,icloud-content.com,🍎 苹果服务
+  - DOMAIN-SUFFIX,me.com,🍎 苹果服务
+  - DOMAIN-SUFFIX,mzstatic.com,🍎 苹果服务
+  - DOMAIN-SUFFIX,cdn-apple.com,🍎 苹果服务
+  - DOMAIN-SUFFIX,aaplimg.com,🍎 苹果服务
+  - DOMAIN-SUFFIX,apple-cloudkit.com,🍎 苹果服务
+  - DOMAIN-SUFFIX,apple-dns.net,🍎 苹果服务
+  - DOMAIN-SUFFIX,itunes.com,🍎 苹果服务
+  - DOMAIN-SUFFIX,appstore.com,🍎 苹果服务
+  # 谷歌（Gemini 同样走这里）
+  - DOMAIN-SUFFIX,google.com,📢 谷歌服务
+  - DOMAIN-SUFFIX,google.com.hk,📢 谷歌服务
+  - DOMAIN-SUFFIX,googleapis.com,📢 谷歌服务
+  - DOMAIN-SUFFIX,googleusercontent.com,📢 谷歌服务
+  - DOMAIN-SUFFIX,gstatic.com,📢 谷歌服务
+  - DOMAIN-SUFFIX,ggpht.com,📢 谷歌服务
+  - DOMAIN-SUFFIX,googlesource.com,📢 谷歌服务
+  - DOMAIN-SUFFIX,withgoogle.com,📢 谷歌服务
+  - DOMAIN-SUFFIX,gvt1.com,📢 谷歌服务
+  - DOMAIN-SUFFIX,gvt2.com,📢 谷歌服务
+  - DOMAIN-SUFFIX,goo.gl,📢 谷歌服务
+  - DOMAIN-SUFFIX,g.co,📢 谷歌服务
+  - DOMAIN-SUFFIX,google,📢 谷歌服务
+  # 常见境外服务，免得先拿国内 DNS 解析
+  - DOMAIN-SUFFIX,x.com,$app_name
+  - DOMAIN-SUFFIX,twitter.com,$app_name
+  - DOMAIN-SUFFIX,twimg.com,$app_name
+  - DOMAIN-SUFFIX,t.co,$app_name
+  - DOMAIN-SUFFIX,facebook.com,$app_name
+  - DOMAIN-SUFFIX,fbcdn.net,$app_name
+  - DOMAIN-SUFFIX,instagram.com,$app_name
+  - DOMAIN-SUFFIX,cdninstagram.com,$app_name
+  - DOMAIN-SUFFIX,whatsapp.com,$app_name
+  - DOMAIN-SUFFIX,whatsapp.net,$app_name
+  - DOMAIN-SUFFIX,threads.net,$app_name
+  - DOMAIN-SUFFIX,wikipedia.org,$app_name
+  - DOMAIN-SUFFIX,reddit.com,$app_name
+  - DOMAIN-SUFFIX,redd.it,$app_name
+  - DOMAIN-SUFFIX,discord.com,$app_name
+  - DOMAIN-SUFFIX,discord.gg,$app_name
+  - DOMAIN-SUFFIX,discordapp.com,$app_name
+  - DOMAIN-SUFFIX,discordapp.net,$app_name
+  - DOMAIN-SUFFIX,spotify.com,$app_name
+  - DOMAIN-SUFFIX,scdn.co,$app_name
+  - DOMAIN-SUFFIX,medium.com,$app_name
+  - DOMAIN-SUFFIX,pinterest.com,$app_name
+  - DOMAIN-SUFFIX,twitch.tv,$app_name
+  - DOMAIN-SUFFIX,line.me,$app_name
+  - DOMAIN-SUFFIX,cloudflare.com,$app_name
+  # 国内直连
+  - DOMAIN-SUFFIX,cn,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,🐟 漏网之鱼

@@ -206,19 +206,50 @@ class AdvanceCycleService
         return max(0, min($transferEnable, $threshold));
     }
 
-    private function supportsAdvanceCycle(Plan $plan): bool
+    private function resolveResetMethod(?Plan $plan): ?int
     {
+        if (!$plan) {
+            return null;
+        }
+
         $resetMethod = $plan->reset_traffic_method;
 
         if ($resetMethod === Plan::RESET_TRAFFIC_FOLLOW_SYSTEM) {
             $resetMethod = (int) admin_setting('reset_traffic_method', Plan::RESET_TRAFFIC_MONTHLY);
         }
 
-        return $resetMethod === Plan::RESET_TRAFFIC_MONTHLY;
+        return $resetMethod === null ? null : (int) $resetMethod;
+    }
+
+    /**
+     * 支持提前重置的重置方式：
+     *  - 按月重置（按到期日锚定）：提前进入下一周期，下一次重置排在 30 天后；
+     *  - 每月 1 号重置：立即清零，下一次重置仍是原定的下个 1 号，周期不重排。
+     * 两种都扣 30 天有效期，整个订阅期内能拿到的整月配额次数不变。
+     */
+    private function supportsAdvanceCycle(Plan $plan): bool
+    {
+        return in_array($this->resolveResetMethod($plan), [
+            Plan::RESET_TRAFFIC_MONTHLY,
+            Plan::RESET_TRAFFIC_FIRST_DAY_MONTH,
+        ], true);
     }
 
     private function calculateAdvanceNextResetAt(User $user, int $newExpiredAt): ?int
     {
+        if ($this->resolveResetMethod($user->plan) === Plan::RESET_TRAFFIC_FIRST_DAY_MONTH) {
+            // 每月 1 号的套餐：保留原定的下个 1 号，不因提前重置把重置日往后推。
+            $scheduled = $user->next_reset_at;
+            $scheduled = $scheduled instanceof \DateTimeInterface
+                ? $scheduled->getTimestamp()
+                : ($scheduled !== null ? (int) $scheduled : null);
+            if ($scheduled === null || $scheduled <= time()) {
+                $scheduled = now()->startOfMonth()->addMonthNoOverflow()->timestamp;
+            }
+
+            return min($scheduled, $newExpiredAt);
+        }
+
         return min(time() + self::CONSUME_SECONDS, $newExpiredAt);
     }
 

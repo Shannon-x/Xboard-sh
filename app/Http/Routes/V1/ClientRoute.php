@@ -14,7 +14,7 @@ class ClientRoute
             'middleware' => 'client'
         ], function ($router) {
             // Client
-            $router->get('/subscribe', [ClientController::class, 'subscribe'])->name('client.subscribe.legacy');
+            $router->get('/subscribe', [ClientController::class, 'subscribe'])->middleware('throttle:subscribe')->name('client.subscribe.legacy');
             // App
             $router->get('/app/getConfig', [AppController::class, 'getConfig']);
             $router->get('/app/getVersion', [AppController::class, 'getVersion']);

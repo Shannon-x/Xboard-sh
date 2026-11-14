@@ -15,6 +15,13 @@ class ClashMeta extends AbstractProtocol
     const CUSTOM_TEMPLATE_FILE = 'resources/rules/custom.clashmeta.yaml';
     const CUSTOM_CLASH_TEMPLATE_FILE = 'resources/rules/custom.clash.yaml';
     const DEFAULT_TEMPLATE_FILE = 'resources/rules/default.clash.yaml';
+    /**
+     * Clash Mi（KaringX/clashmi）专用精简模板。Clash Mi 的 UA 固定是 "ClashMeta/<内核版本>; mihomo/<内核版本>"，
+     * 看不出系统。iOS 只给 VPN 扩展约 50MB 内存，完整 clashmeta 模板在 mihomo 里要占 110MB 以上，
+     * 一连就被系统杀掉（"VPN session failed because an internal error occurred"、一开就断、开关一直转），
+     * 所以这个 UA 改发精简模板。其它客户端的 UA 都不是这个样子，照旧拿完整模板。
+     */
+    const CLASH_MI_TEMPLATE_FILE = 'resources/rules/clashmi.clashmeta.yaml';
 
     /**
      * VLESS Encryption：mihomo v1.19.14 起是和 Xray 一致的正式格式。v1.19.13 是早期格式，
@@ -193,7 +200,9 @@ class ClashMeta extends AbstractProtocol
         $user = $this->user;
         $appName = admin_setting('app_name', 'XBoard');
 
-        $template = subscribe_template('clashmeta');
+        $template = $this->isClashMi()
+            ? File::get(base_path(self::CLASH_MI_TEMPLATE_FILE))
+            : subscribe_template('clashmeta');
 
         $config = Yaml::parse($template);
         $proxy = [];
@@ -325,6 +334,17 @@ class ClashMeta extends AbstractProtocol
             ->header('subscription-userinfo', "upload={$user['u']}; download={$user['d']}; total={$user['transfer_enable']}; expire={$user['expired_at']}")
             ->header('profile-update-interval', '24')
             ->header('content-disposition', 'attachment;filename*=UTF-8\'\'' . rawurlencode($appName));
+    }
+
+    /**
+     * Clash Mi 的 UA：ClashMeta/1.19.32; mihomo/1.19.32。只认这个完整形状，
+     * Clash Plus（ClashMeta/v1.4.1 Clash Plus/…）、Karing（…;mihomo/1.19.28;clash-verge;…）等都不算。
+     */
+    protected function isClashMi(): bool
+    {
+        $userAgent = trim((string) $this->userAgent);
+
+        return (bool) preg_match('#^clashmeta/v?[0-9][0-9.]*;\s*mihomo/v?[0-9][0-9.]*$#i', $userAgent);
     }
 
     /**

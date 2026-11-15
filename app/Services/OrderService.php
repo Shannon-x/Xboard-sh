@@ -214,6 +214,9 @@ class OrderService
                 $plan->forceFill(array_intersect_key($this->user->plan_options, PlanCustomizationService::LIMITS));
             }
 
+            // 必须在 checkAndReset 之前：到了重置日它会把已用清零，重算出来的剩余价值就虚高了。
+            $this->reconcileSurplusAtOpen($order);
+
             if (
                 !in_array((string) $order->period, [Plan::PERIOD_RESET_TRAFFIC], true)
                 && (int) $order->type !== Order::TYPE_UPGRADE
@@ -483,6 +486,81 @@ class OrderService
         $commissionRate = max(0, min(100, (float) $policy['rate']));
         // total_amount 已经是被折扣/余额抵扣后的最终金额，乘比例可能为 0（合法 → 不发佣金）
         $order->commission_balance = (int) floor(max(0, (int) $order->total_amount) * ($commissionRate / 100));
+    }
+
+    /**
+     * 开通时按此刻的用量把折抵重算一遍，下单后又用掉的那部分不能既折成钱、又已经用掉。
+     *
+     * 折抵在下单时（setOrderType）就算好写进订单，旧套餐却要到开通时才收回：待支付最长 2 小时，
+     * 迟到回调还能在 24 小时内重开。这段时间里旧套餐照常能用——不限时套餐 / 按量钱包的折抵按
+     * 「剩余流量占比」算，下单时还剩 100 GB 折成钱、付款前把这 100 GB 用完，开通时折抵一分不少，
+     * 等于旧流量既折了钱又用掉了；周期套餐也同理，只是还有时间比例兜着。
+     *
+     * 处理（在 open() 事务里、对已锁的用户行、任何收回旧套餐的动作之前）：
+     *   - 重算的值比下单时少，但差额在容差内（几分钟正常使用 / 迟到回调期间时间流逝）：照原单开通；
+     *   - 超出容差：先从本单要退回余额的部分（refund_amount）里扣回差额；
+     *   - 扣完还超出容差：钱已经按原金额付了、新套餐价不能改，只能转人工，事务回滚、什么都不动。
+     *
+     * 容差 = max(surplus_drift_tolerance_min 分, 折抵总额 × surplus_drift_tolerance_ratio)，默认 ¥3 / 10%。
+     * 重算只会往下修正：用户这段时间没用流量、或因计价口径算出来更多时，按下单时的金额，不额外加钱。
+     */
+    private function reconcileSurplusAtOpen(Order $order): void
+    {
+        if ((int) $order->type !== Order::TYPE_UPGRADE) {
+            return;
+        }
+        $surplus = max(0, (int) ($order->surplus_amount ?? 0));
+        $refund = max(0, (int) ($order->refund_amount ?? 0));
+        $credited = $surplus + $refund;
+        if ($credited <= 0) {
+            return;
+        }
+
+        // 新单原价：折抵先于优惠券 / VIP / 余额从原价里扣，所以各段加回来就是原价
+        // （折抵超过原价时 surplus_amount 已被封顶到原价、其余都是 0）。期间兜底计值要用它封顶。
+        $price = $surplus
+            + max(0, (int) round((float) ($order->discount_amount ?? 0)))
+            + max(0, (int) ($order->balance_amount ?? 0))
+            + max(0, (int) $order->total_amount);
+        $probe = new Order([
+            'user_id' => $order->user_id,
+            'plan_id' => $order->plan_id,
+            'period' => $order->period,
+            'total_amount' => $price,
+        ]);
+        $probe->surplus_amount = 0;
+        $this->getSurplusValue($this->user, $probe);
+        $valueNow = max(0, (int) ($probe->surplus_amount ?? 0));
+
+        $drift = $credited - $valueNow;
+        $ratio = admin_setting('surplus_drift_tolerance_ratio', 0.1);
+        $ratio = is_numeric($ratio) ? max(0.0, min(1.0, (float) $ratio)) : 0.1;
+        $floor = admin_setting('surplus_drift_tolerance_min', 300);
+        $floor = is_numeric($floor) ? max(0, (int) $floor) : 300;
+        $tolerance = max($floor, (int) ceil($credited * $ratio));
+        if ($drift <= $tolerance) {
+            return;
+        }
+
+        $context = [
+            'trade_no' => (string) $order->trade_no,
+            'user_id' => (int) $order->user_id,
+            'credited' => $credited,
+            'value_now' => $valueNow,
+            'refund' => $refund,
+        ];
+        $fromRefund = min($refund, $drift);
+        if ($drift - $fromRefund > $tolerance) {
+            PaymentMetrics::warn('order.open.surplus_drift_manual', $context);
+            throw new OrderNeedsManualReview(sprintf(
+                '下单后继续使用了旧套餐流量：折抵按下单时算 ¥%s，开通时旧套餐只剩 ¥%s，中止自动开通转人工',
+                number_format($credited / 100, 2),
+                number_format($valueNow / 100, 2)
+            ));
+        }
+
+        $order->refund_amount = $refund - $fromRefund;
+        PaymentMetrics::warn('order.open.surplus_drift_refund_cut', $context + ['cut' => $fromRefund]);
     }
 
     private function applySurplusDiscount(Order $order): void

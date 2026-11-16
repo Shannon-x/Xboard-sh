@@ -21,8 +21,9 @@ class GiftCardCheckRequest extends FormRequest
      */
     public function rules(): array
     {
+        // 与兑换接口同一规则；缺 code 原来会把 null 传进 GiftCardService 构造函数变成 500
         return [
-            //
+            'code' => 'required|string|min:8|max:32',
         ];
     }
 }

@@ -62,11 +62,17 @@ class ClashMiLiteTemplateTest extends TestCase
         }
     }
 
-    public function test_lite_template_has_no_rule_providers_sniffer_or_eager_health_checks(): void
+    public function test_lite_template_keeps_memory_footprint_small(): void
     {
         $config = $this->template();
 
-        $this->assertArrayNotHasKey('rule-providers', $config);
+        // 只允许 mrs 格式的小域名规则集（AI 两个，2026-11-16 同步）：mrs 二进制占内存很少，不能放大的 yaml/text 规则集
+        $providers = $config['rule-providers'] ?? [];
+        $this->assertSame(['ai', 'google-ai'], array_keys($providers));
+        foreach ($providers as $name => $provider) {
+            $this->assertSame('mrs', $provider['format'] ?? null, "规则集 {$name} 要用 mrs 格式");
+            $this->assertSame('domain', $provider['behavior'] ?? null, "规则集 {$name} 只能是域名集");
+        }
         $this->assertFalse($config['sniffer']['enable']);
         $this->assertFalse($config['geo-auto-update']);
         $this->assertArrayNotHasKey('global-client-fingerprint', $config);
@@ -75,14 +81,21 @@ class ClashMiLiteTemplateTest extends TestCase
         }
 
         $autoGroups = array_filter($config['proxy-groups'], fn($g) => in_array($g['type'], ['url-test', 'fallback', 'load-balance'], true));
-        $this->assertLessThanOrEqual(3, count($autoGroups));
+        $this->assertLessThanOrEqual(4, count($autoGroups));
         foreach ($autoGroups as $group) {
+            // 默认出口「⚡ 智能优选」要常驻测速才能分摊，其余自动组都 lazy，用到才测
+            if ($group['name'] === '⚡ 智能优选') {
+                $this->assertSame('load-balance', $group['type']);
+                continue;
+            }
             $this->assertTrue($group['lazy'] ?? false, "{$group['name']} 要 lazy，用到才测速");
         }
 
         foreach ($config['rules'] as $rule) {
-            $this->assertStringNotContainsStringIgnoringCase('RULE-SET', $rule);
             $this->assertStringNotContainsStringIgnoringCase('GEOSITE', $rule);
+            if (str_starts_with($rule, 'RULE-SET,')) {
+                $this->assertArrayHasKey(explode(',', $rule)[1], $providers, "规则 {$rule} 引用了没声明的规则集");
+            }
         }
     }
 
@@ -149,10 +162,18 @@ class ClashMiLiteTemplateTest extends TestCase
         $protocol = new ClashMeta(['uuid' => 'u', 'u' => 0, 'd' => 0, 'transfer_enable' => 1, 'expired_at' => null], $servers, 'mihomo', '1.19.32', 'clashmeta/1.19.32; mihomo/1.19.32');
         $config = Yaml::parse($protocol->handle()->getContent());
 
-        $this->assertArrayNotHasKey('rule-providers', $config);
+        $this->assertSame(['ai', 'google-ai'], array_keys($config['rule-providers']));
         $this->assertCount(3, $config['proxies']);
+        // 每个节点优先走 IPv4 [v4prefer-20261116]
+        foreach ($config['proxies'] as $proxy) {
+            $this->assertSame('ipv4-prefer', $proxy['ip-version'] ?? null, "{$proxy['name']} 缺 ip-version");
+        }
         $groups = array_column($config['proxy-groups'], 'proxies', 'name');
         $this->assertArrayHasKey('苏菲家宽', $groups);
+        $this->assertSame('⚡ 智能优选', $groups['苏菲家宽'][0]);
+        // load-balance 有真实成员时不留 REJECT，免得一致性哈希把网站分到 REJECT [lb-noreject-20261116]
+        $this->assertSame(['【3x】中转|香港🇭🇰', '【3x】中转|日本樱花🇯🇵'], $groups['⚡ 智能优选']);
+        $this->assertSame('REJECT', end($groups['自动选择']));
         $this->assertContains('【3x】中转|香港🇭🇰', $groups['🇭🇰 香港节点']);
         $this->assertNotContains('【3x】中转|香港🇭🇰', $groups['🇯🇵 日本节点']);
         $this->assertSame(['🇯🇵 日本节点', '苏菲家宽', '自动选择', 'DIRECT', '🇺🇸 美国节点'], $groups['📢 谷歌服务']);

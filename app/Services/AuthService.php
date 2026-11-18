@@ -28,7 +28,7 @@ class AuthService
     public const ABILITY_API = 'api';
     /**
      * 客户 AI 助手（MCP）令牌：只认 /mcp，面板接口（User 中间件）、快捷登录换票一律拒绝，
-     * 泄露了也只能查这个账号、替这个账号办面板里的日常事（下单要本人去付款页付）。mcp:order 是客户勾选「允许 AI 替我操作」才带的。
+     * 只能访问这个账号。mcp:order 可办理面板里的日常事务，下单后由本人打开付款页支付。
      */
     public const ABILITY_MCP_READ = 'mcp:read';
     public const ABILITY_MCP_ORDER = 'mcp:order';

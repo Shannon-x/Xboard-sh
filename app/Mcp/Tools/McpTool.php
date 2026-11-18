@@ -27,8 +27,7 @@ use Laravel\Sanctum\PersonalAccessToken;
 abstract class McpTool extends Tool
 {
     /**
-     * 会改动账户的工具（下单、改设置、工单、兑换……）：只对客户勾选了「允许 AI 替我操作」的令牌（mcp:order）注册，
-     * 后台关了「允许 AI 操作」时也不注册。只读令牌连工具名都看不到。
+     * 站点开放账户操作时，为具备 mcp:order 的令牌注册下单、修改设置、工单、兑换等工具。
      */
     protected bool $ordering = false;
 
@@ -63,7 +62,7 @@ abstract class McpTool extends Tool
         $ip = request()->ip();
         try {
             if ($this->ordering && !$this->shouldRegister($request)) {
-                throw new ApiException('这个令牌是只读的：要让 AI 替你下单或修改设置，请在面板「AI 助手」里生成一个勾选了「允许 AI 替我操作」的令牌。');
+                throw new ApiException('当前连接只读。站点开放账户操作后，可在 AI 软件里重新授权，或在面板「AI 助手」里生成并替换令牌。');
             }
             $response = $this->run($request, $user);
             McpAudit::record($user->id, (int) $token->id, $this->name(), !self::failed($response), $this->auditRef, null, $ip);

@@ -35,7 +35,7 @@ class McpAuthorizeController extends Controller
             return $this->fail([403, __('The AI assistant is not available for this account')]);
         }
         $user = User::findOrFail($request->user()->id);
-        return $this->success(['redirect' => $server->approve($user, (string) $request->input('req'), $request->boolean('can_order'))]);
+        return $this->success(['redirect' => $server->approve($user, (string) $request->input('req'), $request->boolean('can_order', true))]);
     }
 
     public function deny(Request $request)

@@ -214,7 +214,8 @@ class McpAssistantTest extends TestCase
         $panel = $this->panelToken($user);
 
         $this->bearer($panel)->getJson('/api/v1/user/mcp/token/fetch')->assertOk()
-            ->assertJsonPath('data.enabled', false)->assertJsonPath('data.reason', 'disabled')->assertJsonPath('data.tokens', []);
+            ->assertJsonPath('data.enabled', false)->assertJsonPath('data.oauth_enabled', false)
+            ->assertJsonPath('data.reason', 'disabled')->assertJsonPath('data.tokens', []);
         $this->bearer($panel)->postJson('/api/v1/user/mcp/token/create', ['name' => 'Claude'])->assertStatus(403);
 
         $this->enable();
@@ -226,21 +227,30 @@ class McpAssistantTest extends TestCase
         $admin = $this->user(['is_admin' => 1]);
         $this->assertSame(McpTokenService::REASON_ACCOUNT, McpTokenService::make()->ineligibleReason($admin));
 
-        $created = $this->bearer($panel)->postJson('/api/v1/user/mcp/token/create', ['name' => '我的 Claude', 'can_order' => true])->assertOk();
+        $created = $this->bearer($panel)->postJson('/api/v1/user/mcp/token/create', ['name' => '我的 Claude'])->assertOk();
         $plain = $created->json('data.token');
         $this->assertSame(self::APP_URL . '/mcp', $created->json('data.endpoint_url'));
-        $this->assertContains('create_order', $this->toolNames($plain), '明文令牌直接能用');
+        $tools = $this->toolNames($plain);
+        foreach (['create_order', 'withdraw_commission', 'update_account_settings'] as $name) {
+            $this->assertContains($name, $tools);
+        }
 
         $list = $this->bearer($panel)->getJson('/api/v1/user/mcp/token/fetch')->assertOk()->json('data');
         $this->assertTrue($list['eligible']);
+        $this->assertTrue($list['oauth_enabled']);
         $this->assertCount(1, $list['tokens']);
         $this->assertSame('我的 Claude', $list['tokens'][0]['name']);
         $this->assertTrue($list['tokens'][0]['can_order']);
         $this->assertNotNull($list['tokens'][0]['last_used_at']);
+        $this->assertArrayHasKey('last_call', $list['tokens'][0]);
+        $this->assertNull($list['tokens'][0]['last_call'], '发现工具还不算实际调用');
         $this->assertArrayNotHasKey('token', $list['tokens'][0], '列表里没有明文');
 
         // 每人最多 5 个
-        for ($i = 0; $i < 4; $i++) {
+        $readOnly = $this->bearer($panel)->postJson('/api/v1/user/mcp/token/create', ['name' => '只读连接', 'can_order' => false])
+            ->assertOk()->json('data.token');
+        $this->assertNotContains('create_order', $this->toolNames($readOnly));
+        for ($i = 0; $i < 3; $i++) {
             McpTokenService::make()->create($user, "t{$i}", false);
         }
         $this->bearer($panel)->postJson('/api/v1/user/mcp/token/create', ['name' => 'x'])->assertStatus(400);
@@ -253,6 +263,30 @@ class McpAssistantTest extends TestCase
     }
 
     // ───────────────────────── 只读 ─────────────────────────
+
+    public function test_panel_shows_the_last_tool_result_for_each_connection(): void
+    {
+        $this->enable(['mcp_oauth_enable' => 0, 'mcp_order_enable' => 0]);
+        $user = $this->user();
+        $panel = $this->panelToken($user);
+        $manual = $this->bearer($panel)->postJson('/api/v1/user/mcp/token/create', ['name' => 'CLI', 'can_order' => true])
+            ->assertOk()->json('data.token');
+        $second = $this->mcpToken($user);
+        $this->assertFalse($this->tool($manual, 'get_account_overview')['error']);
+        $this->assertFalse($this->tool($second, 'list_plans')['error']);
+        $this->assertTrue($this->tool($manual, 'get_payment_link')['error']);
+        $this->tool($this->mcpToken($this->user()), 'list_orders');
+
+        $list = $this->bearer($panel)->getJson('/api/v1/user/mcp/token/fetch')->assertOk()
+            ->assertJsonPath('data.oauth_enabled', false)->assertJsonCount(2, 'data.tokens')
+            ->assertJsonPath('data.tokens.0.last_call.tool', 'list_plans')
+            ->assertJsonPath('data.tokens.0.last_call.ok', true)
+            ->assertJsonPath('data.tokens.1.can_order', false)
+            ->assertJsonPath('data.tokens.1.last_call.tool', 'get_payment_link')
+            ->assertJsonPath('data.tokens.1.last_call.ok', false)->json('data.tokens.1.last_call');
+        $this->assertIsInt($list['created_at']);
+        $this->assertSame(['tool', 'ok', 'created_at'], array_keys($list));
+    }
 
     public function test_read_only_token_sees_no_ordering_tools_and_never_gets_subscription_secrets(): void
     {

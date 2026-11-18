@@ -25,6 +25,7 @@ class McpTokenController extends Controller
             'eligible' => $reason === null,
             'reason' => $reason,
             'endpoint_url' => $config->enabled ? $config->endpointUrl : '',
+            'oauth_enabled' => $config->oauthActive(),
             'order_enabled' => $config->orderEnabled,
             'idle_days' => $config->tokenIdleDays,
             'max' => McpConfig::MAX_TOKENS_PER_USER,
@@ -40,7 +41,7 @@ class McpTokenController extends Controller
         ]);
         $service = McpTokenService::make();
         $user = User::findOrFail($request->user()->id);
-        $created = $service->create($user, (string) $request->input('name', ''), (bool) $request->input('can_order', false));
+        $created = $service->create($user, (string) $request->input('name', ''), $request->boolean('can_order', true));
         return $this->success($created + ['endpoint_url' => $service->config()->endpointUrl]);
     }
 

@@ -39,8 +39,8 @@ use Laravel\Mcp\Server\Attributes\Version;
 /**
  * 客户 AI 助手（MCP）：客户把面板里生成的令牌填进自己的 AI，AI 就能替他查账户、按他的话下单。
  *
- * 入口 POST /mcp（routes/ai.php），门是 McpAuth。会改动账户的工具（下单、改设置、工单、兑换……）只对勾选了
- * 「允许 AI 替我操作」的令牌注册；钱永远由客户本人在免登录付款链接里付（OrderPayService），AI 碰不到支付，
+ * 入口 POST /mcp（routes/ai.php），门是 McpAuth。站点开放账户操作时，持有 mcp:order 的连接可下单、改设置、处理工单等。
+ * 钱永远由客户本人在免登录付款链接里付（OrderPayService），AI 碰不到支付，
  * 也拿不到订阅链接。每个工具都只读写令牌主人自己的账户：没有一个工具接受用户 ID / 邮箱参数。
  *
  * 佣金提现只能打到客户在面板填过的收款地址（McpCommission），第一次提现、换地址、传二维码留在面板。

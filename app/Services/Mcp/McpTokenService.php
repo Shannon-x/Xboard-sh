@@ -75,9 +75,13 @@ class McpTokenService
     public function list(User $user): array
     {
         $tokens = $this->tokens($user);
-        $lastIps = McpCallLog::whereIn('token_id', $tokens->pluck('id'))
-            ->orderByDesc('id')->get(['token_id', 'ip'])
-            ->unique('token_id')->pluck('ip', 'token_id');
+        if ($tokens->isEmpty()) {
+            return [];
+        }
+        $latestIds = McpCallLog::where('user_id', $user->id)->whereIn('token_id', $tokens->pluck('id'))
+            ->selectRaw('MAX(id)')->groupBy('token_id');
+        $lastCalls = McpCallLog::whereIn('id', $latestIds)
+            ->get(['token_id', 'ip', 'tool', 'ok', 'created_at'])->keyBy('token_id');
         $grants = McpOauthGrant::where('user_id', $user->id)->whereIn('token_id', $tokens->pluck('id'))
             ->get(['token_id', 'redirect_host'])->keyBy('token_id');
         return $tokens->map(fn (PersonalAccessToken $t) => [
@@ -86,7 +90,12 @@ class McpTokenService
             'can_order' => in_array(AuthService::ABILITY_MCP_ORDER, (array) $t->abilities, true),
             'created_at' => $t->created_at?->getTimestamp(),
             'last_used_at' => $t->last_used_at?->getTimestamp(),
-            'last_ip' => $lastIps[$t->id] ?? null,
+            'last_ip' => $lastCalls[$t->id]->ip ?? null,
+            'last_call' => isset($lastCalls[$t->id]) ? [
+                'tool' => $lastCalls[$t->id]->tool,
+                'ok' => (bool) $lastCalls[$t->id]->ok,
+                'created_at' => $lastCalls[$t->id]->created_at,
+            ] : null,
             'expires_at' => $t->expires_at?->getTimestamp(),
             // oauth = 在授权页点「允许」连上的（ChatGPT 等），token = 手动生成的
             'via' => isset($grants[$t->id]) ? 'oauth' : 'token',
@@ -114,7 +123,7 @@ class McpTokenService
         if ($this->isFull($user)) {
             throw new ApiException(__('You can keep at most :count AI assistant tokens; revoke one first', ['count' => McpConfig::MAX_TOKENS_PER_USER]));
         }
-        return $this->issue($user, $name, $canOrder);
+        return $this->issue($user, $name, $canOrder && $this->config->orderEnabled);
     }
 
     /**

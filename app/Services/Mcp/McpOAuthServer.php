@@ -18,7 +18,7 @@ use Laravel\Sanctum\PersonalAccessToken;
  * ChatGPT、Claude、Grok 网页版不让客户填请求头，只认这一套：客户在 AI 里填接入地址 → AI 跳到
  * /oauth/authorize → 我们转到网站的授权页（/ai/authorize/<请求号>，客户用平常的账号登录）→ 客户点「允许」→
  * 带着一次性授权码回到 AI → AI 用码换令牌。换到的就是面板手动生成的那种令牌（McpTokenService::issue），
- * 只认 /mcp，「允许 AI 替我操作」由客户在授权页自己勾。
+ * 只认 /mcp。用户点「允许」即可使用站点开放且在本次授权范围内的账户操作。
  *
  * 待确认的请求（15 分钟）和授权码（5 分钟、一次性）放缓存；点过「允许」的授权记在 v2_mcp_oauth_grant，
  * refresh token 只存哈希，每次换新令牌都一起换（旧的立刻作废）。
@@ -67,7 +67,7 @@ class McpOAuthServer
         return [
             'resource' => $this->config->endpointUrl,
             'authorization_servers' => [$this->issuer()],
-            'scopes_supported' => [self::SCOPE_READ, self::SCOPE_ORDER],
+            'scopes_supported' => $this->supportedScopes(),
             'bearer_methods_supported' => ['header'],
             'resource_name' => (string) admin_setting('app_name', 'XBoard'),
         ];
@@ -75,7 +75,14 @@ class McpOAuthServer
 
     public function resourceMetadataUrl(): string
     {
-        return $this->issuer() . '/.well-known/oauth-protected-resource' . (parse_url($this->config->endpointUrl, PHP_URL_PATH) ?: '');
+        // 反向代理可将 /mcp 暴露在其他路径下，此时指向已注册的根元数据路由。
+        $path = rtrim((string) parse_url($this->config->endpointUrl, PHP_URL_PATH), '/');
+        return $this->issuer() . '/.well-known/oauth-protected-resource' . ($path === '/mcp' ? '/mcp' : '');
+    }
+
+    private function supportedScopes(): array
+    {
+        return $this->config->orderEnabled ? [self::SCOPE_READ, self::SCOPE_ORDER] : [self::SCOPE_READ];
     }
 
     /** RFC 8414：授权服务器的各个地址与能力 */
@@ -87,7 +94,7 @@ class McpOAuthServer
             'authorization_endpoint' => $issuer . '/oauth/authorize',
             'token_endpoint' => $issuer . '/oauth/token',
             'registration_endpoint' => $issuer . '/oauth/register',
-            'scopes_supported' => [self::SCOPE_READ, self::SCOPE_ORDER],
+            'scopes_supported' => $this->supportedScopes(),
             'response_types_supported' => ['code'],
             'response_modes_supported' => ['query'],
             'grant_types_supported' => ['authorization_code', 'refresh_token'],
@@ -158,7 +165,7 @@ class McpOAuthServer
         return [
             'app' => $pending['app'],
             'wants_order' => $pending['wants_order'],
-            'order_enabled' => $this->config->orderEnabled,
+            'order_enabled' => $this->config->orderEnabled && $pending['wants_order'],
             'eligible' => $reason === null,
             'reason' => $reason,
             'replaces' => $grant !== null,
@@ -189,7 +196,7 @@ class McpOAuthServer
             'client_id' => $pending['client_id'],
             'redirect_uri' => $pending['redirect_uri'],
             'code_challenge' => $pending['code_challenge'],
-            'can_order' => $canOrder && $this->config->orderEnabled,
+            'can_order' => $canOrder && $pending['wants_order'] && $this->config->orderEnabled,
             'app' => $pending['app'],
         ], self::CODE_TTL);
         return $this->redirectWith($pending['redirect_uri'], ['code' => $code, 'state' => $pending['state']]);
@@ -258,7 +265,8 @@ class McpOAuthServer
             if ($this->tokens->isFull($user, $old->first()?->token_id)) {
                 throw new McpOAuthError('invalid_grant', 'Too many AI assistant connections; remove one on the website first.');
             }
-            $issued = $this->tokens->issue($user, McpOAuthClients::displayName($data['app']), (bool) $data['can_order']);
+            $canOrder = $data['can_order'] && $this->config->orderEnabled;
+            $issued = $this->tokens->issue($user, McpOAuthClients::displayName($data['app']), $canOrder);
             foreach ($old as $grant) {
                 if ($grant->token_id) {
                     // 当天的调用记录跟到新令牌上（与 refresh 一样），面板上「最后一次 IP」不因为重新连接而清空
@@ -277,7 +285,7 @@ class McpOAuthServer
                 'token_id' => $issued['id'],
                 'refresh_hash' => hash('sha256', $refresh),
             ]);
-            return $this->tokenResponse($issued['token'], $refresh, (bool) $data['can_order']);
+            return $this->tokenResponse($issued['token'], $refresh, $canOrder);
         });
     }
 
@@ -443,7 +451,7 @@ class McpOAuthServer
         return is_string($resource) && rtrim($resource, '/') === rtrim($this->config->endpointUrl, '/');
     }
 
-    /** 没写 scope 或写了 mcp:order：授权页默认勾上「允许 AI 替我操作」，最后以客户勾的为准 */
+    /** 省略 scope 时使用站点开放的权限，指定 scope 时按客户端申请的范围授权。 */
     private static function wantsOrder(mixed $scope): bool
     {
         if (!is_string($scope) || trim($scope) === '') {

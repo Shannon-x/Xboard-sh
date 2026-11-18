@@ -23,7 +23,7 @@ use Tests\TestCase;
 /**
  * 客户 AI 助手的一键授权（OAuth）：ChatGPT、Claude、Grok 网页版填接入地址 → 跳网站授权页 → 客户点「允许」→ 换到令牌。
  *
- * 守住：授权码一次性、必须 PKCE、只回跳登记过的地址、「允许 AI 替我操作」以客户勾的为准、
+ * 守住：授权码一次性、必须 PKCE、只回跳登记过的地址、访问范围以授权和站点开关为准、
  * refresh token 换新后旧的立刻作废、客户在网站上断开后 AI 再也换不到令牌。
  */
 class McpOAuthTest extends TestCase
@@ -58,7 +58,7 @@ class McpOAuthTest extends TestCase
 
     private function enable(array $extra = []): void
     {
-        admin_setting(['mcp_enable' => 1, 'mcp_endpoint_url' => self::ENDPOINT] + $extra);
+        admin_setting($extra + ['mcp_enable' => 1, 'mcp_endpoint_url' => self::ENDPOINT]);
     }
 
     private function user(bool $paid = true): User
@@ -129,9 +129,13 @@ class McpOAuthTest extends TestCase
         return basename($location);
     }
 
-    private function approve(User $user, string $req, bool $canOrder): array
+    private function approve(User $user, string $req, ?bool $canOrder = null): array
     {
-        $redirect = $this->panel($user)->postJson('/api/v1/user/mcp/authorize/approve', ['req' => $req, 'can_order' => $canOrder])
+        $body = ['req' => $req];
+        if ($canOrder !== null) {
+            $body['can_order'] = $canOrder;
+        }
+        $redirect = $this->panel($user)->postJson('/api/v1/user/mcp/authorize/approve', $body)
             ->assertOk()->json('data.redirect');
         $this->assertStringStartsWith(self::CHATGPT_REDIRECT . '?', $redirect);
         parse_str((string) parse_url($redirect, PHP_URL_QUERY), $query);
@@ -145,7 +149,7 @@ class McpOAuthTest extends TestCase
     }
 
     /** 一整套：注册 → 授权页 → 允许 → 换令牌 */
-    private function connect(User $user, bool $canOrder = false): array
+    private function connect(User $user, ?bool $canOrder = null): array
     {
         $client = $this->registerClient();
         $verifier = Str::random(64);
@@ -194,6 +198,40 @@ class McpOAuthTest extends TestCase
     }
 
     // ───────────────────────── 完整流程 ─────────────────────────
+
+    public function test_custom_endpoint_advertises_reachable_discovery_and_current_permissions(): void
+    {
+        $url = self::ISSUER . '/gateway/account/mcp';
+        $this->enable(['mcp_endpoint_url' => $url, 'mcp_order_enable' => 0]);
+        $this->postJson('/mcp', ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list'])->assertUnauthorized()
+            ->assertHeader('WWW-Authenticate', 'Bearer realm="mcp", resource_metadata="' . self::ISSUER . '/.well-known/oauth-protected-resource"');
+        $this->get('/.well-known/oauth-protected-resource')->assertOk()
+            ->assertJsonPath('resource', $url)->assertJsonPath('scopes_supported', ['mcp:read']);
+        $this->get('/.well-known/oauth-authorization-server')->assertOk()->assertJsonPath('scopes_supported', ['mcp:read']);
+    }
+
+    public function test_consent_and_code_exchange_respect_requested_and_current_permissions(): void
+    {
+        $this->enable();
+        $user = $this->user();
+        $client = $this->registerClient();
+        $verifier = Str::random(64);
+        foreach (['mcp:read', 'mcp:read mcp:order'] as $scope) {
+            $req = $this->startAuthorization($client['client_id'], $verifier, ['scope' => $scope]);
+            $this->panel($user)->getJson('/api/v1/user/mcp/authorize/fetch?req=' . $req)->assertOk()
+                ->assertJsonPath('data.order_enabled', $scope === 'mcp:read mcp:order');
+            $callback = $this->approve($user, $req, true);
+            if ($scope === 'mcp:read mcp:order') {
+                admin_setting(['mcp_order_enable' => 0]);
+            }
+            $access = $this->exchange([
+                'grant_type' => 'authorization_code', 'client_id' => $client['client_id'],
+                'code' => $callback['code'], 'code_verifier' => $verifier, 'redirect_uri' => self::CHATGPT_REDIRECT,
+            ])->assertOk()->assertJsonPath('scope', 'mcp:read')->json('access_token');
+            admin_setting(['mcp_order_enable' => 1]);
+            $this->assertNotContains('create_order', $this->toolNames($access));
+        }
+    }
 
     public function test_customer_connects_chatgpt_with_one_click_and_the_token_refreshes(): void
     {
@@ -277,27 +315,28 @@ class McpOAuthTest extends TestCase
         $this->assertSame(0, McpOauthGrant::count());
     }
 
-    public function test_order_permission_follows_the_checkbox_and_the_admin_switch(): void
+    public function test_new_connections_get_account_actions_by_default_when_the_site_enables_them(): void
     {
         $this->enable();
         $user = $this->user();
-        $connected = $this->connect($user, true);
+        $connected = $this->connect($user);
         $this->assertSame('mcp:read mcp:order', $connected['tokens']['scope']);
         $this->assertContains('create_order', $this->toolNames($connected['tokens']['access_token']));
 
         // 同一个软件再连一次：换掉之前那份，不会越积越多
         $verifier = Str::random(64);
-        $req = $this->startAuthorization($connected['client']['client_id'], $verifier);
+        $req = $this->startAuthorization($connected['client']['client_id'], $verifier, ['scope' => null]);
         $this->panel($user)->getJson('/api/v1/user/mcp/authorize/fetch?req=' . $req)->assertJsonPath('data.replaces', true);
-        $callback = $this->approve($user, $req, true);
+        $callback = $this->approve($user, $req);
         $again = $this->exchange([
             'grant_type' => 'authorization_code', 'code' => $callback['code'], 'code_verifier' => $verifier,
             'client_id' => $connected['client']['client_id'], 'redirect_uri' => self::CHATGPT_REDIRECT,
         ])->assertOk()->json();
+        $this->assertSame('mcp:read mcp:order', $again['scope']);
         $this->assertSame(1, McpTokenService::make()->tokens($user)->count());
         $this->rpc($connected['tokens']['access_token'], 'tools/list')->assertStatus(401);
 
-        // 后台关了「允许 AI 替客户操作」总闸：勾了也只给查询，换新时也不会长回来
+        // 站点关闭账户操作后，新授权和刷新都只授予查询。
         admin_setting(['mcp_order_enable' => 0]);
         $this->assertSame('mcp:read', $this->connect($user, true)['tokens']['scope']);
         $refreshed = $this->exchange(['grant_type' => 'refresh_token', 'refresh_token' => $again['refresh_token'], 'client_id' => $connected['client']['client_id']])

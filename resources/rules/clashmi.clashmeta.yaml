@@ -7,6 +7,7 @@
 #   · 自动测速组只留三个且都是 lazy（用到才测）；
 #   · 谷歌走代理、苹果和微软默认直连，和完整模板一致；没有广告拦截，测速地址不会被拦。
 # 分组成员的写法（正则、'/(?!)/' 占位）和完整模板相同，由 ClashMeta::handle() 填节点。
+# 2026-11-16 同步 Clash Meta 模板：智能优选、cf 不进自动组、官网登录分流、AI 小规则集 [cmi-sync-20261116]
 mixed-port: 7890
 allow-lan: false
 mode: rule
@@ -71,6 +72,7 @@ proxy-groups:
   - name: $app_name
     type: select
     proxies:
+      - ⚡ 智能优选
       - 自动选择
       - 🇭🇰 香港节点
       - 🇹🇼 台湾节点
@@ -80,16 +82,29 @@ proxy-groups:
       - 🇰🇷 韩国节点
       - 🌍 其他地区
       - DIRECT
+  # 智能优选 [cmi-sync-20261116]：默认出口，同 Clash Meta 模板。亚太节点（香港、台湾、日本、新加坡、韩国；不含菲律宾、泰国、越南、cf、seednet 和不稳定的 NTT/sony/softbank 中转）按网站分摊，每 5 分钟测一次，3 秒不通的先移出
+  - name: ⚡ 智能优选
+    type: load-balance
+    strategy: consistent-hashing
+    lazy: false
+    url: https://www.gstatic.com/generate_204
+    expected-status: 204
+    interval: 300
+    timeout: 3000
+    max-failed-times: 3
+    proxies:
+      - REJECT
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置|过滤掉|5x|6x|7x|10x|cf加速|菲律宾|🇵🇭|泰国|🇹🇭|越南|🇻🇳|seednet|美国|🇺🇸))(?!^中转[|]尼日利亚家宽🇳🇬$)(?!.*[|]日本(NTT|sony|softbank)家宽$)(?=.*(香港|HK|🇭🇰|台湾|🇹🇼|日本|🇯🇵|新加坡|狮城|🇸🇬|韩国|🇰🇷)).+/iu'
   - name: 自动选择
     type: url-test
     lazy: true
     url: http://www.gstatic.com/generate_204
-    interval: 600
-    timeout: 12000
+    interval: 300
+    timeout: 5000
     tolerance: 150
     proxies:
       - REJECT
-      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置|过滤掉|5x|6x|7x|10x))(?!^中转[|]尼日利亚家宽🇳🇬$)(?!^美国AT&T家宽无限流量🇺🇸vless$).+/iu'
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置|cf加速|过滤掉|5x|6x|7x|10x))(?!^中转[|]尼日利亚家宽🇳🇬$)(?!^【3x】中转[|]台湾seednet)(?!^【6x】透传专线[|]台湾seednet)(?!^美国AT&T家宽无限流量🇺🇸vless$).+/iu'
   - name: 🇭🇰 香港节点
     type: select
     proxies:
@@ -129,13 +144,13 @@ proxy-groups:
     type: url-test
     hidden: true
     lazy: true
-    url: http://www.gstatic.com/generate_204
-    interval: 600
-    timeout: 12000
+    url: https://chatgpt.com/cdn-cgi/trace
+    interval: 300
+    timeout: 5000
     tolerance: 150
     proxies:
       - REJECT
-      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置))(?!.*(香港|🇭🇰))(?!^【3x】中转[|]日本NTT家宽$)(?!^【3x】中转[|]日本sony家宽$)(?!^【3x】中转[|]日本softbank家宽$)(?!^【6x】透传专线[|]日本NTT家宽$)(?!^【6x】透传专线[|]日本sony家宽$)(?!^【6x】透传专线[|]日本softbank家宽$)(?!.*(5x|6x|7x|10x))(?:(?=.*中转)(?=.*(日本|台湾|🇯🇵|🇹🇼))).+/iu'
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置))(?!.*(香港|🇭🇰))(?!^【3x】中转[|]台湾seednet)(?!^【6x】透传专线[|]台湾seednet)(?!^【3x】中转[|]日本NTT家宽$)(?!^【3x】中转[|]日本sony家宽$)(?!^【3x】中转[|]日本softbank家宽$)(?!^【6x】透传专线[|]日本NTT家宽$)(?!^【6x】透传专线[|]日本sony家宽$)(?!^【6x】透传专线[|]日本softbank家宽$)(?!.*(5x|6x|7x|10x))(?:(?=.*中转)(?=.*(日本|台湾|🇯🇵|🇹🇼))).+/iu'
   - name: 🤖 AI服务
     type: select
     proxies:
@@ -174,12 +189,12 @@ proxy-groups:
     hidden: true
     lazy: true
     url: http://www.gstatic.com/generate_204
-    interval: 600
-    timeout: 12000
+    interval: 300
+    timeout: 5000
     tolerance: 150
     proxies:
       - REJECT
-      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置|过滤掉|5x|6x|7x|10x))(?=.*(新加坡0[12]|日本樱花(?!10gbps)|独享webarena$|[|]台湾(🇹🇼)?$|美国一|美国二|美国洛杉矶|KDDI|biglobe|日本星链)).+/iu'
+      - '/^(?!.*(官网|发布页|防失联|测试|勿连|不可直连|用中转|自行切换|剩余流量|套餐到期|距离下次重置|cf加速|过滤掉|5x|6x|7x|10x))(?=.*(新加坡0[12]|日本樱花(?!10gbps)|独享webarena$|[|]台湾(🇹🇼)?$|美国一|美国二|美国洛杉矶|KDDI|biglobe|日本星链)).+/iu'
   - name: 🎥 流媒体
     type: select
     proxies:
@@ -223,6 +238,25 @@ proxy-groups:
       - 自动选择
       - DIRECT
 
+# AI 两个小规则集，mrs 格式占内存很少 [cmi-sync-20261116]
+rule-providers:
+  ai:
+    type: http
+    proxy: DIRECT
+    behavior: domain
+    format: mrs
+    url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/category-ai-!cn.mrs"
+    path: ./ruleset/meta/category-ai-cn.mrs
+    interval: 86400
+  google-ai:
+    type: http
+    proxy: DIRECT
+    behavior: domain
+    format: mrs
+    url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/google-deepmind.mrs"
+    path: ./ruleset/meta/google-deepmind.mrs
+    interval: 86400
+
 rules:
   # 本机和局域网
   - DOMAIN-SUFFIX,local,DIRECT
@@ -241,7 +275,21 @@ rules:
   - DOMAIN-SUFFIX,sufe.uk,DIRECT
   - DOMAIN-SUFFIX,sufe.us,$app_name
   - DOMAIN-SUFFIX,sufe.pro,$app_name
-  # AI
+  # 官网登录接口（848999.xyz）和站内资源、论坛（sufe.me）跟官网走同一组 [cmi-sync-20261116]
+  - DOMAIN-SUFFIX,848999.xyz,$app_name
+  - DOMAIN-SUFFIX,sufe.me,$app_name
+  # AI [cmi-sync-20261116]：Gemini、NotebookLM、AI Studio 等先归谷歌组；Hugging Face 走主组；其余海外 AI 进 AI 组。规则集是 MetaCubeX 每天构建的 mrs 小文件；下面的内联规则保留兜底
+  - RULE-SET,google-ai,📢 谷歌服务
+  - DOMAIN-SUFFIX,huggingface.co,$app_name
+  - DOMAIN-SUFFIX,hf.co,$app_name
+  - RULE-SET,ai,🤖 AI服务
+  - DOMAIN,openai-api.arkoselabs.com,🤖 AI服务
+  - DOMAIN,client-api.arkoselabs.com,🤖 AI服务
+  - DOMAIN-SUFFIX,featuregates.org,🤖 AI服务
+  - DOMAIN-SUFFIX,api.statsig.com,🤖 AI服务
+  - DOMAIN-SUFFIX,events.statsigapi.net,🤖 AI服务
+  - DOMAIN,host.livekit.cloud,🤖 AI服务
+  - DOMAIN,turn.livekit.cloud,🤖 AI服务
   - DOMAIN-SUFFIX,openai.com,🤖 AI服务
   - DOMAIN-SUFFIX,chatgpt.com,🤖 AI服务
   - DOMAIN-SUFFIX,oaistatic.com,🤖 AI服务

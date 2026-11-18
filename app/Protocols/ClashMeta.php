@@ -253,6 +253,12 @@ class ClashMeta extends AbstractProtocol
 
         $config['proxies'] = array_merge($config['proxies'] ? $config['proxies'] : [], $proxy);
         self::moveGlobalFingerprintToProxies($config);
+        // 连中转优先用 IPv4，IPv4 连不上再回落 IPv6；没有 IPv4 地址的节点照样走 IPv6 [v4prefer-20261116]
+        foreach ($config['proxies'] as $i => $p) {
+            if (is_array($p) && !isset($p['ip-version'])) {
+                $config['proxies'][$i]['ip-version'] = 'ipv4-prefer';
+            }
+        }
         foreach ($config['proxy-groups'] as $k => $v) {
             if (!is_array($config['proxy-groups'][$k]['proxies']))
                 $config['proxy-groups'][$k]['proxies'] = [];
@@ -286,7 +292,8 @@ class ClashMeta extends AbstractProtocol
             }
             $members = array_values(array_filter($group['proxies'], fn($p) => $p !== 'REJECT'));
             if ($members && count($members) < count($group['proxies'])) {
-                $config['proxy-groups'][$k]['proxies'] = array_merge($members, ['REJECT']);
+                // load-balance 的一致性哈希会把 REJECT 当成一个桶，首轮测速完成前哈希到它的网站会被拒，有真实成员时直接去掉 [lb-noreject-20261116]
+                $config['proxy-groups'][$k]['proxies'] = (($group['type'] ?? '') === 'load-balance') ? $members : array_merge($members, ['REJECT']);
             }
         }
         // 只剩 REJECT 的自动测速组(客户端不支持池内任何节点，如 3.1 以前的 Stash 不支持 REALITY)：

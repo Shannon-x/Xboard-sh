@@ -15,7 +15,7 @@ use Tests\TestCase;
  *
  * 语义：流量立即清零、到期日减 30 天，下一次重置仍是原定的下个 1 号（不重排周期）。
  * 整个订阅期内能拿到的整月配额次数不变：提前拿的这一次，换掉的是到期前最后一个 1 号。
- * 「按月重置」（按到期日锚定）的行为保持不变：下一次重置排在 30 天后。
+ * 「按月重置」（按到期日锚定）的行为见 AdvanceCycleMonthlyTest：只扣本周期剩余时间，新周期满一个月。
  */
 class AdvanceCycleFirstDayMonthTest extends TestCase
 {
@@ -111,17 +111,17 @@ class AdvanceCycleFirstDayMonthTest extends TestCase
         $this->assertSame('traffic_not_exhausted', $result['reason']);
     }
 
-    public function test_monthly_plan_still_schedules_next_reset_30_days_later(): void
+    public function test_monthly_plan_schedules_next_reset_one_month_later(): void
     {
         $user = $this->user($this->plan(Plan::RESET_TRAFFIC_MONTHLY), ['next_reset_at' => time() + 10 * 86400]);
-        $before = time();
+        $before = now()->addMonthNoOverflow()->timestamp;
 
         $result = app(AdvanceCycleService::class)->advance($user);
         $this->assertTrue($result['advanced'] ?? false, json_encode($result));
 
         $next = (int) $user->fresh()->next_reset_at;
-        $this->assertGreaterThanOrEqual($before + 30 * 86400, $next);
-        $this->assertLessThanOrEqual(time() + 30 * 86400, $next);
+        $this->assertGreaterThanOrEqual($before, $next);
+        $this->assertLessThanOrEqual(now()->addMonthNoOverflow()->timestamp, $next);
     }
 
     public function test_never_reset_plan_is_still_unsupported(): void

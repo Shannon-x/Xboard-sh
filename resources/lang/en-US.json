@@ -178,7 +178,7 @@
     "advance_cycle.unsupported_reset_method": "This plan's reset policy does not support early traffic reset",
     "advance_cycle.no_traffic_quota": "This plan has no traffic quota to reset",
     "advance_cycle.traffic_not_exhausted": "Traffic usage has not reached the early-reset threshold yet",
-    "advance_cycle.insufficient_remaining_days": "Less than 30 days remain, so early traffic reset is unavailable",
+    "advance_cycle.insufficient_remaining_days": "After deducting the rest of this cycle, less than one full cycle would remain, so early traffic reset is unavailable. Please renew first",
     "advance_cycle.regular_reset_due": "This cycle is already due for normal reset, please refresh and check again",
     "Custom invite codes are not enabled": "Custom invite codes are not enabled",
     "Invite code must be 4-20 characters": "Invite code must be 4-20 characters",

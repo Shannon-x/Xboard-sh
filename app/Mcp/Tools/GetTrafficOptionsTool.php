@@ -24,7 +24,7 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 
 #[Name('get_traffic_options')]
 #[Title('流量不够怎么办')]
-#[Description('流量快用完或已用完时：先照最近 7 天的速度算出到重置日还差多少、建议加购多少 GB（projection），再列出客户现在能用的三种办法和各自的代价：加购流量（traffic_topup，按 GB 买，本周期有效）、流量重置包（reset_traffic，花钱把已用流量清零、到期日不变）、免费提前进入下个周期（advance_cycle，流量重置但到期日提前 30 天）。客户问「流量用完了怎么办」「能不能重置流量」时先调它。')]
+#[Description('流量快用完或已用完时：先照最近 7 天的速度算出到重置日还差多少、建议加购多少 GB（projection），再列出客户现在能用的三种办法和各自的代价：加购流量（traffic_topup，按 GB 买，本周期有效）、流量重置包（reset_traffic，花钱把已用流量清零、到期日不变）、免费提前进入下个周期（advance_cycle，流量重置、从现在起开新周期，到期日提前本周期剩余的天数）。客户问「流量用完了怎么办」「能不能重置流量」时先调它。')]
 #[IsReadOnly]
 #[IsIdempotent]
 class GetTrafficOptionsTool extends McpTool
@@ -69,7 +69,7 @@ class GetTrafficOptionsTool extends McpTool
             'advance_cycle' => [
                 'available' => (bool) ($advance['eligible'] ?? false),
                 'reason' => ($advance['eligible'] ?? false) ? null : $advance['message'],
-                'cost' => '免费，但到期日提前 ' . $advance['consume_days'] . ' 天',
+                'cost' => $advance['consume_days'] !== null ? '免费，但到期日提前 ' . $advance['consume_days'] . ' 天' : '免费，但到期日会提前本周期剩余的天数',
                 'expires_at_now' => P::time($advance['old_expired_at']),
                 'expires_at_after' => P::time($advance['new_expired_at']),
                 'needs_used_percent' => (int) round($advance['used_ratio'] * 100),

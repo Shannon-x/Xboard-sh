@@ -6,14 +6,37 @@ use App\Models\Plan;
 use App\Models\TrafficResetLog;
 use App\Models\User;
 use App\Services\Plugin\HookManager;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * 提前重置流量（提前进入下一周期）。
+ *
+ * 按月重置（按到期日锚定）的套餐，语义与 wyx2685/v2board 的 newPeriod 一致：
+ *   结束当前周期，从点击时刻起开一个完整的新周期。客户放弃的只是「本周期还没用完的时间」，
+ *   也就是 到期日 -= (下次自然重置 - 现在)，新周期满一个月，之后每月按点击那天重置。
+ *   每一份完整流量都正好消耗一个月有效期（本周期已用的 + 被扣掉的剩余部分 = 一个周期），
+ *   剩余配额份数不变，没有套利空间。
+ *
+ *   旧实现（2026-05 至 2026-11）不论本周期还剩几天一律扣 30 天，下次重置又被新到期日封顶，
+ *   客户平均多亏约 17 天、新周期常被截短（#5431、#5218）。不要改回固定扣 30 天。
+ *
+ *   为了不让重置锚点漂移（到期日的「日」决定以后每月哪天重置），新到期日不是用秒数直接相减，
+ *   而是「现在 + 剩余完整周期数 个自然月」：剩余完整周期数 = 原下次重置到原到期日之间的整月数。
+ *   一般情况下两种算法结果完全相同；只在月末夹日（31 号锚点遇到短月）时差 1~3 天。
+ *   扣完后必须至少还剩一个完整周期，否则不给（新周期会被到期日截短）。
+ *
+ * 每月 1 号重置的套餐：保持原样，扣 30 天、下次重置仍是原定的下个 1 号（v2board 对这类套餐同样扣 30 天）。
+ */
 class AdvanceCycleService
 {
+    // 每月 1 号重置的套餐固定扣的天数
     private const CONSUME_DAYS = 30;
     private const CONSUME_SECONDS = self::CONSUME_DAYS * 86400;
+    // 判断「原到期日是否足够再排一个整月」时的容差：到期时刻与重置锚点的分秒误差不算缺一个周期
+    private const PERIOD_TOLERANCE_SECONDS = 86400;
     // 默认按流量耗尽 95% 即可提前重置；与节点端常见的软上限（~95%）语义对齐。
     private const DEFAULT_USED_RATIO = 0.95;
     private const MIN_USED_RATIO = 0.5;
@@ -49,14 +72,15 @@ class AdvanceCycleService
                     return $preview;
                 }
 
-                $now = time();
+                $now = now()->getTimestamp();
                 $oldUpload = (int) ($lockedUser->u ?? 0);
                 $oldDownload = (int) ($lockedUser->d ?? 0);
                 $oldTotal = $oldUpload + $oldDownload;
                 $oldExpiredAt = (int) $lockedUser->expired_at;
-                $oldNextResetAt = $lockedUser->next_reset_at;
-                $newExpiredAt = $oldExpiredAt - self::CONSUME_SECONDS;
-                $newNextResetAt = $this->calculateAdvanceNextResetAt($lockedUser, $newExpiredAt);
+                $oldNextResetAt = $this->timestamp($lockedUser->next_reset_at);
+                $plan = $this->plan($lockedUser, $now);
+                $newExpiredAt = $plan['new_expired_at'];
+                $newNextResetAt = $plan['new_next_reset_at'];
                 // 提前进入下一周期 = 本周期结束，本周期加购的流量一并收回。
                 $expiredTopup = (int) ($lockedUser->transfer_topup ?? 0);
 
@@ -78,7 +102,8 @@ class AdvanceCycleService
                     'new_expired_at' => $newExpiredAt,
                     'old_next_reset_at' => $oldNextResetAt,
                     'new_next_reset_at' => $newNextResetAt,
-                    'consume_days' => self::CONSUME_DAYS,
+                    'consume_seconds' => $oldExpiredAt - $newExpiredAt,
+                    'consume_days' => $plan['consume_days'],
                     'ip' => $auditContext['ip'] ?? null,
                     'user_agent' => isset($auditContext['user_agent'])
                         ? substr((string) $auditContext['user_agent'], 0, 200)
@@ -104,6 +129,8 @@ class AdvanceCycleService
                 HookManager::call('traffic.reset.after', $lockedUser);
 
                 return array_merge($preview, [
+                    'consume_days' => $plan['consume_days'],
+                    'consume_seconds' => $oldExpiredAt - $newExpiredAt,
                     'eligible' => true,
                     'advanced' => true,
                     'message' => __('advance_cycle.success'),
@@ -125,17 +152,22 @@ class AdvanceCycleService
 
     private function evaluate(User $user): array
     {
-        $now = time();
+        $now = now()->getTimestamp();
         $used = (int) ($user->u ?? 0) + (int) ($user->d ?? 0);
         $transferEnable = (int) ($user->transfer_enable ?? 0);
         $expiredAt = $user->expired_at !== null ? (int) $user->expired_at : null;
-        $oldNextResetAt = $user->next_reset_at;
-        $newExpiredAt = $expiredAt ? $expiredAt - self::CONSUME_SECONDS : null;
+        $oldNextResetAt = $this->timestamp($user->next_reset_at);
+        $plan = $expiredAt ? $this->plan($user, $now) : null;
+        $newExpiredAt = $plan['new_expired_at'] ?? null;
         $usedRatio = $this->resolveUsedRatio();
         $usedThreshold = $this->calculateUsedThreshold($transferEnable, $usedRatio);
         $base = [
-            'consume_days' => self::CONSUME_DAYS,
-            'consume_seconds' => self::CONSUME_SECONDS,
+            // 实际扣掉的有效期：按月重置的套餐 = 本周期剩余时间，每月 1 号的套餐 = 30 天
+            'consume_days' => $plan['consume_days'] ?? null,
+            'consume_seconds' => ($expiredAt && $newExpiredAt !== null) ? $expiredAt - $newExpiredAt : null,
+            // 扣完后新周期的长度（秒），前端用来提示「新周期满一个月」
+            'new_cycle_seconds' => $plan ? $plan['new_next_reset_at'] - $now : null,
+            'reset_method' => $this->resolveResetMethod($user->plan),
             'used' => $used,
             'transfer_enable' => $transferEnable,
             'remaining' => max(0, $transferEnable - $used),
@@ -144,7 +176,7 @@ class AdvanceCycleService
             'old_expired_at' => $expiredAt,
             'new_expired_at' => $newExpiredAt,
             'old_next_reset_at' => $oldNextResetAt,
-            'new_next_reset_at' => $newExpiredAt ? $this->calculateAdvanceNextResetAt($user, $newExpiredAt) : null,
+            'new_next_reset_at' => $plan['new_next_reset_at'] ?? null,
         ];
 
         if ($user->banned || !$user->plan_id || !$user->plan) {
@@ -167,12 +199,12 @@ class AdvanceCycleService
             return array_merge($base, $this->ineligible('traffic_not_exhausted', __('advance_cycle.traffic_not_exhausted')));
         }
 
-        if (($expiredAt - $now) <= self::CONSUME_SECONDS) {
-            return array_merge($base, $this->ineligible('insufficient_remaining_days', __('advance_cycle.insufficient_remaining_days')));
-        }
-
         if ($oldNextResetAt !== null && $oldNextResetAt <= $now) {
             return array_merge($base, $this->ineligible('regular_reset_due', __('advance_cycle.regular_reset_due')));
+        }
+
+        if (!$plan['eligible']) {
+            return array_merge($base, $this->ineligible('insufficient_remaining_days', __('advance_cycle.insufficient_remaining_days')));
         }
 
         return array_merge($base, [
@@ -223,9 +255,9 @@ class AdvanceCycleService
 
     /**
      * 支持提前重置的重置方式：
-     *  - 按月重置（按到期日锚定）：提前进入下一周期，下一次重置排在 30 天后；
-     *  - 每月 1 号重置：立即清零，下一次重置仍是原定的下个 1 号，周期不重排。
-     * 两种都扣 30 天有效期，整个订阅期内能拿到的整月配额次数不变。
+     *  - 按月重置（按到期日锚定）：结束本周期、从现在起开新周期，扣掉的是本周期剩余时间；
+     *  - 每月 1 号重置：立即清零，扣 30 天，下一次重置仍是原定的下个 1 号，周期不重排。
+     * 两种整个订阅期内能拿到的整月配额份数都不变。
      */
     private function supportsAdvanceCycle(Plan $plan): bool
     {
@@ -235,22 +267,71 @@ class AdvanceCycleService
         ], true);
     }
 
-    private function calculateAdvanceNextResetAt(User $user, int $newExpiredAt): ?int
+    /**
+     * 算出提前重置后的新到期日、下次重置和扣掉的天数。
+     *
+     * @return array{eligible: bool, new_expired_at: int, new_next_reset_at: int, consume_days: float}
+     */
+    private function plan(User $user, int $now): array
     {
+        $oldExpiredAt = (int) $user->expired_at;
+
         if ($this->resolveResetMethod($user->plan) === Plan::RESET_TRAFFIC_FIRST_DAY_MONTH) {
-            // 每月 1 号的套餐：保留原定的下个 1 号，不因提前重置把重置日往后推。
-            $scheduled = $user->next_reset_at;
-            $scheduled = $scheduled instanceof \DateTimeInterface
-                ? $scheduled->getTimestamp()
-                : ($scheduled !== null ? (int) $scheduled : null);
-            if ($scheduled === null || $scheduled <= time()) {
+            // 每月 1 号的套餐：扣 30 天，保留原定的下个 1 号，不因提前重置把重置日往后推。
+            $newExpiredAt = $oldExpiredAt - self::CONSUME_SECONDS;
+            $scheduled = $this->timestamp($user->next_reset_at);
+            if ($scheduled === null || $scheduled <= $now) {
                 $scheduled = now()->startOfMonth()->addMonthNoOverflow()->timestamp;
             }
 
-            return min($scheduled, $newExpiredAt);
+            return [
+                'eligible' => ($oldExpiredAt - $now) > self::CONSUME_SECONDS,
+                'new_expired_at' => $newExpiredAt,
+                'new_next_reset_at' => min($scheduled, $newExpiredAt),
+                'consume_days' => (float) self::CONSUME_DAYS,
+            ];
         }
 
-        return min(time() + self::CONSUME_SECONDS, $newExpiredAt);
+        // 按月重置（按到期日锚定）
+        $tz = config('app.timezone');
+        $oldNextResetAt = $this->timestamp($user->next_reset_at);
+        if ($oldNextResetAt === null || $oldNextResetAt <= $now) {
+            // 排期缺失或已过：照原到期日的锚点现算一次，不改库
+            $oldNextResetAt = app(TrafficResetService::class)->calculateNextResetTime($user)?->timestamp ?? $oldExpiredAt;
+        }
+
+        // 原下次重置之后，到原到期日为止还排得下几个完整周期
+        $nextReset = Carbon::createFromTimestamp($oldNextResetAt, $tz);
+        $fullPeriods = 0;
+        while ($fullPeriods < 1200
+            && $nextReset->copy()->addMonthsNoOverflow($fullPeriods + 1)->timestamp <= $oldExpiredAt + self::PERIOD_TOLERANCE_SECONDS) {
+            $fullPeriods++;
+        }
+
+        $nowAt = Carbon::createFromTimestamp($now, $tz);
+        $newNextResetAt = $nowAt->copy()->addMonthNoOverflow()->timestamp;
+        // 新周期从现在起算；之后剩下的完整周期原样保留。永远不会把到期日往后推。
+        $newExpiredAt = $fullPeriods >= 1
+            ? min($oldExpiredAt, $nowAt->copy()->addMonthsNoOverflow($fullPeriods)->timestamp)
+            : $oldExpiredAt - max(0, $oldNextResetAt - $now);
+        $consumeSeconds = max(0, $oldExpiredAt - $newExpiredAt);
+
+        return [
+            // 扣完后至少还要有一个完整周期，否则新周期会被到期日截短
+            'eligible' => $fullPeriods >= 1 && $newExpiredAt >= $newNextResetAt,
+            'new_expired_at' => $newExpiredAt,
+            'new_next_reset_at' => min($newNextResetAt, $newExpiredAt),
+            'consume_days' => round($consumeSeconds / 86400, 1),
+        ];
+    }
+
+    private function timestamp(mixed $value): ?int
+    {
+        if ($value instanceof \DateTimeInterface) {
+            return $value->getTimestamp();
+        }
+
+        return $value !== null ? (int) $value : null;
     }
 
     private function ineligible(string $reason, string $message): array

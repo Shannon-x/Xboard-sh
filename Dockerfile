@@ -15,9 +15,10 @@
 #   2026-10-21: 8.2.35 (CVE-2026-109618 / CVE-2026-109619 hotfix), then 8.5.12 the same day
 #   because 8.2 reaches end of life on 2026-12-31. Swoole 6.2.2 supports PHP 8.2–8.5
 #   (package.xml), and swoole/docker-swoole's php8.5 recipe is identical to the php8.2 one.
+#   2026-11-19: 8.5.13 security release (sha256 matches docker-library/php versions.json).
 # ──────────────────────────────────────────────────────────────────────────────
-ARG PHP_BASE_VERSION=8.5.12
-ARG PHP_BASE_SHA256=08bc2eba2a588654ade1357174aa646b761556c862dda0678345ee29ed481209
+ARG PHP_BASE_VERSION=8.5.13
+ARG PHP_BASE_SHA256=607602acaf0c3061818e9916ec44a058e8b3d43959a83862b9cd3ec7bf5b785f
 # PHP 8.5 release managers (docker-library/php 8.5/alpine3.23/cli/Dockerfile).
 ARG PHP_BASE_GPG_KEYS="1198C0117593497A5EC5C199286AF1F9897469DC 49D9AF6BC72A80D6691719C8AA23F5BE9C7097D4 D95C03BC702BE9515344AE3374E44BC9067701A5"
 
@@ -268,7 +269,7 @@ FROM php-base
 
 # Security floor: the build fails if the base image is older than this, so a stale digest can
 # never ship silently. Bump it together with the FROM line above.
-ARG PHP_MIN_VERSION=8.5.12
+ARG PHP_MIN_VERSION=8.5.13
 # Swoole release tag built below. 6.2.2 is what production has run since 2026-08-02 and is
 # verified free of the CURLOPT_PREREQFUNCTION define (see above).
 ARG SWOOLE_VERSION=6.2.2

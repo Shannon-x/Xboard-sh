@@ -580,7 +580,8 @@ class McpAssistantTest extends TestCase
         $this->assertTrue($done['data']['done']);
         $fresh = $user->fresh();
         $this->assertSame(0, (int) $fresh->u + (int) $fresh->d);
-        $this->assertSame($expiredAt - 30 * 86400, (int) $fresh->expired_at, '到期日提前 30 天');
+        // 按月重置：只扣本周期剩下的约 10 天，新周期从现在起满一个月
+        $this->assertEqualsWithDelta(min($expiredAt, now()->addMonthNoOverflow()->timestamp), (int) $fresh->expired_at, 5, '到期日只提前本周期剩余时间');
         $this->assertTrue($this->tool($token, 'advance_traffic_cycle', ['confirm' => true])['error'], '流量没用完不能再提前');
     }
 

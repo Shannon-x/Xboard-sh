@@ -19,7 +19,7 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 
 #[Name('advance_traffic_cycle')]
 #[Title('免费提前重置流量')]
-#[Description('免费把流量提前重置成满额，代价是到期日提前 30 天（等于提前用下个月）。本周期加购的流量会一并清掉。不带 confirm 时只返回会发生什么；把到期日变化讲给客户、客户明确同意后再带 confirm=true 调用，做了不能撤销。想保留到期日的客户请改用流量重置包或加购流量（见 get_traffic_options）。')]
+#[Description('免费把流量提前重置成满额，并从现在起开一个满一个月的新周期。代价是到期日提前「本周期还没用完的时间」（按月重置的套餐；每月 1 号重置的套餐固定提前 30 天），具体天数看预览里的 consume_days。本周期加购的流量会一并清掉。不带 confirm 时只返回会发生什么；把到期日变化讲给客户、客户明确同意后再带 confirm=true 调用，做了不能撤销。想保留到期日的客户请改用流量重置包或加购流量（见 get_traffic_options）。')]
 #[IsReadOnly(false)]
 #[IsDestructive]
 #[IsIdempotent(false)]
@@ -30,7 +30,7 @@ class AdvanceTrafficCycleTool extends McpTool
     public function schema(JsonSchema $schema): array
     {
         return [
-            'confirm' => $schema->boolean()->description('客户已同意「到期日提前 30 天」后传 true；不传只预览。'),
+            'confirm' => $schema->boolean()->description('客户已同意预览里的到期日变化后传 true；不传只预览。'),
         ];
     }
 
@@ -48,6 +48,8 @@ class AdvanceTrafficCycleTool extends McpTool
                 'done' => false,
                 'expires_at_now' => P::time($preview['old_expired_at']),
                 'expires_at_after' => P::time($preview['new_expired_at']),
+                'consume_days' => $preview['consume_days'],
+                'next_reset_after' => P::time($preview['new_next_reset_at']),
                 // 本周期加购的流量会被收回，所以重置后的额度是套餐额度，不含加购
                 'traffic_after_gb' => P::gb(max(0, (int) $preview['transfer_enable'] - (int) ($user->transfer_topup ?? 0))),
                 'topup_gb_forfeited' => P::gb((int) ($user->transfer_topup ?? 0)),

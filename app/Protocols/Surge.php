@@ -22,10 +22,30 @@ class Surge extends AbstractProtocol
         Server::TYPE_ANYTLS,
         Server::TYPE_SOCKS,
         Server::TYPE_HTTP,
+        Server::TYPE_VLESS,
     ];
     protected $protocolRequirements = [
         'surge.hysteria.protocol_settings.version' => [2 => '2398'],
     ];
+
+    /**
+     * VLESS（含 Encryption）是否下发由 supportsSurge6Features() 按 UA 里的 Surge 内核版本决定，
+     * 这里放开基类的加密节点黑名单，交给 handle() 统一判断。
+     */
+    protected $vlessEncryptionFormat = true;
+
+    /**
+     * Surge 6 新功能（VLESS、hysteria2 端口跳跃/Salamander/证书指纹）的最低版本。
+     *
+     * 官方手册 https://manual.nssurge.com/policies/vless.html 标注「VLESS iOS 6.0.0+ Mac 6.12.0+」，
+     * 两个平台共用的协议内核是 SurgeCore 6.12.0（Mac 6.12.0 起新增 `vless` 类型）。
+     * Surge 拉托管配置的 UA 形如 `Surge Mac/12900 SurgeCore/6012000`、`Surge iOS/4037 SurgeCore/6012000`：
+     *   - 有 SurgeCore 段：按内核版本判断（6012000 = 6.12.0），iOS / Mac / tvOS 通用；
+     *   - 没有 SurgeCore 段：只认 Mac 构建号 12900（Mac 6.12.0），iOS 构建号对不上版本，一律不给。
+     * 旧版 Surge 读到不认识的代理类型会让整份托管配置报错，所以宁可不发也不能猜。
+     */
+    const SURGE6_MIN_CORE = 6012000;
+    const SURGE6_MIN_MAC_BUILD = 12900;
 
     public function handle()
     {
@@ -36,6 +56,7 @@ class Surge extends AbstractProtocol
 
         $proxies = '';
         $proxyGroup = '';
+        $surge6 = $this->supportsSurge6Features();
 
         foreach ($servers as $item) {
             if (
@@ -61,8 +82,18 @@ class Surge extends AbstractProtocol
                 $proxyGroup .= $item['name'] . ', ';
             }
             if ($item['type'] === Server::TYPE_HYSTERIA) {
-                $proxies .= self::buildHysteria($item['password'], $item);
-                $proxyGroup .= $item['name'] . ', ';
+                $line = self::buildHysteria($item['password'], $item, $surge6);
+                if ($line !== '') {
+                    $proxies .= $line;
+                    $proxyGroup .= $item['name'] . ', ';
+                }
+            }
+            if ($item['type'] === Server::TYPE_VLESS && $surge6) {
+                $line = self::buildVless($item['password'], $item);
+                if ($line !== '') {
+                    $proxies .= $line;
+                    $proxyGroup .= $item['name'] . ', ';
+                }
             }
             if ($item['type'] === Server::TYPE_ANYTLS) {
                 $proxies .= self::buildAnyTLS($item['password'], $item);
@@ -102,6 +133,25 @@ class Surge extends AbstractProtocol
         return response($config, 200)
             ->header('content-type', 'application/octet-stream')
             ->header('content-disposition', "attachment;filename*=UTF-8''" . rawurlencode($appName) . ".conf");
+    }
+
+    /**
+     * 当前请求是否来自支持 Surge 6 新功能的 Surge（判断规则见 SURGE6_MIN_CORE）。
+     * 读不出版本（比如 ?flag=surge 手动指定、或 UA 被改过）一律按旧版处理。
+     */
+    protected function supportsSurge6Features(): bool
+    {
+        $ua = strtolower((string) $this->userAgent);
+        if (!str_contains($ua, 'surge')) {
+            return false;
+        }
+        if (preg_match('/surgecore\/(\d+)/', $ua, $m)) {
+            return (int) $m[1] >= self::SURGE6_MIN_CORE;
+        }
+        if (preg_match('/surge[\s_-]*mac(?:os)?\/(\d+)/', $ua, $m)) {
+            return (int) $m[1] >= self::SURGE6_MIN_MAC_BUILD;
+        }
+        return false;
     }
 
 
@@ -218,6 +268,7 @@ class Surge extends AbstractProtocol
             "{$server['host']}",
             "{$server['port']}",
             "password={$password}",
+            'tfo=true',
         ];
         if ($serverName = data_get($protocol_settings, 'tls.server_name')) {
             $config[] = "sni={$serverName}";
@@ -231,39 +282,205 @@ class Surge extends AbstractProtocol
         return $uri;
     }
 
-    //参考文档: https://manual.nssurge.com/policy/proxy.html
-    public static function buildHysteria($password, $server)
+    /**
+     * 参考文档: https://manual.nssurge.com/policies/hysteria2.html
+     *
+     * @param bool $surge6 客户端是否 Surge 6（见 supportsSurge6Features），决定能否用下面三个较新的参数：
+     *   - port-hopping：节点端口是范围（如 53000-54000）时下发，Surge 会忽略主端口在范围内轮换；
+     *   - salamander-password：Salamander 混淆（手册标 Mac 6.4.3+，iOS 未标版本）；
+     *   - server-cert-fingerprint-sha256：用证书指纹代替链校验（比 skip-cert-verify 安全）。
+     *   旧版 Surge 不认识这些参数时会让配置报错，所以只给 Surge 6；旧版维持原来的写法。
+     */
+    public static function buildHysteria($password, $server, bool $surge6 = false)
     {
         $protocol_settings = $server['protocol_settings'];
         if ($protocol_settings['version'] != 2)
             return '';
+
+        $obfsOn = (bool) data_get($protocol_settings, 'obfs.open');
+        $obfsType = data_get($protocol_settings, 'obfs.type', 'salamander') ?: 'salamander';
+        $obfsPassword = data_get($protocol_settings, 'obfs.password');
+        if ($obfsOn) {
+            // 混淆开着但写不出来 = 节点必然连不上，不如不发
+            if (!$surge6 || $obfsType !== 'salamander' || blank($obfsPassword)) {
+                return '';
+            }
+        }
+
         $config = [
             "{$server['name']} = hysteria2",
             "{$server['host']}",
             "{$server['port']}",
             "password={$password}",
-            $protocol_settings['tls']['server_name'] ? "sni={$protocol_settings['tls']['server_name']}" : "",
+            data_get($protocol_settings, 'tls.server_name') ? "sni={$protocol_settings['tls']['server_name']}" : "",
             // 'tfo=true', 
             'udp-relay=true'
         ];
+        if ($surge6 && !empty($server['ports'])) {
+            $config[] = 'port-hopping="' . str_replace(',', ';', (string) $server['ports']) . '"';
+            if ($interval = (int) data_get($protocol_settings, 'hop_interval')) {
+                $config[] = "port-hopping-interval={$interval}";
+            }
+        }
+        if ($obfsOn) {
+            $config[] = 'salamander-password="' . $obfsPassword . '"';
+        }
         if (data_get($protocol_settings, 'bandwidth.up')) {
             $config[] = "upload-bandwidth={$protocol_settings['bandwidth']['up']}";
         }
         if (data_get($protocol_settings, 'bandwidth.down')) {
             $config[] = "download-bandwidth={$protocol_settings['bandwidth']['down']}";
         }
-        // Surge 不支持 hysteria2 的证书指纹固定：有指纹（= 面板自签证书）时只能跳过链校验，
-        // 否则该节点在 Surge 上必然握手失败。原来那个三元永远取 true 分支，等于写死。
-        if (
-            data_get($protocol_settings, 'tls.allow_insecure')
-            || CertPinHelper::normalizePin(data_get($protocol_settings, 'tls.pinned_peer_cert_sha256')) !== null
-        ) {
+        // 有指纹（= 面板自签证书）时链校验一定失败：Surge 6 下发指纹，旧版只能跳过链校验，
+        // 否则该节点在 Surge 上必然握手失败。
+        $pin = CertPinHelper::normalizePin(data_get($protocol_settings, 'tls.pinned_peer_cert_sha256'));
+        if (data_get($protocol_settings, 'tls.allow_insecure')) {
             $config[] = 'skip-cert-verify=true';
+        } elseif ($pin !== null) {
+            $config[] = $surge6 ? "server-cert-fingerprint-sha256={$pin}" : 'skip-cert-verify=true';
         }
         $config = array_filter($config);
         $uri = implode(',', $config);
         $uri .= "\r\n";
         return $uri;
+    }
+
+    /**
+     * 参考文档: https://manual.nssurge.com/policies/vless.html（VLESS iOS 6.0.0+ Mac 6.12.0+）
+     *
+     * 支持：RAW(tcp) / WebSocket / HTTPUpgrade / gRPC / XHTTP；无 TLS / TLS / REALITY；
+     *       xtls-rprx-vision flow；VLESS Encryption（mlkem768x25519plus）。
+     * 不支持、整条不下发：h2、mKCP、tcp+http 伪装、ws/httpupgrade+REALITY、
+     *       gRPC 不带 TLS、flow 搭在 ws/gRPC/XHTTP 上（Surge 只在 RAW+TLS/REALITY 或 Encryption 上跑 Vision）。
+     * 忽略、照常下发：ECH（Surge 只收内联 ECHConfigList，且要 6.13 测试版；
+     *       面板的 cloudflare 自动获取写不出来，不带 ECH 连 Cloudflare 照样能通）、multiplex（Surge 没有）。
+     * UDP 不需要参数，Surge 固定走 XUDP。
+     *
+     * @return string 一行 Surge 代理；不支持的组合返回空串
+     */
+    public static function buildVless($uuid, $server): string
+    {
+        $ps = data_get($server, 'protocol_settings', []);
+        $tlsMode = (int) data_get($ps, 'tls', 0);
+        $network = strtolower(trim((string) data_get($ps, 'network', 'tcp'))) ?: 'tcp';
+        if ($network === 'raw') {
+            $network = 'tcp';
+        }
+        $flow = (string) data_get($ps, 'flow', '');
+        $flow = in_array($flow, ['', 'none'], true) ? '' : $flow;
+
+        $encryption = '';
+        if (data_get($ps, 'encryption') === 'mlkem768x25519plus') {
+            $enc = data_get($ps, 'encryption_settings', []) ?: [];
+            $encryption = 'mlkem768x25519plus.' . ($enc['mode'] ?? 'native') . '.' . ($enc['rtt'] ?? '1rtt');
+            if (!empty($enc['client_padding'])) {
+                $encryption .= '.' . $enc['client_padding'];
+            }
+            $encryption .= '.' . ($enc['password'] ?? '');
+        } elseif (!in_array((string) data_get($ps, 'encryption'), ['', 'none'], true)) {
+            return ''; // 不认识的加密方式
+        }
+
+        if (!in_array($network, ['tcp', 'ws', 'httpupgrade', 'grpc', 'xhttp'], true)) {
+            return '';
+        }
+        if ($network === 'tcp' && data_get($ps, 'network_settings.header.type', 'none') === 'http') {
+            return '';
+        }
+        if ($tlsMode === 2 && in_array($network, ['ws', 'httpupgrade'], true)) {
+            return '';
+        }
+        if ($network === 'grpc' && $tlsMode === 0) {
+            return '';
+        }
+        if ($flow !== '') {
+            if (!in_array($flow, ['xtls-rprx-vision', 'xtls-rprx-vision-udp443'], true)) {
+                return '';
+            }
+            $visionOk = $network === 'tcp' && ($tlsMode !== 0 || $encryption !== '');
+            if (!$visionOk) {
+                return '';
+            }
+        }
+        if ($tlsMode === 2 && blank(data_get($ps, 'reality_settings.public_key'))) {
+            return '';
+        }
+
+        $config = [
+            "{$server['name']} = vless",
+            "{$server['host']}",
+            "{$server['port']}",
+            "username={$uuid}",
+        ];
+        if ($flow !== '') {
+            $config[] = "flow={$flow}";
+        }
+        if ($encryption !== '') {
+            $config[] = "encryption={$encryption}";
+        }
+
+        switch ($network) {
+            case 'ws':
+            case 'httpupgrade':
+                $config[] = 'ws=true';
+                if ($network === 'httpupgrade') {
+                    $config[] = 'ws-http-upgrade=true';
+                }
+                if ($path = data_get($ps, 'network_settings.path')) {
+                    $config[] = "ws-path={$path}";
+                }
+                $host = data_get($ps, 'network_settings.headers.Host') ?: data_get($ps, 'network_settings.host');
+                if (is_array($host)) {
+                    $host = $host[0] ?? null;
+                }
+                if ($host) {
+                    $config[] = "ws-headers=Host:{$host}";
+                }
+                break;
+            case 'grpc':
+                $config[] = 'grpc=true';
+                if ($serviceName = data_get($ps, 'network_settings.serviceName')) {
+                    $config[] = "grpc-service-name={$serviceName}";
+                }
+                break;
+            case 'xhttp':
+                $config[] = 'xhttp=true';
+                if ($path = data_get($ps, 'network_settings.path')) {
+                    $config[] = "xhttp-path={$path}";
+                }
+                if ($host = data_get($ps, 'network_settings.host')) {
+                    $config[] = 'xhttp-host=' . (is_array($host) ? ($host[0] ?? '') : $host);
+                }
+                $mode = data_get($ps, 'network_settings.mode');
+                if (in_array($mode, ['auto', 'packet-up', 'stream-up', 'stream-one'], true)) {
+                    $config[] = "xhttp-mode={$mode}";
+                }
+                break;
+        }
+
+        if ($tlsMode === 2) {
+            // REALITY：隐含 TLS，不能写 tls=true / skip-cert-verify / 指纹
+            if ($sni = data_get($ps, 'reality_settings.server_name')) {
+                $config[] = "sni={$sni}";
+            }
+            $config[] = 'reality-public-key=' . data_get($ps, 'reality_settings.public_key');
+            if ($shortId = data_get($ps, 'reality_settings.short_id')) {
+                $config[] = "reality-short-id={$shortId}";
+            }
+        } elseif ($tlsMode === 1) {
+            $config[] = 'tls=true';
+            if ($sni = data_get($ps, 'tls_settings.server_name')) {
+                $config[] = "sni={$sni}";
+            }
+            if (data_get($ps, 'tls_settings.allow_insecure')) {
+                $config[] = 'skip-cert-verify=true';
+            } elseif ($pin = CertPinHelper::normalizePin(data_get($ps, 'tls_settings.pinned_peer_cert_sha256'))) {
+                $config[] = "server-cert-fingerprint-sha256={$pin}";
+            }
+        }
+        $config[] = 'tfo=true';
+
+        return implode(',', array_filter($config, fn($v) => $v !== '' && $v !== null)) . "\r\n";
     }
 
     //参考文档: https://manual.nssurge.com/policy/proxy.html

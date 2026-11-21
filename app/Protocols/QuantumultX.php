@@ -4,6 +4,7 @@ namespace App\Protocols;
 
 use App\Utils\Helper;
 use App\Support\AbstractProtocol;
+use App\Support\CertPinHelper;
 use App\Models\Server;
 
 class QuantumultX extends AbstractProtocol
@@ -17,13 +18,22 @@ class QuantumultX extends AbstractProtocol
         Server::TYPE_ANYTLS,
         Server::TYPE_SOCKS,
         Server::TYPE_HTTP,
+        Server::TYPE_HYSTERIA,
     ];
+
+    /**
+     * 圈X 从 1.9.0（build 965）起才认 hysteria2= 节点。
+     * UA 只带 1.9.0 不带 build 号，所以按 1.9.0 卡；读不到版本的（只带 flag 的请求）一律不发，
+     * 免得旧版圈X 拿到不认识的行。
+     */
+    const HYSTERIA2_MIN_VERSION = '1.9.0';
 
     public function handle()
     {
         $servers = $this->servers;
         $user = $this->user;
         $uri = '';
+        $supportsHysteria2 = $this->supportsHysteria2();
         foreach ($servers as $item) {
             $uri .= match ($item['type']) {
                 Server::TYPE_SHADOWSOCKS => self::buildShadowsocks($item['password'], $item),
@@ -33,6 +43,7 @@ class QuantumultX extends AbstractProtocol
                 Server::TYPE_ANYTLS => self::buildAnyTLS($item['password'], $item),
                 Server::TYPE_SOCKS => self::buildSocks5($item['password'], $item),
                 Server::TYPE_HTTP => self::buildHttp($item['password'], $item),
+                Server::TYPE_HYSTERIA => $supportsHysteria2 ? self::buildHysteria($item['password'], $item) : '',
                 default => ''
             };
         }
@@ -265,6 +276,87 @@ class QuantumultX extends AbstractProtocol
 
         self::applyTransportSettings($config, $protocol_settings, true);
         self::applyCommonSettings($config, $server);
+
+        return implode(',', array_filter($config)) . "\r\n";
+    }
+
+    /**
+     * 当前请求的圈X 能不能收 hysteria2 节点：必须读到版本号且 >= HYSTERIA2_MIN_VERSION
+     */
+    protected function supportsHysteria2(): bool
+    {
+        if (!in_array($this->clientName, $this->flags, true)) {
+            return false;
+        }
+        return !blank($this->clientVersion)
+            && version_compare($this->clientVersion, self::HYSTERIA2_MIN_VERSION, '>=');
+    }
+
+    /**
+     * hysteria2=example.com:443, password=pwd, salamander-password=obfskey, tls-host=example.com,
+     * tls-verification=true, download-bandwidth=100, port-hopping=20000-50000, port-hopping-interval=30,
+     * udp-relay=true, tag=hy2-01
+     *
+     * 圈X 只支持 Hysteria 2，v1 节点不发。
+     */
+    public static function buildHysteria($password, $server)
+    {
+        $protocol_settings = data_get($server, 'protocol_settings', []);
+        if ((int) data_get($protocol_settings, 'version', 2) !== 2) {
+            return '';
+        }
+
+        // 混淆只认 salamander，开了别的类型的节点圈X 连不上，不发
+        $salamander = null;
+        if (data_get($protocol_settings, 'obfs.open')) {
+            $obfsType = strtolower((string) data_get($protocol_settings, 'obfs.type', 'salamander'));
+            $obfsPassword = data_get($protocol_settings, 'obfs.password');
+            if ($obfsType !== 'salamander' || blank($obfsPassword)) {
+                return '';
+            }
+            $salamander = $obfsPassword;
+        }
+
+        $addr = Helper::wrapIPv6($server['host']);
+        $config = [
+            "hysteria2={$addr}:{$server['port']}",
+            "password={$password}",
+        ];
+        if ($salamander !== null) {
+            $config[] = "salamander-password={$salamander}";
+        }
+
+        if ($serverName = data_get($protocol_settings, 'tls.server_name')) {
+            $config[] = "tls-host={$serverName}";
+        }
+        // tls-verification 必须显式写；面板自签证书（有指纹）时开校验并固定证书指纹
+        if (data_get($protocol_settings, 'tls.allow_insecure')) {
+            $config[] = 'tls-verification=false';
+        } else {
+            $config[] = 'tls-verification=true';
+            $pin = CertPinHelper::normalizePin(data_get($protocol_settings, 'tls.pinned_peer_cert_sha256'));
+            if ($pin !== null) {
+                $config[] = "tls-cert-sha256={$pin}";
+            }
+        }
+
+        // 服务端下行 = 客户端下载，单位 Mbps
+        $down = (int) data_get($protocol_settings, 'bandwidth.down', 0);
+        if ($down > 0) {
+            $config[] = "download-bandwidth={$down}";
+        }
+
+        // 端口跳跃：port 是面板从范围里随机挑的一个，ports 是完整范围
+        if (!blank($server['ports'] ?? null)) {
+            $config[] = 'port-hopping=' . str_replace(' ', '', (string) $server['ports']);
+            $hopInterval = (int) data_get($protocol_settings, 'hop_interval', 0);
+            if ($hopInterval >= 5 && $hopInterval <= 3600) {
+                $config[] = "port-hopping-interval={$hopInterval}";
+            }
+        }
+
+        $config[] = 'udp-relay=true';
+        $config[] = "tag={$server['name']}";
 
         return implode(',', array_filter($config)) . "\r\n";
     }

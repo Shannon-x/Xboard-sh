@@ -223,6 +223,9 @@ class RouteServiceProvider extends ServiceProvider
         RateLimiter::for('telegram-gate', function (Request $request) {
             return Limit::perMinute(120)->by('telegram_gate:ip:' . $request->ip());
         });
+        RateLimiter::for('telegram-gate-bind', function (Request $request) {
+            return Limit::perMinute(20)->by('telegram_gate_bind:user:' . ($request->user()?->id ?? $request->ip()));
+        });
         RateLimiter::for('notify-pref', function (Request $request) {
             return Limit::perMinute(30)->by('notify_pref:ip:' . $request->ip());
         });

@@ -219,6 +219,10 @@ class RouteServiceProvider extends ServiceProvider
         });
 
         // 免登录通知偏好页：凭据是 128 位随机 key，限流只防枚举；一键退订 / 保存收得更紧
+        // 群管理机器人的入群门槛查询：调用方只有机器人一台机器，按 IP 给足余量，只防密钥泄露后被拿来撞库
+        RateLimiter::for('telegram-gate', function (Request $request) {
+            return Limit::perMinute(120)->by('telegram_gate:ip:' . $request->ip());
+        });
         RateLimiter::for('notify-pref', function (Request $request) {
             return Limit::perMinute(30)->by('notify_pref:ip:' . $request->ip());
         });

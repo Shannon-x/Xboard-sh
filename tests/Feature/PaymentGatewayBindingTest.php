@@ -33,11 +33,11 @@ class PaymentGatewayBindingTest extends TestCase
 
     private int $sequence = 0;
 
-    /** 生产上那对同商户双通道配置的等价形态：url/pid/key 相同，只有名字与预选通道不同。 */
+    /** 同商户双通道配置的等价形态：url/pid/key 相同，只有名字与预选通道不同。全部是假值，测试里绝不能填真实商户凭证。 */
     private const MERCHANT_CONFIG = [
         'url' => 'https://gateway.example.com/',
-        'pid' => '80657',
-        'key' => '5e39ec1f594d8b5d69862d8e5b92ad02',
+        'pid' => '10001',
+        'key' => 'fake-merchant-key-for-tests-only',
     ];
 
     private function makePayment(array $config, string $method = 'EPay', ?string $name = null): Payment

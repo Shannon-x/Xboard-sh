@@ -58,10 +58,15 @@ final class RefundWatchService
     /**
      * @return array{checked: int, paid: int, refunded: int, frozen: int, errors: int}
      */
-    public function run(int $limit = 100, int $sleepMs = 200): array
+    public function run(int $limit = 100, int $sleepMs = 200, int $maxSeconds = 0): array
     {
         $stats = ['checked' => 0, 'paid' => 0, 'refunded' => 0, 'frozen' => 0, 'errors' => 0];
+        $deadline = $maxSeconds > 0 ? microtime(true) + $maxSeconds : null;
         foreach ($this->due(time(), $limit) as $item) {
+            // 时间预算：积压多时每轮只跑这么久，按时收尾释放锁，剩下的下一轮接着查
+            if ($deadline !== null && microtime(true) >= $deadline) {
+                break;
+            }
             $outcome = $this->recheck($item['row'], $item['paid_at'], '付款后第 ' . self::daysSince($item['paid_at']) . ' 天回查');
             $stats['checked']++;
             $stats[$outcome]++;
@@ -84,8 +89,9 @@ final class RefundWatchService
         if ($subject === null) {
             return null;
         }
-        $row = PaymentVerification::where('subject_type', $subject['type'])->where('subject_id', $subject['id'])->first();
-        if (!$row || $row->refunded_at !== null) {
+        $row = PaymentVerification::where('subject_type', $subject['type'])->where('subject_id', $subject['id'])->first()
+            ?? $this->verifyNow($subject['type'], $subject['id']);
+        if (!$row || $row->refunded_at !== null || $row->verdict === PaymentVerification::VERDICT_SKIPPED) {
             return null;
         }
         return $this->recheck($row, $subject['paid_at'], $source);
@@ -256,6 +262,26 @@ final class RefundWatchService
     }
 
     /** @return array{type: string, id: int, paid_at: int}|null */
+    /**
+     * 推送 / 投诉指向本站的单，但它还没有核验记录（付款核验还没轮到，例如定时任务停过一阵）：
+     * 当场补一次付款核验建档，随后照常回查处置。以前这里直接返回 null，网关明确推送的退款被
+     * 当成「本站没有对应的单」只告警不处置（2026-11-23 定时任务停摆期间漏掉 5 笔）。
+     */
+    private function verifyNow(string $type, int $id): ?PaymentVerification
+    {
+        $verification = new PaymentVerificationService($this->query);
+        $subject = $verification->subjectFor($type, $id);
+        if ($subject === null) {
+            return null;
+        }
+        try {
+            return $verification->verify($subject);
+        } catch (\Throwable $e) {
+            Log::warning('[refund-watch] 推送补核验失败', ['type' => $type, 'id' => $id, 'error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
     private function findSubjectByCallbackNo(string $callbackNo): ?array
     {
         $order = Order::where('callback_no', $callbackNo)->first(['id', 'paid_at']);

@@ -16,7 +16,8 @@ class VerifyPayments extends Command
     protected $signature = 'payment:verify
         {--limit=100 : 单次最多核验多少笔}
         {--backfill-days= : 回填：核验最近 N 天已付的单（默认只看 7 天）}
-        {--sleep-ms=200 : 两次网关查询之间的间隔（毫秒）}';
+        {--sleep-ms=200 : 两次网关查询之间的间隔（毫秒）}
+        {--max-seconds=0 : 单次最多跑多少秒，0 为不限（积压时按时收尾，剩下的下一轮接着查）}';
 
     protected $description = '付款事后核验：向支付网关复核已付订单与充值单';
 
@@ -24,7 +25,12 @@ class VerifyPayments extends Command
     {
         $days = $this->option('backfill-days');
         $window = $days !== null && $days !== '' ? max(1, (int) $days) : PaymentVerificationService::DEFAULT_WINDOW_DAYS;
-        $result = $service->run(max(1, (int) $this->option('limit')), $window, max(0, (int) $this->option('sleep-ms')));
+        $result = $service->run(
+            max(1, (int) $this->option('limit')),
+            $window,
+            max(0, (int) $this->option('sleep-ms')),
+            max(0, (int) $this->option('max-seconds'))
+        );
 
         if ($result['checked'] > 0) {
             Log::info('[payment-verification] run', $result);

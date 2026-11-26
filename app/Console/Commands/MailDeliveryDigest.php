@@ -8,6 +8,7 @@ use App\Models\MailLog;
 use App\Models\User;
 use App\Services\TelegramService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -20,9 +21,12 @@ class MailDeliveryDigest extends Command
     protected $signature = 'mail:delivery-digest
                             {--hours=24 : 统计最近几小时}
                             {--force : 没有失败也发}
-                            {--dry-run : 只打印不发送}';
+                            {--dry-run : 只打印不发送}
+                            {--once-per-day : 当天已跑过就跳过；没跑过则从上一次起统计（最多 72 小时）}';
 
     protected $description = '邮件投递日报：退信、暂停投递的用户、未投递的收据 / 账单';
+
+    public const LAST_RUN_KEY = 'mail_delivery_digest:last_run_at';
 
     public function handle(): int
     {
@@ -31,6 +35,20 @@ class MailDeliveryDigest extends Command
             return 0;
         }
         $hours = max(1, min(24 * 30, (int) $this->option('hours')));
+        if ($this->option('once-per-day')) {
+            // 9:00 起每 15 分钟一次：当天跑过就跳过；调度停过则从上一次起补统计
+            $last = (int) Cache::get(self::LAST_RUN_KEY, 0);
+            if ($last > 0 && date('Y-m-d', $last) === date('Y-m-d')) {
+                $this->line('今天已经跑过，跳过');
+                return 0;
+            }
+            if (!$this->option('dry-run')) {
+                Cache::forever(self::LAST_RUN_KEY, time());
+            }
+            if ($last > 0) {
+                $hours = max($hours, min(72, (int) ceil((time() - $last) / 3600)));
+            }
+        }
         $since = time() - $hours * 3600;
 
         $sent = MailLog::where('created_at', '>=', $since)->where('status', 1)->count();

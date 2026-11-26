@@ -68,18 +68,25 @@ class PaymentVerificationService
      *
      * @return array{checked: int, verdicts: array<string, int>}
      */
-    public function run(int $limit = 100, int $windowDays = self::DEFAULT_WINDOW_DAYS, int $sleepMs = 200): array
+    public function run(int $limit = 100, int $windowDays = self::DEFAULT_WINDOW_DAYS, int $sleepMs = 200, int $maxSeconds = 0): array
     {
         $subjects = $this->dueSubjects(Carbon::now()->getTimestamp(), $limit, $windowDays);
+        $deadline = $maxSeconds > 0 ? microtime(true) + $maxSeconds : null;
         $verdicts = [];
+        $checked = 0;
         foreach ($subjects as $i => $subject) {
+            // 时间预算：积压多时每轮只跑这么久，按时收尾释放锁，剩下的下一轮接着查
+            if ($deadline !== null && microtime(true) >= $deadline) {
+                break;
+            }
             if ($i > 0 && $sleepMs > 0) {
                 usleep($sleepMs * 1000);
             }
             $verdict = $this->verify($subject)->verdict;
             $verdicts[$verdict] = ($verdicts[$verdict] ?? 0) + 1;
+            $checked++;
         }
-        return ['checked' => count($subjects), 'verdicts' => $verdicts];
+        return ['checked' => $checked, 'verdicts' => $verdicts];
     }
 
     /**
@@ -122,6 +129,27 @@ class PaymentVerificationService
 
         usort($subjects, fn ($a, $b) => $a['paid_at'] <=> $b['paid_at'] ?: strcmp($a['type'], $b['type']) ?: $a['id'] <=> $b['id']);
         return array_slice($subjects, 0, $limit);
+    }
+
+    /**
+     * 按单号取一张已付单的核验对象（不看核验窗口与入账时长）。退款推送 / 投诉来时这张单可能还没被
+     * payment:verify 轮到（例如定时任务停过一阵），由 RefundWatchService 当场补核验。
+     *
+     * @return array{type: string, id: int, user_id: int, trade_no: string, callback_no: ?string, expected: int, payment_id: int, paid_at: int}|null
+     */
+    public function subjectFor(string $type, int $id): ?array
+    {
+        if ($type === PaymentVerification::SUBJECT_ORDER) {
+            $row = DB::table('v2_order')->where('id', $id)->whereNotNull('paid_at')
+                ->first(['id', 'user_id', 'trade_no', 'callback_no', 'total_amount', 'handling_amount', 'payment_id', 'paid_at']);
+            return $row ? $this->subject($type, $row, (int) $row->total_amount) : null;
+        }
+        if ($type === PaymentVerification::SUBJECT_RECHARGE) {
+            $row = DB::table(self::RECHARGE_TABLE)->where('id', $id)->whereNotNull('paid_at')
+                ->first(['id', 'user_id', 'trade_no', 'callback_no', 'deposit_amount', 'handling_amount', 'payment_id', 'paid_at']);
+            return $row ? $this->subject($type, $row, (int) $row->deposit_amount) : null;
+        }
+        return null;
     }
 
     /**

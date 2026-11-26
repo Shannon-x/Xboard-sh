@@ -3,10 +3,9 @@
 namespace App\Console;
 
 use App\Services\Plugin\PluginManager;
-use App\Utils\CacheKey;
+use App\Support\SchedulerHeartbeat;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
-use Illuminate\Support\Facades\Cache;
 
 class Kernel extends ConsoleKernel
 {
@@ -28,71 +27,75 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule): void
     {
-        Cache::put(CacheKey::get('SCHEDULE_LAST_CHECK_AT', null), time());
+        // 心跳：每分钟一次、最先派发，证明调度真的在跑（见 SchedulerHeartbeat / SchedulerWatchdog）。
+        // 原来在这里直接写「最后检查时间」，可 schedule() 在任何 artisan 命令启动时都会被调用，
+        // 调度停了它也照样刷新，2026-11-23 停摆近三天后台都显示正常。
+        $schedule->call(static fn () => SchedulerHeartbeat::beat())->name('scheduler:heartbeat')->everyMinute();
+
+        // 所有命令都 runInBackground：每条命令各自一个子进程并行跑，某一条变慢 / 卡住不会拖住同一分钟后面的任务；
+        // withoutOverlapping 的锁在命令结束时由 schedule:finish 释放，卡死的也会按各自的分钟数过期。
         // v2board
-        $schedule->command('xboard:statistics')->dailyAt('0:10')->onOneServer();
+        $schedule->command('xboard:statistics')->dailyAt('0:10')->onOneServer()->runInBackground();
         // check
-        $schedule->command('check:order')->everyMinute()->onOneServer()->withoutOverlapping(5);
+        $schedule->command('check:order')->everyMinute()->onOneServer()->withoutOverlapping(5)->runInBackground();
         // 佣金在订单完成 3 天后才确认、结算；工单是 24 小时无回复才自动关闭：都不需要分钟级精度。
         // 调度器里每条 artisan 命令都是一次子进程启动（≈ 0.25 s CPU），这两条从每分钟改为每 5 分钟。
-        $schedule->command('check:commission')->everyFiveMinutes()->onOneServer()->withoutOverlapping(5);
-        $schedule->command('check:ticket')->everyFiveMinutes()->onOneServer()->withoutOverlapping(5);
+        $schedule->command('check:commission')->everyFiveMinutes()->onOneServer()->withoutOverlapping(5)->runInBackground();
+        $schedule->command('check:ticket')->everyFiveMinutes()->onOneServer()->withoutOverlapping(5)->runInBackground();
         // 自增主键耗尽前告警（v2_stat_user 曾被 upsert 烧满 int 上限，新数据被静默累加到同一行）
-        $schedule->command('check:auto-increment')->hourly()->onOneServer()->withoutOverlapping(30);
+        $schedule->command('check:auto-increment')->hourly()->onOneServer()->withoutOverlapping(30)->runInBackground();
         $schedule->command('check:traffic-exceeded')->everyMinute()->onOneServer()->withoutOverlapping(10)->runInBackground();
         // 自动续费：到期前 lead 小时 ~ 到期后 grace 小时窗口内，余额足够的用户按上次配置续费
-        $schedule->command('renew:auto')->hourly()->onOneServer()->withoutOverlapping(50);
+        $schedule->command('renew:auto')->hourly()->onOneServer()->withoutOverlapping(50)->runInBackground();
         // 上网按量：余额低于门槛且开了自动补充的用户用账户余额买一份（未配置按量套餐时命令直接返回）
-        $schedule->command('payg:auto-topup')->everyMinute()->onOneServer()->withoutOverlapping(5);
+        $schedule->command('payg:auto-topup')->everyMinute()->onOneServer()->withoutOverlapping(5)->runInBackground();
         // 上网按量月度保底：结算上个月；每天跑，已结算的是空操作，1 号停机也能补上
-        $schedule->command('payg:settle-floor')->dailyAt('0:40')->onOneServer()->withoutOverlapping(60);
+        $schedule->command('payg:settle-floor')->dailyAt('0:40')->onOneServer()->withoutOverlapping(60)->runInBackground();
         // 到货提醒：售罄套餐放出席位 / 同产品开新车时给登记的人发信
-        $schedule->command('plan:restock-notify')->everyFiveMinutes()->onOneServer()->withoutOverlapping(10);
+        $schedule->command('plan:restock-notify')->everyFiveMinutes()->onOneServer()->withoutOverlapping(10)->runInBackground();
         // reset
-        $schedule->command('reset:traffic')->everyMinute()->onOneServer()->withoutOverlapping(10);
-        $schedule->command('reset:log')->daily()->onOneServer();
+        $schedule->command('reset:traffic')->everyMinute()->onOneServer()->withoutOverlapping(10)->runInBackground();
+        $schedule->command('reset:log')->daily()->onOneServer()->runInBackground();
         // 付款事后核验：已付 EPay 订单 / 充值单入账 5 分钟后向网关复核一次，异常推管理员；只读网关，不碰开通
-        $schedule->command('payment:verify')->everyFiveMinutes()->onOneServer()->withoutOverlapping(30)->runInBackground();
-        $schedule->command('payment:verify-report')->dailyAt('23:30')->onOneServer();
+        $schedule->command('payment:verify', ['--limit' => 300, '--max-seconds' => 240])->everyFiveMinutes()->onOneServer()->withoutOverlapping(30)->runInBackground();
+        $schedule->command('payment:verify-report')->dailyAt('23:30')->onOneServer()->runInBackground();
         // 支付通道拉取巡检：失败率高或拉到链接没人付时推管理员（同一通道同类告警 3 小时一次）
-        $schedule->command('payment:link-health')->everyFifteenMinutes()->between('9:00', '23:59')->onOneServer()->withoutOverlapping(10);
+        $schedule->command('payment:link-health')->everyFifteenMinutes()->between('9:00', '23:59')->onOneServer()->withoutOverlapping(10)->runInBackground();
         // 易支付 V2 投诉巡检：没有 V2 配置时不访问网关
         $schedule->command('payment:epay-complaints')->everyTenMinutes()->onOneServer()->withoutOverlapping(10)->runInBackground();
         // 退款回查：用户通过投诉等途径退了款就自动封号（见 RefundWatchService）
-        $schedule->command('payment:refund-watch')->everyTenMinutes()->onOneServer()->withoutOverlapping(30)->runInBackground();
+        $schedule->command('payment:refund-watch', ['--limit' => 600, '--max-seconds' => 480])->everyTenMinutes()->onOneServer()->withoutOverlapping(30)->runInBackground();
         // 支付异常每日邮件：管理员不常看 Telegram，自动处置结果与待确认删号每天汇总一次
-        $schedule->command('payment:alert-digest')->dailyAt('9:00')->onOneServer();
+        // 9:00 起每 15 分钟看一次，当天没发过才发：9:00 那一刻调度停着，恢复后也会补发
+        $schedule->command('payment:alert-digest', ['--once-per-day'])->everyFifteenMinutes()->between('9:00', '23:59')->onOneServer()->withoutOverlapping(30)->runInBackground();
         // 提现估算用的 USDT 实时汇率：定时焐热缓存，用户端请求就不必等行情接口
-        $schedule->command('commission:refresh-usdt-rate')->everyTenMinutes()->onOneServer()->withoutOverlapping(5);
+        $schedule->command('commission:refresh-usdt-rate')->everyTenMinutes()->onOneServer()->withoutOverlapping(5)->runInBackground();
 
         // 工单附件：按后台配置的保留期清理，另回收未随消息发出 / 工单已删的孤儿文件
-        $schedule->command('ticket:clean-attachments')->dailyAt('3:20')->onOneServer()->withoutOverlapping(120);
+        $schedule->command('ticket:clean-attachments')->dailyAt('3:20')->onOneServer()->withoutOverlapping(120)->runInBackground();
         // 收据 / 账单归档：收据 PDF 过保留期只删文件（可重建），已结清 / 失效的旧账单连记录删，防止归档无限膨胀
-        $schedule->command('billing:prune-documents')->dailyAt('3:40')->onOneServer()->withoutOverlapping(120);
+        $schedule->command('billing:prune-documents')->dailyAt('3:40')->onOneServer()->withoutOverlapping(120)->runInBackground();
         // 闲置过期的登录 / AI 助手令牌：过期一天后从库里删掉（Sanctum 本来就不认，留着只会越积越多）
-        $schedule->command('sanctum:prune-expired', ['--hours' => 24])->dailyAt('3:50')->onOneServer()->withoutOverlapping(60);
+        $schedule->command('sanctum:prune-expired', ['--hours' => 24])->dailyAt('3:50')->onOneServer()->withoutOverlapping(60)->runInBackground();
         // 客户 AI 助手：调用记录过保留期、长期没用过的 AI 软件登记、令牌已删的授权
-        $schedule->command('mcp:prune')->dailyAt('3:55')->onOneServer()->withoutOverlapping(60);
+        $schedule->command('mcp:prune')->dailyAt('3:55')->onOneServer()->withoutOverlapping(60)->runInBackground();
         // 周期返佣资格巡检：有效付费被邀请人低于门槛的取消资格（发佣 / 打开邀请页时也会当场检查）
-        $schedule->command('commission:period-sweep')->dailyAt('4:10')->onOneServer()->withoutOverlapping(60);
+        $schedule->command('commission:period-sweep')->dailyAt('4:10')->onOneServer()->withoutOverlapping(60)->runInBackground();
         // Redis TTL expiration does not execute PHP, so reconcile the DB display snapshot.
-        $schedule->command('device:reconcile-online-counts')
-            ->everyMinute()
-            ->onOneServer()
-            ->withoutOverlapping(5);
+        $schedule->command('device:reconcile-online-counts')->everyMinute()->onOneServer()->withoutOverlapping(5)->runInBackground();
         // send
-        $schedule->command('send:remindMail', ['--force'])->dailyAt('11:30')->onOneServer();
+        $schedule->command('send:remindMail', ['--force'])->dailyAt('11:30')->onOneServer()->runInBackground();
         // 邮箱验证的到期前提醒（宽限期只剩 N 天的用户）
-        $schedule->command('email-verify:remind')->dailyAt('11:35')->onOneServer();
+        $schedule->command('email-verify:remind')->dailyAt('11:35')->onOneServer()->runInBackground();
         // 佣金入账汇总：按 commission_notify_frequency 每天或每周一中午一封（instant 时命令直接返回）
-        $schedule->command('commission:notify-digest')->dailyAt('12:00')->onOneServer()->withoutOverlapping(60);
+        $schedule->command('commission:notify-digest')->dailyAt('12:00')->onOneServer()->withoutOverlapping(60)->runInBackground();
         // 邮件投递日报：昨天的退信、新标记为暂停投递的用户、未投递的收据 / 账单；没有失败不发
-        $schedule->command('mail:delivery-digest')->dailyAt('9:00')->onOneServer();
+        $schedule->command('mail:delivery-digest', ['--once-per-day'])->everyFifteenMinutes()->between('9:00', '23:59')->onOneServer()->withoutOverlapping(30)->runInBackground();
         // horizon metrics
-        $schedule->command('horizon:snapshot')->everyFiveMinutes()->onOneServer();
+        $schedule->command('horizon:snapshot')->everyFiveMinutes()->onOneServer()->runInBackground();
         // backup Timing
         // if (env('ENABLE_AUTO_BACKUP_AND_UPDATE', false)) {
-        //     $schedule->command('backup:database', ['true'])->daily()->onOneServer();
+        //     $schedule->command('backup:database', ['true'])->daily()->onOneServer()->runInBackground();
         // }
         app(PluginManager::class)->registerPluginSchedules($schedule);
 

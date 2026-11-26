@@ -4,11 +4,10 @@ namespace App\Providers;
 
 use App\Services\Plugin\HookManager;
 use App\Services\UpdateService;
+use App\Support\SchedulerWatchdog;
 use Illuminate\Support\ServiceProvider;
-use Laravel\Octane\Facades\Octane;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Artisan;
 use Laravel\Octane\Events\WorkerStarting;
+use Laravel\Octane\Facades\Octane;
 
 class OctaneServiceProvider extends ServiceProvider
 {
@@ -27,17 +26,8 @@ class OctaneServiceProvider extends ServiceProvider
                 HookManager::reset();
             });
         }
-        // 每半钟执行一次调度检查
-        Octane::tick('scheduler', function () {
-            $lock = Cache::lock('scheduler-lock', 30);
-
-            if ($lock->get()) {
-                try {
-                    Artisan::call('schedule:run');
-                } finally {
-                    $lock->release();
-                }
-            }
-        })->seconds(30);
+        // 调度看门狗：定时任务由单独的 scheduler 进程（schedule:work）跑，这里每 30 秒看一眼心跳，
+        // 过期就派子进程代跑并告警（见 SchedulerWatchdog、config/scheduler.php）
+        Octane::tick('scheduler', fn () => SchedulerWatchdog::tick())->seconds(30);
     }
 }

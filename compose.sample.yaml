@@ -21,6 +21,25 @@ services:
     command: php artisan horizon
     depends_on:
       - redis
+  # 定时任务：单独一个容器跑（退款回查封号、付款核验、流量重置、佣金结算、每日邮件都靠它）。
+  # web 里的看门狗只在它没心跳时临时代跑并告警；可设 SCHEDULER_HEARTBEAT_URL 接 Uptime Kuma Push 监控。
+  scheduler:
+    image: ghcr.io/cedar2025/xboard:new
+    volumes:
+      - redis-data:/data
+      - ./:/www/
+    restart: always
+    network_mode: host
+    command: php artisan schedule:work
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "php", "artisan", "scheduler:health", "--max-age=180"]
+      interval: 60s
+      timeout: 20s
+      start_period: 120s
+      retries: 3
+    depends_on:
+      - redis
   ws-server:
     image: ghcr.io/cedar2025/xboard:new
     volumes:

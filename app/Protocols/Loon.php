@@ -128,6 +128,7 @@ class Loon extends AbstractProtocol
                 if (data_get($tls_settings, 'server_name'))
                     $config[] = "tls-name={$tls_settings['server_name']}";
             }
+            self::applyCertPin($config, $protocol_settings, 'tls_settings.pinned_peer_cert_sha256');
         }
 
         switch (data_get($server['protocol_settings'], 'network')) {
@@ -210,6 +211,7 @@ class Loon extends AbstractProtocol
                     $config[] = "tls-name={$serverName}";
                 }
                 $config[] = 'skip-cert-verify=' . (data_get($protocol_settings, 'allow_insecure') ? 'true' : 'false');
+                self::applyCertPin($config, $protocol_settings, 'tls_settings.pinned_peer_cert_sha256');
                 break;
         }
 
@@ -260,6 +262,7 @@ class Loon extends AbstractProtocol
 				if ($serverName = data_get($protocol_settings, 'tls_settings.server_name')) {
 					$config[] = "sni={$serverName}";
 				}
+				self::applyCertPin($config, $protocol_settings, 'tls_settings.pinned_peer_cert_sha256');
 				break;
 			case 2:
 				$config[] = "over-tls=true";
@@ -342,6 +345,21 @@ class Loon extends AbstractProtocol
         if ($down = data_get($protocol_settings, 'bandwidth.down')) {
             $config[] = "download-bandwidth={$down}";
         }
+        // 端口跳跃：Loon 官方示例 server-ports="9898,10000-10010"（区间用短横线，含逗号要加引号）。
+        // 不发的话 Loon 只连主端口，跳跃失效。
+        if (!empty($server['ports'])) {
+            $config[] = 'server-ports="' . (string) $server['ports'] . '"';
+            if ($interval = (int) data_get($protocol_settings, 'hop_interval')) {
+                $config[] = "hop-interval={$interval}";
+            }
+        }
+        if (
+            data_get($protocol_settings, 'obfs.open')
+            && data_get($protocol_settings, 'obfs.type', 'salamander') === 'salamander'
+            && ($obfsPassword = data_get($protocol_settings, 'obfs.password'))
+        ) {
+            $config[] = "salamander-password={$obfsPassword}";
+        }
         $config[] = "udp=true";
         $config = array_filter($config);
         $uri = implode(',', $config);
@@ -367,9 +385,30 @@ class Loon extends AbstractProtocol
         if (data_get($protocol_settings, 'tls.allow_insecure')) {
             $config[] = 'skip-cert-verify=true';
         }
+        self::applyCertPin($config, $protocol_settings, 'tls.pinned_peer_cert_sha256');
 
         $config = array_filter($config);
 
         return implode(',', $config) . "\r\n";
+    }
+
+    /**
+     * remote 模式的面板自签证书（vmess/vless/trojan/anytls 的 TLS 模式）。
+     * Loon 官方示例里 TLS 节点可写 tls-cert-sha256（证书 DER 的 SHA-256，64 位 hex）。
+     * 有没有指纹它都要能连上，所以同时强制 skip-cert-verify=true 兜底（同 v2board #394）；
+     * 否则自签证书在 Loon 上链校验必败。hysteria2 不走这里，见 buildHysteria。
+     */
+    private static function applyCertPin(array &$config, $protocol_settings, string $path): void
+    {
+        $pin = CertPinHelper::normalizePin(data_get($protocol_settings, $path));
+        if ($pin === null) {
+            return;
+        }
+        $config = array_values(array_filter(
+            $config,
+            fn($item) => !is_string($item) || !str_starts_with($item, 'skip-cert-verify=')
+        ));
+        $config[] = 'skip-cert-verify=true';
+        $config[] = "tls-cert-sha256={$pin}";
     }
 }

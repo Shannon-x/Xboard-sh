@@ -379,6 +379,7 @@ RUN test -f composer.lock || { echo "FATAL: composer.lock is missing — depende
 
 ENV ENABLE_WEB=true \
     ENABLE_HORIZON=true \
+    ENABLE_SCHEDULER=true \
     ENABLE_REDIS=false \
     ENABLE_WS_SERVER=false
 

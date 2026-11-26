@@ -213,6 +213,41 @@ class EpayEventTest extends TestCase
         $this->assertCount(1, array_filter($this->hits, fn ($p) => $p === '/api/pay/query'), '重投的同一条推送 10 分钟内只查一次');
     }
 
+    public function test_refund_event_for_an_order_not_yet_verified_verifies_on_the_spot_and_bans(): void
+    {
+        // 2026-11-23 定时任务停摆，付款核验没轮到这些单：推送来了却被当成「本站没有对应的单」只告警
+        $payment = $this->v2Payment();
+        [$user, $order] = $this->verifiedOrder($payment);
+        PaymentVerification::where('subject_id', $order->id)->delete();
+        $this->gatewaySays($order, 2);
+
+        $this->post($this->url($payment), self::platformSign([
+            'pid' => '1001', 'event' => 'refund', 'trade_no' => $order->callback_no,
+        ]))->assertOk();
+
+        $row = PaymentVerification::where('subject_type', 'order')->where('subject_id', $order->id)->first();
+        $this->assertNotNull($row, '当场补建核验记录');
+        $this->assertSame(1, (int) $user->fresh()->banned, '网关确认退款 → 封号');
+        $this->assertCount(0, $this->alertsContaining('本站没有对应的已核验单'));
+        $this->assertCount(1, $this->alertsContaining('已自动封号'));
+    }
+
+    public function test_refund_event_for_unverified_order_still_paid_at_gateway_does_not_ban(): void
+    {
+        $payment = $this->v2Payment();
+        [$user, $order] = $this->verifiedOrder($payment);
+        PaymentVerification::where('subject_id', $order->id)->delete();
+        $this->gatewaySays($order, 1);
+
+        $this->post($this->url($payment), self::platformSign([
+            'pid' => '1001', 'event' => 'refund', 'trade_no' => $order->callback_no,
+        ]))->assertOk();
+
+        $this->assertSame(0, (int) $user->fresh()->banned);
+        $this->assertSame('ok', PaymentVerification::where('subject_id', $order->id)->value('verdict'));
+        $this->assertCount(1, $this->alertsContaining('查单仍显示已支付'));
+    }
+
     public function test_refund_event_for_unknown_order_alerts_once(): void
     {
         $payment = $this->v2Payment();

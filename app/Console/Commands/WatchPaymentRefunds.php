@@ -14,13 +14,18 @@ class WatchPaymentRefunds extends Command
 {
     protected $signature = 'payment:refund-watch
         {--limit=150 : 单次最多回查多少笔}
-        {--sleep-ms=200 : 两次网关查询之间的间隔（毫秒）}';
+        {--sleep-ms=200 : 两次网关查询之间的间隔（毫秒）}
+        {--max-seconds=0 : 单次最多跑多少秒，0 为不限（积压时按时收尾，剩下的下一轮接着查）}';
 
     protected $description = '退款回查：发现网关已退款的单自动封号';
 
     public function handle(RefundWatchService $service): int
     {
-        $stats = $service->run(max(1, (int) $this->option('limit')), max(0, (int) $this->option('sleep-ms')));
+        $stats = $service->run(
+            max(1, (int) $this->option('limit')),
+            max(0, (int) $this->option('sleep-ms')),
+            max(0, (int) $this->option('max-seconds'))
+        );
         if ($stats['checked'] > 0) {
             Log::info('[refund-watch] run', $stats);
         }

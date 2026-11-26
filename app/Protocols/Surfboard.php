@@ -5,6 +5,7 @@ namespace App\Protocols;
 use App\Utils\Helper;
 use Illuminate\Support\Facades\File;
 use App\Support\AbstractProtocol;
+use App\Support\CertPinHelper;
 use App\Models\Server;
 
 class Surfboard extends AbstractProtocol
@@ -158,6 +159,7 @@ class Surfboard extends AbstractProtocol
                     array_push($config, "sni={$sni}");
                 }
             }
+            self::forceSkipIfPinned($config, $protocol_settings, 'tls_settings.pinned_peer_cert_sha256');
         }
         if (data_get($protocol_settings, 'network') === 'ws') {
             array_push($config, 'ws=true');
@@ -190,6 +192,7 @@ class Surfboard extends AbstractProtocol
         if (data_get($protocol_settings, 'allow_insecure')) {
             array_push($config, !!data_get($protocol_settings, 'allow_insecure') ? 'skip-cert-verify=true' : 'skip-cert-verify=false');
         }
+        self::forceSkipIfPinned($config, $protocol_settings, 'tls_settings.pinned_peer_cert_sha256');
         $config = array_filter($config);
         $uri = implode(',', $config);
         $uri .= "\r\n";
@@ -216,9 +219,26 @@ class Surfboard extends AbstractProtocol
         if (data_get($protocol_settings, 'tls.allow_insecure')) {
             $config[] = "skip-cert-verify=true";
         }
+        self::forceSkipIfPinned($config, $protocol_settings, 'tls.pinned_peer_cert_sha256');
 
         $config = array_filter($config);
 
         return implode(',', $config) . "\r\n";
+    }
+
+    /**
+     * remote 模式的面板自签证书：Surfboard 认不认证书指纹参数没有核实，
+     * 只做兜底，有指纹就 skip-cert-verify=true，保证自签节点连得上（同 v2board #394 的回退）。
+     */
+    private static function forceSkipIfPinned(array &$config, $protocol_settings, string $path): void
+    {
+        if (CertPinHelper::normalizePin(data_get($protocol_settings, $path)) === null) {
+            return;
+        }
+        $config = array_values(array_filter(
+            $config,
+            fn($item) => !is_string($item) || !str_starts_with($item, 'skip-cert-verify=')
+        ));
+        $config[] = 'skip-cert-verify=true';
     }
 }

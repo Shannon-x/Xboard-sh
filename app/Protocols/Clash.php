@@ -6,6 +6,7 @@ use App\Models\Server;
 use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 use App\Support\AbstractProtocol;
+use App\Support\CertPinHelper;
 
 class Clash extends AbstractProtocol
 {
@@ -242,6 +243,10 @@ class Clash extends AbstractProtocol
             if ($serverName = data_get($protocol_settings, 'tls_settings.server_name')) {
                 $array['servername'] = $serverName;
             }
+            // 老 Clash 核没有证书指纹字段：面板自签证书（有指纹）只能跳过校验保连通
+            if (CertPinHelper::normalizePin(data_get($protocol_settings, 'tls_settings.pinned_peer_cert_sha256')) !== null) {
+                $array['skip-cert-verify'] = true;
+            }
         }
 
         switch (data_get($protocol_settings, 'network')) {
@@ -289,6 +294,9 @@ class Clash extends AbstractProtocol
             $array['sni'] = $serverName;
         }
         $array['skip-cert-verify'] = (bool) data_get($protocol_settings, 'tls_settings.allow_insecure', data_get($protocol_settings, 'allow_insecure', false));
+        if (CertPinHelper::normalizePin(data_get($protocol_settings, 'tls_settings.pinned_peer_cert_sha256')) !== null) {
+            $array['skip-cert-verify'] = true;
+        }
 
         switch (data_get($protocol_settings, 'network')) {
             case 'tcp':

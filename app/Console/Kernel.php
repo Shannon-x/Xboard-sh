@@ -90,6 +90,8 @@ class Kernel extends ConsoleKernel
         // 佣金入账汇总：按 commission_notify_frequency 每天或每周一中午一封（instant 时命令直接返回）
         $schedule->command('commission:notify-digest')->dailyAt('12:00')->onOneServer()->withoutOverlapping(60)->runInBackground();
         // 邮件投递日报：昨天的退信、新标记为暂停投递的用户、未投递的收据 / 账单；没有失败不发
+        // Rust 邮件投递服务的结果回写（v2_mail_log、收据发送状态、退信转 Telegram）。没开投递服务时秒退
+        $schedule->command('mail:relay-results')->everyMinute()->onOneServer()->withoutOverlapping(5)->runInBackground();
         $schedule->command('mail:delivery-digest', ['--once-per-day'])->everyFifteenMinutes()->between('9:00', '23:59')->onOneServer()->withoutOverlapping(30)->runInBackground();
         // horizon metrics
         $schedule->command('horizon:snapshot')->everyFiveMinutes()->onOneServer()->runInBackground();

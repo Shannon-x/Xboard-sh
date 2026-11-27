@@ -69,11 +69,12 @@ final class DeliveryMonitor
     /**
      * 记 v2_mail_log 并维护用户标记。$userId 不传时按 email 反查（一封邮件一次查询，量级可以接受）。
      *
+     * @param string|null $forceCategory 不按错误文本猜、直接用这个分类（投递服务明确知道是我们自己的配置问题时传 CONFIG）
      * @return string 分类（self::OK / …）
      */
-    public static function record(string $email, string $subject, string $view, ?string $error, ?int $userId = null): string
+    public static function record(string $email, string $subject, string $view, ?string $error, ?int $userId = null, ?string $forceCategory = null): string
     {
-        $category = self::classify($error);
+        $category = $forceCategory ?? self::classify($error);
         $user = $userId ? User::find($userId) : User::findByExactEmail($email);
         try {
             MailLog::create([

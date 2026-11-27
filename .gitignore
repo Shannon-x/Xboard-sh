@@ -43,3 +43,7 @@ docs/AUDIT_REPORT_*.md
 # phpunit 结果缓存与 Storage::fake 产物
 /.phpunit.cache/
 /storage/framework/testing/
+
+# Rust 邮件投递服务：构建产物；面板镜像不需要它的源码（它有自己的镜像）
+/mail-relay/target
+/storage/mail-spool/*

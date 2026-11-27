@@ -1,0 +1,31 @@
+# 加到面板的 docker-compose.yml（/opt/1panel/www/sites/xboard/index）的 services 下。示例，不会被自动使用。
+# 镜像由 .github/workflows/mail-relay.yml 构建：ghcr.io/shannon-x/xboard-mail-relay:sha-<提交>
+services:
+  mail-relay:
+    image: ghcr.io/shannon-x/xboard-mail-relay:sha-XXXXXXX
+    restart: unless-stopped
+    stop_grace_period: 2m
+    environment:
+      # 和 web / horizon 用同一个 Redis（unix socket 所在目录要挂进来，见 volumes）
+      RELAY_REDIS_URL: "redis+unix:///data/redis.sock"
+      # 面板 Laravel 的 Redis key 前缀（.env 的 REDIS_PREFIX；没设时是 APP_NAME 转小写加 _database_，现网 xboard_database_）
+      RELAY_KEY_PREFIX: "xboard_database_"
+      RELAY_CONSUMER: "relay-1"
+      # 并发 SMTP 连接数；其中 RELAY_RESERVED 个永远留给即时 / 交易
+      RELAY_CONNECTIONS: "8"
+      RELAY_RESERVED: "2"
+      # 三条通道合计的速率上限（封 / 分钟），0 = 不限。OCI 付费默认每分钟 18000，这里远低于它
+      RELAY_RATE_PER_MINUTE: "600"
+      RELAY_BULK_SHARE: "0.8"
+      # 滚动 24 小时额度（按收件人）。OCI 付费默认 50000，面板直发的也占，所以只用 45000；批量到 40000 就停
+      RELAY_DAILY_LIMIT: "45000"
+      RELAY_DAILY_BULK_RESERVE: "5000"
+      # 单封上限（含 Base64 附件），OCI 默认 2 MB
+      RELAY_MAX_MESSAGE_BYTES: "2000000"
+      RELAY_SPOOL_DIR: "/www/storage/mail-spool"
+      RELAY_LOG_FORMAT: "json"
+    volumes:
+      - ./data:/data              # Redis socket 所在目录：与 redis 服务挂的是同一个
+      - ./storage:/www/storage    # 面板写大邮件的 spool 目录：与 web / horizon 是同一个 storage
+    depends_on:
+      - redis

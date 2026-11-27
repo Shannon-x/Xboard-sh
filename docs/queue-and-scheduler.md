@@ -60,6 +60,9 @@ mail_transactional 60、mail_bulk 900，旧队列 send_email 120、send_email_ma
 批量账单里每封都要算一次「也可以看看」的套餐席位：`PlanCapacity` 在邮件路径上按套餐组合缓存 60 秒
 （`MAIL_CACHE_SECONDS`，进程内），前台列表和下单校验照旧实时查；`v2_user (plan_id, expired_at)` 联合索引让这条统计只读索引。
 
+可选：`MAIL_RELAY_LANES` 列出的通道改由 Rust 投递服务（`mail-relay/`）发，PHP worker 只组信入队，
+见 [mail-relay.md](mail-relay.md)。默认不开。
+
 ## 流量上报管线
 
 节点每 `server_push_interval`（默认 60 s）POST 一次 `/api/v1/server/UniProxy/push`，`UserService::trafficFetch`

@@ -51,7 +51,7 @@ class SendEmailJob implements ShouldQueue
         if ($this->expired()) {
             return;
         }
-        $mailLog = MailService::sendEmail($this->params);
+        $mailLog = MailService::sendEmail($this->params, MailLane::normalize($this->queue));
         if ($mailLog['error'] && DeliveryMonitor::isRetryable($mailLog['category'] ?? DeliveryMonitor::TEMPORARY)) {
             $this->release(); // 临时失败 / SMTP 配置问题才重试；退信重试只会再退一次
         }

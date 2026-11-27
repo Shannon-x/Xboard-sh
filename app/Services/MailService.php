@@ -7,6 +7,7 @@ use App\Jobs\SendEmailJob;
 use App\Models\User;
 use App\Services\Billing\BillingDocumentService;
 use App\Services\Mail\DeliveryMonitor;
+use App\Services\Mail\MailRelay;
 use App\Services\Mail\MailLane;
 use App\Services\Notification\NotificationPreference;
 use Illuminate\Support\Facades\Config;
@@ -396,7 +397,7 @@ class MailService
      *   - error: 如果邮件发送失败，包含错误信息；否则为 null
      * @throws \InvalidArgumentException 如果 $params 参数缺少必要的字段，抛出此异常
      */
-    public static function sendEmail(array $params)
+    public static function sendEmail(array $params, ?string $lane = null)
     {
         $email = $params['email'];
         $subject = $params['subject'];
@@ -425,7 +426,8 @@ class MailService
             }
             $userId = $user?->id ?? $userId;
         }
-        return self::deliver($email, $subject, $view, is_array($templateValue) ? $templateValue : [], [], $userId, $category);
+        $notAfter = config('mail_lanes.drop_expired_instant', true) ? (int) ($params['not_after'] ?? 0) : 0;
+        return self::deliver($email, $subject, $view, is_array($templateValue) ? $templateValue : [], [], $userId, $category, $lane, [], $notAfter);
     }
 
     /**
@@ -451,9 +453,13 @@ class MailService
      * @param string|null $category 通知类别（NotificationPreference::CATEGORIES）。偏好本身由调用方（sendEmail / SendBillingMailJob）
      *   先判过；这里只负责类别带来的两样东西：模板变量 manage_url / manage_label（页脚那行「管理通知偏好」的免登录链接），
      *   以及批量类别的 List-Unsubscribe / List-Unsubscribe-Post 头（RFC 8058 一键退订，Gmail / Yahoo 对批量发件人的要求）。
-     * @return array{email: string, subject: string, template_name: string, error: string|null, category: string}
+     * @param string|null $lane 通道（MailLane::*）。这条通道开了 Rust 投递服务（MailRelay::enabledFor）时只组信、入队就返回，
+     *   category = queued，真正的结果由 mail:relay-results 命令记 v2_mail_log；不传 = 一律由这里直接连 SMTP 发
+     * @param array $relayMeta 交给投递服务时随信带走、结果回来时原样拿回的东西（收据回调见 MailRelayResults）
+     * @param int $notAfter 过了这个时间戳还没发出去就不发（验证码 / 登录链接），只对投递服务生效；直发路径的过期检查在 SendEmailJob
+     * @return array{email: string, subject: string, template_name: string, error: string|null, category: string, queued?: bool, relay_id?: string}
      */
-    public static function deliver(string $email, string $subject, string $view, array $data, array $attachments = [], ?int $userId = null, ?string $category = null): array
+    public static function deliver(string $email, string $subject, string $view, array $data, array $attachments = [], ?int $userId = null, ?string $category = null, ?string $lane = null, array $relayMeta = [], int $notAfter = 0): array
     {
         $headers = [];
         if (NotificationPreference::isCategory($category)) {
@@ -481,17 +487,29 @@ class MailService
             Config::set('mail.from.address', admin_setting('email_from_address', config('mail.from.address')));
             Config::set('mail.from.name', admin_setting('app_name', 'XBoard'));
         }
+        $build = function ($message) use ($email, $subject, $attachments, $headers) {
+            $message->to($email)->subject($subject);
+            foreach ($headers as $name => $value) {
+                $message->getHeaders()->addTextHeader($name, $value);
+            }
+            foreach ($attachments as $attachment) {
+                $message->attachData($attachment['data'], $attachment['name'], ['mime' => $attachment['mime'] ?? 'application/octet-stream']);
+            }
+        };
+        if ($lane !== null && MailRelay::enabledFor($lane)) {
+            try {
+                MailRelay::syncConfig();
+                $meta = ['email' => $email, 'subject' => $subject, 'view' => $view, 'user_id' => $userId, 'not_after' => $notAfter] + $relayMeta;
+                $id = MailRelay::send($lane, $view, $data, $build, $meta, $notAfter);
+                return ['email' => $email, 'subject' => $subject, 'template_name' => $view, 'error' => null, 'category' => MailRelay::QUEUED, 'queued' => true, 'relay_id' => $id];
+            } catch (\Throwable $e) {
+                // 投递服务那头出了问题（Redis 写不进、spool 写不了）：这封照旧直接发，不丢
+                Log::warning('[mail] 交给投递服务失败，改由面板直接发', ['email' => $email, 'view' => $view, 'error' => $e->getMessage()]);
+            }
+        }
         try {
             self::keepSmtpConnectionFresh();
-            Mail::send($view, $data, function ($message) use ($email, $subject, $attachments, $headers) {
-                $message->to($email)->subject($subject);
-                foreach ($headers as $name => $value) {
-                    $message->getHeaders()->addTextHeader($name, $value);
-                }
-                foreach ($attachments as $attachment) {
-                    $message->attachData($attachment['data'], $attachment['name'], ['mime' => $attachment['mime'] ?? 'application/octet-stream']);
-                }
-            });
+            Mail::send($view, $data, $build);
             $error = null;
         } catch (\Exception $e) {
             Log::error($e);

@@ -20,7 +20,7 @@ class MailController extends Controller
             'email' => 'nullable|string|max:191',
             'user_id' => 'nullable|integer',
             'status' => 'nullable|in:0,1',
-            'category' => 'nullable|in:suppressed,bounce,temporary,config',
+            'category' => 'nullable|in:suppressed,bounce,temporary,config,expired',
             'template' => 'nullable|string|max:191',
             'start_at' => 'nullable|integer',
             'end_at' => 'nullable|integer',

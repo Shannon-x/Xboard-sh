@@ -14,7 +14,7 @@ use Linfo\Linfo;
 // 每个队列始终有空闲 worker 阻塞等在队列上（block_for），不需要伸缩，也就没有伸缩延迟和进程抖动。
 //
 // balance=simple：进程数在 supervisor 的队列间平分、不伸缩，每个队列一个独立进程池。
-// 每个 worker 占一条 MySQL 连接：4 组共 32 条，远在 max_connections=400 之内。
+// 每个 worker 占一条 MySQL 连接：8 组默认共 37 条，远在 max_connections=400 之内。
 $supervisors = [
     'traffic' => [
         'connection' => 'redis',
@@ -47,10 +47,63 @@ $supervisors = [
     ],
     'notification' => [
         'connection' => 'redis',
-        // 4 个队列各 2 个固定 worker；任务自己声明的 timeout（如 120 s 的附件任务）优先于这里的 60。
-        'queue' => ['node_sync', 'send_email', 'send_telegram', 'send_email_mass'],
+        // 2 个队列各 2 个固定 worker；任务自己声明的 timeout（如 120 s 的附件任务）优先于这里的 60。
+        // 邮件从这里搬到下面三组 mail-*（2026-11-27）：原来 send_email 一条队列 2 个 worker 包揽所有邮件，
+        // 11:30 的批量账单把验证码堵了 19 分钟。
+        'queue' => ['node_sync', 'send_telegram'],
         'balance' => 'simple',
-        'maxProcesses' => 8,
+        'maxProcesses' => 4,
+        'memory' => 256,
+        'tries' => 3,
+        'timeout' => 60,
+        'backoff' => [3, 10, 30],
+    ],
+
+    // ---- 邮件三条通道（App\Services\Mail\MailLane）----
+    // 每组只守一个队列：config/queue.php 的 block_for=5 让 worker 阻塞在列表第一个队列上，
+    // 一个进程守多个队列时后面的队列要多等一轮（tests/Unit/QueueConfigTest 把关）。
+    //
+    // 即时：验证码 / 登录链接。来了总有空闲 worker 在等，不和任何别的邮件抢。
+    'mail-instant' => [
+        'connection' => 'redis',
+        'queue' => ['mail_instant'],
+        'balance' => 'simple',
+        'maxProcesses' => max(1, (int) env('MAIL_INSTANT_WORKERS', 2)),
+        'memory' => 256,
+        'tries' => 3,
+        'timeout' => 30,
+        'backoff' => [3, 10, 30],
+    ],
+    // 交易：收据、提现、工单回复、续费结果等用户刚做完一件事在等的信。收据带 PDF，单封约 0.6 秒。
+    'mail-transactional' => [
+        'connection' => 'redis',
+        'queue' => ['mail_transactional'],
+        'balance' => 'simple',
+        'maxProcesses' => max(1, (int) env('MAIL_TRANSACTIONAL_WORKERS', 2)),
+        'memory' => 256,
+        'tries' => 3,
+        'timeout' => 60,
+        'backoff' => [3, 10, 30],
+    ],
+    // 批量：账单 / 到期 / 挽回 / 流量 / 验证提醒 / 到货 / 佣金日报 / 群发。永远不碰前两条。
+    // 进程数决定批量速度（一个约每分钟 80 封），也决定打 SMTP 服务商有多猛；全局封顶用 MAIL_BULK_PER_MINUTE（config/mail_lanes.php）。
+    'mail-bulk' => [
+        'connection' => 'redis',
+        'queue' => ['mail_bulk'],
+        'balance' => 'simple',
+        'maxProcesses' => max(1, (int) env('MAIL_BULK_WORKERS', 3)),
+        'memory' => 256,
+        'tries' => 3,
+        'timeout' => 60,
+        'backoff' => [3, 10, 30],
+    ],
+    // 升级前的旧队列名：只为把升级那一刻排着的存量发完（每个队列 1 个 worker），新代码不再往里放。
+    // 两个队列在 Horizon 里都显示 0 之后，下一版删掉这一组。
+    'mail-legacy' => [
+        'connection' => 'redis',
+        'queue' => ['send_email', 'send_email_mass'],
+        'balance' => 'simple',
+        'maxProcesses' => 2,
         'memory' => 256,
         'tries' => 3,
         'timeout' => 60,
@@ -146,9 +199,13 @@ return [
         'redis:order_handle' => 30,
         'redis:node_sync' => 30,
         'redis:traffic_fetch' => 60,
-        'redis:send_email' => 120,
         'redis:send_telegram' => 120,
         'redis:stat' => 300,
+        // 邮件三条通道：验证码 15 秒没人接就该报警；批量一轮账单本来就要发十几分钟
+        'redis:mail_instant' => 15,
+        'redis:mail_transactional' => 60,
+        'redis:mail_bulk' => 900,
+        'redis:send_email' => 120,
         'redis:send_email_mass' => 600,
     ],
 

@@ -17,28 +17,27 @@ use Illuminate\Support\Collection;
  */
 final class PlanCapacity
 {
+    /** 邮件推荐套餐时占位数复用的秒数 */
+    public const MAIL_CACHE_SECONDS = 60;
+
+    /** @var array<string, array{until: int, occupied: array<int, int>}> */
+    private static array $memo = [];
+
     /**
      * 各套餐剩余席位，plan_id => 剩余（不小于 0）；不限席位的为 null。
      *
      * @param iterable<Plan> $plans
+     * @param int $cacheSeconds >0 时同一组套餐的占位数在本进程内复用这么多秒（只给邮件推荐这类批量场景用，见 MAIL_CACHE_SECONDS）
      * @return array<int, int|null>
      */
-    public static function remaining(iterable $plans): array
+    public static function remaining(iterable $plans, int $cacheSeconds = 0): array
     {
         $limits = [];
         foreach ($plans as $plan) {
             $limits[(int) $plan->id] = $plan->capacity_limit === null ? null : (int) $plan->capacity_limit;
         }
         $limited = array_keys(array_filter($limits, fn ($limit) => $limit !== null));
-        $occupied = $limited ? User::whereIn('plan_id', $limited)
-            ->where(function ($query) {
-                $query->where('expired_at', '>=', time())
-                    ->orWhereNull('expired_at');
-            })
-            ->groupBy('plan_id')
-            ->selectRaw('plan_id, COUNT(*) AS occupied')
-            ->pluck('occupied', 'plan_id')
-            ->all() : [];
+        $occupied = $limited ? self::occupied($limited, $cacheSeconds) : [];
 
         $remaining = [];
         foreach ($limits as $id => $limit) {
@@ -51,11 +50,52 @@ final class PlanCapacity
      * 只留还买得到的套餐（不限席位，或还有空位），保持原顺序、重排键。
      *
      * @param Collection<int, Plan> $plans
+     * @param int $cacheSeconds 同 remaining()
      * @return Collection<int, Plan>
      */
-    public static function available(Collection $plans): Collection
+    public static function available(Collection $plans, int $cacheSeconds = 0): Collection
     {
-        $remaining = self::remaining($plans);
+        $remaining = self::remaining($plans, $cacheSeconds);
         return $plans->filter(fn (Plan $plan) => ($remaining[(int) $plan->id] ?? null) !== 0)->values();
+    }
+
+    /**
+     * 各套餐当前占位人数。这条 COUNT 要扫全部用户（2026-11-27 生产 4 万用户约 170 ms），而 11:30 的账单扫描
+     * 一次派上千封账单，每封都为「也可以看看」重算一遍、结果完全一样 —— 当天 1,414 封账单光这条就花了约 4 分钟。
+     * 批量场景传 $cacheSeconds，同一组套餐在本进程内复用；只影响邮件里推荐哪些套餐，下单校验仍走 PlanService 实时判断。
+     *
+     * @param int[] $planIds
+     * @return array<int, int>
+     */
+    private static function occupied(array $planIds, int $cacheSeconds): array
+    {
+        sort($planIds);
+        $key = implode(',', $planIds);
+        $now = time();
+        if ($cacheSeconds > 0 && isset(self::$memo[$key]) && self::$memo[$key]['until'] > $now) {
+            return self::$memo[$key]['occupied'];
+        }
+        $occupied = User::whereIn('plan_id', $planIds)
+            ->where(function ($query) {
+                $query->where('expired_at', '>=', time())
+                    ->orWhereNull('expired_at');
+            })
+            ->groupBy('plan_id')
+            ->selectRaw('plan_id, COUNT(*) AS occupied')
+            ->pluck('occupied', 'plan_id')
+            ->all();
+        if ($cacheSeconds > 0) {
+            if (count(self::$memo) >= 32) {
+                self::$memo = [];   // 常驻 worker：套餐组合换了就整个丢掉，不让它慢慢长
+            }
+            self::$memo[$key] = ['until' => $now + $cacheSeconds, 'occupied' => $occupied];
+        }
+        return $occupied;
+    }
+
+    /** 测试用：清掉进程内缓存 */
+    public static function flushMemo(): void
+    {
+        self::$memo = [];
     }
 }

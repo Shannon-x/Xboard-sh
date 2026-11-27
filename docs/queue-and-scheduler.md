@@ -17,12 +17,16 @@
 | traffic | traffic_fetch | 8 | 节点上报流量累加到 `v2_user` |
 | stat | stat | 8 | 当天按用户 / 按节点的流量统计 |
 | business | order_handle、default | 各 4 | 订单取消 / 补开通；Chatwoot 推送等杂活 |
-| notification | node_sync、send_email、send_telegram、send_email_mass | 各 2 | 节点名单增量推送、邮件、Telegram、群发 |
+| notification | node_sync、send_telegram | 各 2 | 节点名单增量推送、Telegram |
+| mail-instant | mail_instant | 2（`MAIL_INSTANT_WORKERS`） | 验证码、登录链接 |
+| mail-transactional | mail_transactional | 2（`MAIL_TRANSACTIONAL_WORKERS`） | 收据、提现、工单回复、续费结果等 |
+| mail-bulk | mail_bulk | 3（`MAIL_BULK_WORKERS`） | 账单 / 到期 / 挽回 / 流量提醒、验证提醒、到货、佣金日报、后台群发 |
+| mail-legacy | send_email、send_email_mass | 各 1 | 升级前的旧队列，只为排空升级那一刻的存量；两个队列清零后下一版删掉 |
 
 全部 `balance=simple`：进程数在 supervisor 的队列间平分、**不伸缩**，每个队列一个独立进程池。生产采集看到旧配置
 （`auto` + `balanceCooldown=1`）下 data-pipeline 的 worker 大多活不过 70 秒，自动伸缩在不停地杀 / 起进程；而
 traffic_fetch 每 5 分钟约 2,100 个任务（单个 30–40 ms）、stat 约 4,200 个（单个 25 ms），固定池足以让每个队列
-始终有空闲 worker 阻塞等在队列上。4 组共 32 个 worker，各占一条 MySQL 连接（`max_connections=400`）。
+始终有空闲 worker 阻塞等在队列上。8 组默认共 37 个 worker，各占一条 MySQL 连接（`max_connections=400`）。
 `memory=256`（worker 超过即重启，旧值 128 与 60–115 MB 的实际占用太近），`memory_limit=512`（master）。
 
 `'defaults' => []` 必须保留：Horizon 会把 `config('horizon.defaults')` 里的每个 supervisor 并进每个环境，不写时包自带的 config 会补一个 `supervisor-1`（`default` 队列、1 个进程、`tries` 1），2026-10-21 生产实测它在 32 个 worker 之外一直多跑一个。`tests/Unit/QueueConfigTest::horizon_defaults_do_not_add_a_stray_supervisor` 把关。
@@ -38,7 +42,23 @@ traffic_fetch 每 5 分钟约 2,100 个任务（单个 30–40 ms）、stat 约 
   当作卡死重新投递、附件发两遍。同一个测试把关。
 
 `waits` 给每个队列一个等待阈值（秒），超过时 Horizon 触发 `LongWaitDetected`、仪表盘（`/monitor`）标红：
-order_handle / node_sync 30、traffic_fetch 60、send_email 120、stat 300、send_email_mass 600。
+order_handle / node_sync 30、traffic_fetch 60、send_telegram 120、stat 300；邮件 mail_instant 15、
+mail_transactional 60、mail_bulk 900，旧队列 send_email 120、send_email_mass 600。
+
+## 邮件通道
+
+2026-11-27 之前所有邮件挤在一条 `send_email` 队列、2 个 worker：11:30 的批量账单 / 到期提醒（每封要渲染 PDF、
+走一次 SMTP 往返）排出 1,265 封，后来的验证码要等 19 分钟，用户拿到时早已过期。现在按「用户等不等得起」分三条
+（`App\Services\Mail\MailLane`），各自一组 worker，批量再多也挤不到前两条：
+
+- **即时** `mail_instant`：验证码、登录链接。派发时带 `not_after`（有效期截止，300 秒）。排到时已过期就不发，
+  `v2_mail_log` 记一条 `category = expired`，不计入用户的退信 / 临时失败（`MAIL_DROP_EXPIRED_INSTANT=0` 关掉）。
+- **交易** `mail_transactional`：`SendEmailJob` 不传队列时的默认值，没想清楚的新调用方最多影响收据，碰不到验证码。
+- **批量** `mail_bulk`：定时扫描和群发。`MAIL_BULK_PER_MINUTE`（默认 0 = 不限）给所有批量 worker 一个全局
+  每分钟封数上限（`App\Jobs\Middleware\MailLaneThrottle`，Redis 限流），用来对齐 SMTP 服务商的速率限额。
+
+批量账单里每封都要算一次「也可以看看」的套餐席位：`PlanCapacity` 在邮件路径上按套餐组合缓存 60 秒
+（`MAIL_CACHE_SECONDS`，进程内），前台列表和下单校验照旧实时查；`v2_user (plan_id, expired_at)` 联合索引让这条统计只读索引。
 
 ## 流量上报管线
 

@@ -51,7 +51,7 @@ XBoard-admin 目前没有这些开关的界面，用默认值即可；要改可�
 ## 实现
 
 - 数据与渲染：`app/Services/Billing/BillingDocumentService.php`。金额单位是分；收据按订单的 `total_amount / balance_amount / discount_amount / surplus_amount / handling_amount` 还原「小计 → 折扣 → 折抵 → 手续费 → 合计 → 已付 → 应付余额」；账单金额来自 `RenewService::resolveSpec()`（与仪表盘快捷续费完全一致）。
-- 发送：`app/Jobs/SendBillingMailJob.php`，走 `send_email` 队列，payload 只带 id，到 worker 里才渲染 PDF；通过 `MailService::deliver()` 复用后台 SMTP 配置与 `v2_mail_log`。
+- 发送：`app/Jobs/SendBillingMailJob.php`，收据 / 提现 / 按量保底走交易通道 `mail_transactional`，账单 / 到期 / 挽回 / 流量走批量通道 `mail_bulk`（后台手动重发一律走交易通道，见 `SendBillingMailJob::laneFor()` 与 `docs/queue-and-scheduler.md`），payload 只带 id，到 worker 里才渲染 PDF；通过 `MailService::deliver()` 复用后台 SMTP 配置与 `v2_mail_log`。
 - 模板：`resources/views/billing/mail/*`（邮件：`receipt` / `invoice` / `withdrawal`，共用 `layout`）与 `resources/views/billing/pdf/document.blade.php`（PDF）。放在 `billing/` 而不是 `mail/<主题>/` 下：生产的 `resources/views/mail` 被宿主机目录挂载覆盖，而且这些模板不该跟着 `email_template` 切换。各主题目录里的 `withdrawCompleted` / `withdrawRejected` 只在 `billing_receipt_enable=0` 时还会用到。
 - logo：`app/Services/Billing/BrandLogo.php`。
 - 文案：`resources/lang/{zh-CN,zh-TW,en-US}/billing.php`。

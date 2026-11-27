@@ -101,7 +101,7 @@ class MailDeliveryDigest extends Command
 
     private function compose(int $hours, int $sent, int $failed, array $byCategory, $newlySuppressed, int $suppressedTotal, int $pendingDocs): string
     {
-        $names = ['suppressed' => '收件方抑制名单', 'bounce' => '永久拒收', 'temporary' => '临时失败', 'config' => 'SMTP 配置 / 连接'];
+        $names = ['suppressed' => '收件方抑制名单', 'bounce' => '永久拒收', 'temporary' => '临时失败', 'config' => 'SMTP 配置 / 连接', 'expired' => '即时邮件排队过期未发'];
         $lines = [];
         $lines[] = "最近 {$hours} 小时：发出 {$sent} 封，失败 {$failed} 封" . ($sent + $failed > 0 ? '（失败率 ' . round($failed * 100 / ($sent + $failed), 1) . '%）' : '') . '。';
         if ($byCategory) {

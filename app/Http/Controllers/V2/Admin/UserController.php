@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\V2\Admin;
 
+use App\Services\Mail\MailLane;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\UserGenerate;
 use App\Http\Requests\Admin\UserSendMail;
@@ -824,7 +825,7 @@ class UserController extends Controller
                     'subject' => $subject,
                     'template_name' => 'notify',
                     'template_value' => $templateValue
-                ], 'send_email_mass'));
+                ], MailLane::BULK));
             }
         });
 

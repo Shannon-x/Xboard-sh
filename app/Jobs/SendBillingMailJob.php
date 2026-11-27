@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Jobs\Middleware\MailLaneThrottle;
 use App\Models\BillingDocument;
 use App\Models\CommissionWithdrawal;
 use App\Models\Order;
@@ -9,6 +10,7 @@ use App\Models\User;
 use App\Services\Billing\BillingArchive;
 use App\Services\Billing\BillingDocumentService;
 use App\Services\Mail\DeliveryMonitor;
+use App\Services\Mail\MailLane;
 use App\Services\MailService;
 use App\Services\Notification\NotificationPreference;
 use App\Services\TelegramService;
@@ -69,7 +71,27 @@ class SendBillingMailJob implements ShouldQueue
      */
     public function __construct(public string $kind, public int $id, public ?string $stage = null, public ?int $expiry = null, public bool $force = false)
     {
-        $this->onQueue('send_email');
+        $this->onQueue(self::laneFor($kind, $force));
+    }
+
+    /**
+     * 收据 / 保底凭证 / 提现结果是用户刚付完钱、刚处理完的交易回执，走交易通道；
+     * 账单、到期、挽回、流量提醒是定时扫描批量派的，走批量通道。后台手动重发一律按交易类：管理员在等。
+     */
+    public static function laneFor(string $kind, bool $force = false): string
+    {
+        if ($force) {
+            return MailLane::TRANSACTIONAL;
+        }
+        return match ($kind) {
+            self::KIND_RECEIPT, self::KIND_PAYG_FLOOR, self::KIND_WITHDRAWAL => MailLane::TRANSACTIONAL,
+            default => MailLane::BULK,
+        };
+    }
+
+    public function middleware(): array
+    {
+        return [new MailLaneThrottle()];
     }
 
     /** 事务提交后再派发：OrderHandleJob 把 open() 包在事务里，回滚了就不该发收据。 */

@@ -2,6 +2,7 @@
 
 namespace App\Services\Commission;
 
+use App\Services\Mail\MailLane;
 use App\Jobs\SendEmailJob;
 use App\Jobs\SendTelegramJob;
 use App\Models\User;
@@ -221,7 +222,7 @@ final class CommissionNotifier
                 ],
                 'user_id' => (int) $user->id,
                 'category' => NotificationPreference::COMMISSION,
-            ]);
+            ], MailLane::BULK);   // 每天 12:00 的佣金日报，一次派给所有有新佣金的人
         }
         if ($user->telegram_id) {
             SendTelegramJob::dispatch((int) $user->telegram_id, $title . "\n" . $content, '');

@@ -44,7 +44,7 @@ class QueueConfigTest extends TestCase
         $this->assertSame([], config('horizon.defaults'));
         $plan = new \Laravel\Horizon\ProvisioningPlan('test', config('horizon.environments'), config('horizon.defaults', []));
         foreach ($plan->toSupervisorOptions() as $env => $supervisors) {
-            $this->assertSame(['traffic', 'stat', 'business', 'notification'], collect($supervisors)->keys()->all(), "horizon {$env} 的进程池应只来自 \$supervisors");
+            $this->assertSame(['traffic', 'stat', 'business', 'notification', 'mail-instant', 'mail-transactional', 'mail-bulk', 'mail-legacy'], collect($supervisors)->keys()->all(), "horizon {$env} 的进程池应只来自 \$supervisors");
         }
     }
 

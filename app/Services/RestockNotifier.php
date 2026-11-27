@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\Mail\MailLane;
 use App\Exceptions\ApiException;
 use App\Jobs\SendEmailJob;
 use App\Models\Plan;
@@ -151,6 +152,6 @@ class RestockNotifier
             'subject' => $subject . ' - ' . $appName,
             'template_name' => 'notify',
             'template_value' => ['name' => $appName, 'url' => admin_setting('app_url'), 'content' => $content],
-        ]);
+        ], MailLane::BULK);   // 补货时一次通知所有在等的人
     }
 }

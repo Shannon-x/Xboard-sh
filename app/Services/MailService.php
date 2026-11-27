@@ -7,6 +7,7 @@ use App\Jobs\SendEmailJob;
 use App\Models\User;
 use App\Services\Billing\BillingDocumentService;
 use App\Services\Mail\DeliveryMonitor;
+use App\Services\Mail\MailLane;
 use App\Services\Notification\NotificationPreference;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
@@ -243,7 +244,7 @@ class MailService
                 'name' => admin_setting('app_name', 'XBoard'),
                 'url' => admin_setting('app_url')
             ]
-        ]);
+        ], MailLane::BULK);
     }
 
     /**
@@ -372,7 +373,7 @@ class MailService
                 'name' => admin_setting('app_name', 'XBoard'),
                 'url' => admin_setting('app_url')
             ]
-        ]);
+        ], MailLane::BULK);
         return true;
     }
 

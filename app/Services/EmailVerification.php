@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\Mail\MailLane;
 use App\Exceptions\ApiException;
 use App\Jobs\SendEmailJob;
 use App\Models\User;
@@ -370,7 +371,7 @@ final class EmailVerification
                 'restrict_mode' => self::restrictMode(),
                 'token_days' => (int) (self::TOKEN_TTL / 86400),
             ],
-        ]);
+        ], MailLane::INSTANT);   // 用户刚在页面上点的：即时通道（链接几天有效，不设 not_after）
         return ['sent' => true, 'resend_after' => $now + self::RESEND_COOLDOWN];
     }
 
@@ -413,7 +414,7 @@ final class EmailVerification
                 'restrict_mode' => self::restrictMode(),
                 'token_days' => (int) (self::TOKEN_TTL / 86400),
             ],
-        ]);
+        ], MailLane::BULK);   // 11:35 定时批量提醒
         return true;
     }
 

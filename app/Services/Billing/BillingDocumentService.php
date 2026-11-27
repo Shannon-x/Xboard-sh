@@ -472,8 +472,10 @@ class BillingDocumentService
     public function alternatives(User $user, ?Plan $current): array
     {
         $configured = array_values(array_filter(array_map('intval', explode(',', (string) admin_setting('billing_recommend_plan_ids', '')))));
+        // 批量账单每封都会走到这里：占位数在本进程内复用 60 秒（见 PlanCapacity::occupied）
         $plans = PlanCapacity::available(
-            Plan::where('show', true)->where('sell', true)->where('id', '!=', (int) $user->plan_id)->orderBy('sort')->get()
+            Plan::where('show', true)->where('sell', true)->where('id', '!=', (int) $user->plan_id)->orderBy('sort')->get(),
+            PlanCapacity::MAIL_CACHE_SECONDS
         );
         $picked = $configured ? $plans->filter(fn (Plan $plan) => in_array((int) $plan->id, $configured, true)) : collect();
         if ($picked->isEmpty()) $configured = [];   // 配的全满员（或没配）：退回按价位挑，这一栏不空着

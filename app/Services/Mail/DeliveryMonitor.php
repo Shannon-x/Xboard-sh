@@ -29,6 +29,8 @@ final class DeliveryMonitor
     public const BOUNCE = 'bounce';
     public const TEMPORARY = 'temporary';
     public const CONFIG = 'config';
+    /** 即时邮件（验证码 / 登录链接）排到时已过有效期，没有发出去。与收件人无关，不计入用户的失败次数 */
+    public const EXPIRED = 'expired';
 
     public const TEMPORARY_FAILURES_TO_SUPPRESS = 3;
 
@@ -90,6 +92,29 @@ final class DeliveryMonitor
             self::touchUser($user, $category);
         }
         return $category;
+    }
+
+    /**
+     * 记一条「过期未发」：只写日志，不碰用户的退信 / 临时失败计数（这是我们排队慢，不是对方邮箱的问题）。
+     * $userId 不传时按 email 反查，同 record()。
+     */
+    public static function recordExpired(string $email, string $subject, string $view, int $lateSeconds, ?int $userId = null): void
+    {
+        $user = $userId ? User::find($userId) : User::findByExactEmail($email);
+        try {
+            MailLog::create([
+                'email' => $email,
+                'user_id' => $user?->id,
+                'subject' => $subject,
+                'template_name' => $view,
+                'error' => sprintf('expired before send: %ds past not_after', max(0, $lateSeconds)),
+                'status' => 0,
+                'category' => self::EXPIRED,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('[mail] 写 v2_mail_log 失败', ['email' => $email, 'error' => $e->getMessage()]);
+        }
+        Log::warning('[mail] 即时邮件排到时已过期，未发送', ['email' => $email, 'template' => $view, 'late_seconds' => $lateSeconds]);
     }
 
     private static function touchUser(User $user, string $category): void

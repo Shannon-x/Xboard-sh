@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\V1\Passport;
 
+use App\Services\Mail\MailLane;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Passport\CommSendEmailVerify;
 use App\Jobs\SendEmailJob;
@@ -64,6 +65,7 @@ class CommController extends Controller
         $code = random_int(100000, 999999);
         $subject = admin_setting('app_name', 'XBoard') . __('Email verification code');
 
+        // 即时通道：用户正停在注册页等这封；验证码 300 秒有效，排到时过期了就不发（见 SendEmailJob::expired）
         SendEmailJob::dispatch([
             'email' => $email,
             'subject' => $subject,
@@ -72,8 +74,9 @@ class CommController extends Controller
                 'name' => admin_setting('app_name', 'XBoard'),
                 'code' => $code,
                 'url' => admin_setting('app_url')
-            ]
-        ]);
+            ],
+            'not_after' => time() + 300,
+        ], MailLane::INSTANT);
 
         Cache::put(CacheKey::get('EMAIL_VERIFY_CODE', $email), $code, 300);
         Cache::put(CacheKey::get('LAST_SEND_EMAIL_VERIFY_TIMESTAMP', $email), time(), 60);

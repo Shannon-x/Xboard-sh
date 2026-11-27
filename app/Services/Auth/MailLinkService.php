@@ -2,6 +2,7 @@
 
 namespace App\Services\Auth;
 
+use App\Services\Mail\MailLane;
 use App\Jobs\SendEmailJob;
 use App\Models\User;
 use App\Utils\CacheKey;
@@ -76,8 +77,10 @@ class MailLinkService
                 'name' => admin_setting('app_name', 'XBoard'),
                 'link' => $link,
                 'url' => admin_setting('app_url')
-            ]
-        ]);
+            ],
+            // 登录链接的 TEMP_TOKEN 300 秒有效：排到时过期了就不发
+            'not_after' => time() + 300,
+        ], MailLane::INSTANT);
     }
 
     /**

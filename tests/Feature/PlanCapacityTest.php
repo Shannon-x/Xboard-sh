@@ -38,6 +38,7 @@ class PlanCapacityTest extends TestCase
         $group->name = '基础';
         $group->save();
         $this->groupId = $group->id;
+        PlanCapacity::flushMemo();
     }
 
     private function plan(string $name, int $monthly, ?int $capacity, array $attributes = []): Plan
@@ -119,6 +120,7 @@ class PlanCapacityTest extends TestCase
 
         // 有人到期腾出位子，星链回到推荐里，按价位排第一
         User::where('plan_id', $starlink->id)->limit(2)->update(['expired_at' => time() - 60]);
+        PlanCapacity::flushMemo();   // 邮件推荐的席位统计缓存 60 秒（MailLaneTest 测缓存本身），这里看的是下一轮扫描
         $alternatives = app(BillingDocumentService::class)->alternatives($user, $kddi);
         $this->assertSame(['日本星链', '美国 AT&T', '普通上网'], array_column($alternatives, 'name'));
     }
@@ -137,6 +139,7 @@ class PlanCapacityTest extends TestCase
         $this->assertSame(['美国 AT&T'], array_column($service->alternatives($user, $kddi), 'name'), '指定的里面满员的跳过');
 
         $this->fill($att, 1);
+        PlanCapacity::flushMemo();   // 同上：60 秒缓存过后的下一轮
         $this->assertSame(['普通上网'], array_column($service->alternatives($user, $kddi), 'name'), '指定的全满员：退回按价位挑');
     }
 

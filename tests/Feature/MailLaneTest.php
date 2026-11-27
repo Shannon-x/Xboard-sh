@@ -13,6 +13,7 @@ use App\Services\Mail\MailLane;
 use App\Services\PlanCapacity;
 use App\Utils\Helper;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Queue;
@@ -32,6 +33,10 @@ class MailLaneTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // admin_setting() 写入时清 Setting 的 Redis 缓存；CI 没有 Redis，换成数组存储（同 AccountEmailExactMatchTest）
+        config(['cache.stores.redis' => ['driver' => 'array']]);
+        Cache::forgetDriver('redis');
+        app()->forgetScopedInstances();
         PlanCapacity::flushMemo();
     }
 

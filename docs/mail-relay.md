@@ -50,7 +50,7 @@ PHP worker ── 组 MIME ──► XADD mail:relay:stream:<lane>（大邮件�
   （不算用户退信），收据 / 账单转 Telegram。现在一封带 PDF 的收据约 80 KB。
 - **配置问题**（认证失败、TLS、连不上）：照样重试，最后记 `category = config`，不算在用户头上，`Log::error`。
   与直发不同的是不会进 `failed_jobs`：修好 SMTP 后要补发的话看日报里的 config 失败。
-- **SMTP 账号**：面板每个进程最多 60 秒把后台邮件设置推到 `mail:relay:config`（带内容摘要作版本号），
+- **SMTP 账号**：`mail:relay-results` 每分钟、发信的进程最多每 60 秒把后台邮件设置推到 `mail:relay:config`（带内容摘要作版本号，没变不写），
   投递服务每 10 秒看一次，变了就换新连接池。没有这份配置时投递服务不发心跳，面板就继续直发。
 
 ## 已知限制

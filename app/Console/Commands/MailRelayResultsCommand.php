@@ -37,6 +37,15 @@ class MailRelayResultsCommand extends Command
                 throw $e;
             }
         }
+        if (MailRelay::lanes() !== []) {
+            // 面板平时只在发信时（投递服务已在线）推 SMTP 配置；投递服务没拿到配置就不发心跳，面板就不会交信给它。
+            // 这里每分钟推一次（内容没变不写），新装或 Redis 清空后投递服务一分钟内就能拿到配置上线
+            try {
+                MailRelay::syncConfig(true);
+            } catch (\Throwable $e) {
+                Log::warning('[mail] 推送 SMTP 配置给投递服务失败', ['error' => $e->getMessage()]);
+            }
+        }
         $this->pruneSpool();
         $consumer = 'php-' . (gethostname() ?: 'panel');
         $deadline = microtime(true) + max(1, (int) $this->option('seconds'));

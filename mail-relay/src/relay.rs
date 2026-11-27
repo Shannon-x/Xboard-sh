@@ -37,6 +37,31 @@ pub struct Metrics {
 }
 
 impl Metrics {
+    /// 心跳里带给后台仪表盘的计数
+    pub fn snapshot(&self) -> serde_json::Value {
+        let g = |v: &AtomicU64| v.load(Ordering::Relaxed);
+        serde_json::json!({
+            "sent": {
+                "instant": g(&self.sent[0]),
+                "transactional": g(&self.sent[1]),
+                "bulk": g(&self.sent[2]),
+            },
+            "failed": {
+                "permanent": g(&self.failed_permanent),
+                "transient": g(&self.failed_transient),
+                "config": g(&self.failed_config),
+                "throttled": g(&self.failed_throttled),
+                "internal": g(&self.failed_internal),
+                "too_large": g(&self.failed_too_large),
+            },
+            "expired": g(&self.expired),
+            "deferred": g(&self.deferred),
+            "retried": g(&self.retried),
+            "throttle_events": g(&self.throttle_events),
+            "redis_errors": g(&self.redis_errors),
+        })
+    }
+
     fn failed(&self, class: &str) -> &AtomicU64 {
         match class {
             "permanent" => &self.failed_permanent,
@@ -627,6 +652,7 @@ pub async fn mover(sh: Arc<Shared>, mut stop: watch::Receiver<bool>) {
 /// 心跳（面板据此判断投递服务在不在）+ 每 10 秒看一次 SMTP 配置
 pub async fn housekeeping(sh: Arc<Shared>, mut stop: watch::Receiver<bool>) {
     let mut tick = 0u64;
+    let started_at = store::now_secs();
     loop {
         if tick.is_multiple_of(2) {
             sh.reload_smtp().await;
@@ -638,17 +664,40 @@ pub async fn housekeeping(sh: Arc<Shared>, mut stop: watch::Receiver<bool>) {
                 warn!(error = %e, "清理 24 小时额度计数失败");
             }
         }
-        let body = serde_json::json!({
+        let now = store::now_secs();
+        let mut body = serde_json::json!({
             "consumer": sh.cfg.consumer,
             "version": env!("CARGO_PKG_VERSION"),
-            "at": store::now_secs(),
+            "at": now,
+            "started_at": started_at,
             "smtp": sh.smtp_version().is_some(),
             "smtp_version": sh.smtp_version(),
             "inflight": sh.inflight_len(),
             "bulk_factor": sh.limiter.bulk_factor(),
-            "daily_used": sh.daily.used(store::now_secs()),
+            "daily_used": sh.daily.used(now),
             "daily_limit": sh.cfg.daily_limit,
+            "daily_bulk_cap": sh.cfg.daily_cap(Lane::Bulk),
+            "rate_per_minute": sh.cfg.rate_per_minute,
+            "connections": sh.cfg.connections,
+            // 后台仪表盘用：最近 60 分钟每分钟发出的封数，和启动以来的计数（重启清零）
+            "per_minute": sh.daily.series(now, 60),
+            "counters": sh.metrics.snapshot(),
         });
+        // 各通道积压（含正在发的）和等着重试的条数；读不到就不带，仪表盘显示「未知」
+        match sh.store.depths().await {
+            Ok(d) => {
+                body["depths"] = serde_json::json!({
+                    "instant": d.lanes[0],
+                    "transactional": d.lanes[1],
+                    "bulk": d.lanes[2],
+                });
+                body["delayed"] = d.delayed.into();
+            }
+            Err(e) => {
+                sh.metrics.redis_errors.fetch_add(1, Ordering::Relaxed);
+                warn!(error = %e, "读通道积压失败");
+            }
+        }
         // 没有 SMTP 配置时不发心跳：面板就会继续自己发，不会把信交给一个发不出去的服务
         if sh.smtp_version().is_some()
             && let Err(e) = sh.store.heartbeat(&body.to_string()).await

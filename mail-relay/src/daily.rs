@@ -67,6 +67,16 @@ impl Daily {
 }
 
 impl Daily {
+    /// 最近 n 分钟每分钟领出去的名额，最老的在前、当前这一分钟在最后（后台仪表盘画发送速度用）
+    pub fn series(&self, now_secs: i64, n: usize) -> Vec<u32> {
+        let b = self.buckets.lock().unwrap();
+        let now_minute = now_secs.div_euclid(60);
+        (0..n as i64)
+            .rev()
+            .map(|ago| b.get(&(now_minute - ago)).copied().unwrap_or(0))
+            .collect()
+    }
+
     /// 领了名额却被服务商限流（没收下）：还回去
     pub fn give_back(&self, minute: i64) {
         let mut b = self.buckets.lock().unwrap();
@@ -165,6 +175,17 @@ mod tests {
         assert!(d.take(&c, Lane::Instant, 100).is_err());
         d.give_back(m);
         assert!(d.take(&c, Lane::Instant, 100).is_ok());
+    }
+
+    #[test]
+    fn series_lists_recent_minutes_oldest_first() {
+        let c = cfg(0, 0);
+        let d = Daily::new();
+        let t = 3_000_000 * 60;
+        d.take(&c, Lane::Bulk, t - 120).unwrap();
+        d.take(&c, Lane::Bulk, t).unwrap();
+        d.take(&c, Lane::Instant, t + 30).unwrap();
+        assert_eq!(d.series(t + 30, 4), vec![0, 1, 0, 2]);
     }
 
     #[test]

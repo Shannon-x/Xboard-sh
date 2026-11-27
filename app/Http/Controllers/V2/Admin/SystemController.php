@@ -4,6 +4,7 @@ namespace App\Http\Controllers\V2\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\AdminAuditLog;
+use App\Services\Mail\MailRelayStatus;
 use App\Utils\CacheKey;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -46,6 +47,12 @@ class SystemController extends Controller
         return collect($masters)->contains(function ($master) {
             return $master->status === 'paused';
         }) ? false : true;
+    }
+
+    /** 仪表盘「邮件投递」卡片：Rust 投递服务的状态、积压、速度和 24 小时额度 */
+    public function getMailRelayStats()
+    {
+        return $this->success(MailRelayStatus::current());
     }
 
     public function getQueueStats()

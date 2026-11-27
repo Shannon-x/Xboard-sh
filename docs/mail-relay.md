@@ -100,3 +100,16 @@ MAIL_RELAY_E2E=1 REDIS_PREFIX=e2e_ php vendor/bin/phpunit tests/Feature/MailRela
 ```
 
 Rust 单元测试：`cd mail-relay && cargo test`。
+
+
+## 后台仪表盘
+
+仪表盘的「邮件投递」卡片读 `GET /api/v2/{secure_path}/system/getMailRelayStats`（`App\Services\Mail\MailRelayStatus`）。
+数字全部来自投递服务每 5 秒写一次的心跳 `mail:relay:heartbeat`，面板不连投递服务的 HTTP 端口：
+
+- 各通道由谁发：`relay`（投递服务）、`fallback`（开了但心跳超过 30 秒没更新，面板直发）、`direct`（没开）
+- 各通道待发（含正在发的）、等着重试的条数
+- 每分钟发送量（最近 60 分钟，每分钟一格）和每分钟上限
+- 滚动 24 小时额度：已用、上限、批量停止线，批量是否已暂停
+- 启动以来的限流（455）、重试、因额度延后、验证码过期次数（重启清零）
+- 近 24 小时成功 / 失败按 `v2_mail_log` 算，面板直发和投递服务发的都算在里面

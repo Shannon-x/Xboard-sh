@@ -17,4 +17,14 @@ return [
     // 即时邮件过期不发：派发时带 not_after（验证码 / 登录链接的有效期截止），排到时已经过了就不发，
     // v2_mail_log 记一条 category = expired（不计入用户的退信 / 临时失败计数）。0 = 关掉，过期也照发
     'drop_expired_instant' => (bool) env('MAIL_DROP_EXPIRED_INSTANT', true),
+
+    // Rust 邮件投递服务（仓库 mail-relay/，compose 里的 mail-relay 容器）。默认不开：这里为空时所有邮件照旧由 PHP worker 直发。
+    // 列出的通道（instant / transactional / bulk，逗号分隔）在投递服务心跳正常时只组信入队，由它并发发出；
+    // 投递服务停了或 Redis 写失败会自动退回直发。建议先只开 bulk，看几天 v2_mail_log 再加 transactional / instant
+    'relay' => [
+        'lanes' => env('MAIL_RELAY_LANES', ''),
+        // 组好的信超过这么大（带 PDF 的收据 / 账单）就写到 spool 目录，通道里只放文件名。投递服务要挂载同一个目录
+        'inline_max_bytes' => (int) env('MAIL_RELAY_INLINE_MAX_BYTES', 65536),
+        'spool_dir' => env('MAIL_RELAY_SPOOL_DIR', storage_path('mail-spool')),
+    ],
 ];

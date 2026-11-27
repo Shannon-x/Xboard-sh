@@ -31,3 +31,6 @@ storage/laravels.conf
 storage/laravels.pid
 storage/laravels-timer-process.pid
 /frontend
+
+/mail-relay
+/storage/mail-spool/*

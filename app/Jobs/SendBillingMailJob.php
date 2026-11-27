@@ -58,6 +58,7 @@ class SendBillingMailJob implements ShouldQueue
     public const RESULT_TELEGRAM = 'telegram';
     public const RESULT_SKIPPED = 'skipped';   // 没发出去也不会再试：没有内容可发 / 用户被标记且没有 Telegram
     public const RESULT_RETRY = 'retry';       // 临时失败：已 release，队列稍后重试
+    public const RESULT_QUEUED = 'queued';     // 已交给 Rust 投递服务：发成功记 sent、退信转 Telegram 都由 MailRelayResults 在结果回来时做
 
     public $tries = 3;
     public $timeout = 60;   // 首次渲染要建字体度量缓存，比普通邮件慢得多
@@ -190,7 +191,8 @@ class SendBillingMailJob implements ShouldQueue
         $user = $order->user;
         $pdf = BillingDocumentService::withLocale(fn () => $docs->pdf($data), $doc->locale ?: null);
         $result = $this->notify($user, $data, 'billing.mail.receipt', $pdf, $doc, $docs, $archive);
-        if ($result === self::RESULT_EMAIL || $result === self::RESULT_TELEGRAM) {
+        // 交给投递服务也算「处理过」：之后重复派发 / 后台误触不会再排一封；真的退信了 MailRelayResults 会转 Telegram
+        if ($result === self::RESULT_EMAIL || $result === self::RESULT_TELEGRAM || $result === self::RESULT_QUEUED) {
             DB::table('v2_order')->where('id', $order->id)->update(['receipt_sent_at' => time()]);
         }
         return $result;
@@ -333,7 +335,11 @@ class SendBillingMailJob implements ShouldQueue
             return self::RESULT_SKIPPED;
         }
         if (!DeliveryMonitor::suppressed($user)) {
-            $log = MailService::deliver($email, (string) $data['subject'], $view, $data, $attachments, (int) $user->id, $category);
+            $log = MailService::deliver($email, (string) $data['subject'], $view, $data, $attachments, (int) $user->id, $category,
+                MailLane::normalize($this->queue ?? self::laneFor($this->kind, $this->force)), ['billing' => $this->relayMeta($user, $data, $pdf, $doc)]);
+            if (!empty($log['queued'])) {
+                return self::RESULT_QUEUED;
+            }
             if (!$log['error']) {
                 if ($doc && $archive) {
                     $archive->markSent($doc, BillingDocument::CHANNEL_EMAIL);
@@ -359,8 +365,28 @@ class SendBillingMailJob implements ShouldQueue
         return self::RESULT_SKIPPED;
     }
 
+    /**
+     * 交给投递服务时随信带走的东西：结果回来时 MailRelayResults 用它记 sent、或退信时转 Telegram。
+     * PDF 不带（太大），转 Telegram 时按 doc_id 从存档重新生成；没有存档的（到期 / 挽回 / 流量提醒）只发文字。
+     */
+    private function relayMeta(User $user, array $data, ?string $pdf, ?BillingDocument $doc): array
+    {
+        return [
+            'kind' => $this->kind,
+            'user_id' => (int) $user->id,
+            'doc_id' => $doc?->id,
+            'pdf' => $pdf !== null && $doc !== null,
+            'tg' => ['subject' => (string) ($data['subject'] ?? ''), 'intro' => (string) ($data['intro'] ?? ''), 'cta_url' => (string) ($data['cta_url'] ?? '')],
+        ];
+    }
+
     /** Telegram 兜底：有 PDF 就发文件（caption 带主题与入口），没有就发文字。失败只记日志，不抛出。 */
     private function telegram(User $user, array $data, ?string $pdf, BillingDocumentService $docs): bool
+    {
+        return self::telegramFallback($user, $data, $pdf, $docs, $this->kind);
+    }
+
+    public static function telegramFallback(User $user, array $data, ?string $pdf, BillingDocumentService $docs, string $kind): bool
     {
         if (!(int) admin_setting('telegram_bot_enable', 0) || !$user->telegram_id) {
             return false;
@@ -376,7 +402,7 @@ class SendBillingMailJob implements ShouldQueue
             }
             return true;
         } catch (\Throwable $e) {
-            Log::warning('[billing] Telegram 兜底发送失败', ['user_id' => $user->id, 'kind' => $this->kind, 'error' => $e->getMessage()]);
+            Log::warning('[billing] Telegram 兜底发送失败', ['user_id' => $user->id, 'kind' => $kind, 'error' => $e->getMessage()]);
             return false;
         }
     }

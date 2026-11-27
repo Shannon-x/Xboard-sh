@@ -3,9 +3,12 @@ FROM rust:1-slim-bookworm AS build
 WORKDIR /src
 # 先只拷依赖清单把依赖编好，改源码时这一层能复用
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release --locked && rm -rf src target/release/deps/xboard_mail_relay*
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release --locked \
+    && rm -rf src target/release/xboard-mail-relay target/release/deps/xboard_mail_relay* target/release/.fingerprint/xboard-mail-relay-*
 COPY src ./src
-RUN cargo build --release --locked && strip target/release/xboard-mail-relay
+# COPY 保留的是仓库里的文件时间，可能比上面那个空 main 还旧，cargo 会以为不用重编、把空程序打进镜像（启动即退出、没有任何输出）。
+# 所以上面删掉了空程序的编译记录，这里再 touch 一下源码，确保一定按真源码重编
+RUN touch src/main.rs && cargo build --release --locked && strip target/release/xboard-mail-relay
 
 FROM debian:bookworm-slim
 # rustls 用系统 CA 校验 SMTP 证书

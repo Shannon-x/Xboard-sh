@@ -14,9 +14,14 @@ services:
       # 并发 SMTP 连接数；其中 RELAY_RESERVED 个永远留给即时 / 交易
       RELAY_CONNECTIONS: "8"
       RELAY_RESERVED: "2"
-      # 三条通道合计的速率上限（封 / 分钟），0 = 不限。按 SMTP 服务商的限额填，留两成余量
-      RELAY_RATE_PER_MINUTE: "0"
+      # 三条通道合计的速率上限（封 / 分钟），0 = 不限。OCI 付费默认每分钟 18000，这里远低于它
+      RELAY_RATE_PER_MINUTE: "600"
       RELAY_BULK_SHARE: "0.8"
+      # 滚动 24 小时额度（按收件人）。OCI 付费默认 50000，面板直发的也占，所以只用 45000；批量到 40000 就停
+      RELAY_DAILY_LIMIT: "45000"
+      RELAY_DAILY_BULK_RESERVE: "5000"
+      # 单封上限（含 Base64 附件），OCI 默认 2 MB
+      RELAY_MAX_MESSAGE_BYTES: "2000000"
       RELAY_SPOOL_DIR: "/www/storage/mail-spool"
       RELAY_LOG_FORMAT: "json"
     volumes:

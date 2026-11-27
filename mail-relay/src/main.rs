@@ -2,6 +2,7 @@
 //! 设计与上线方式见仓库 docs/mail-relay.md。
 
 mod config;
+mod daily;
 mod http;
 mod limiter;
 mod mail;
@@ -44,6 +45,10 @@ async fn main() -> anyhow::Result<()> {
     let store = store::Store::connect(&cfg).await?;
     store.ensure_groups().await?;
     let sh = relay::Shared::new(cfg.clone(), store);
+    match sh.store.daily_load().await {
+        Ok(saved) => sh.daily.load(&saved, store::now_secs()),
+        Err(e) => warn!(error = %e, "读 24 小时额度计数失败，从 0 开始算"),
+    }
     sh.reload_smtp().await;
 
     let (stop_tx, stop_rx) = watch::channel(false);

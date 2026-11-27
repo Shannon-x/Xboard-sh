@@ -123,7 +123,8 @@ pub enum Failure {
     Permanent,
     /// 4xx、超时、连接被断：退避重试
     Transient,
-    /// 服务商在限流（421 / 451 / 4.7.x 里带 rate / limit / throttl）：退避重试，并让批量减速
+    /// 服务商在限流（OCI 超每分钟或 24 小时额度回 455；421 / 451 / 452 带 rate / limit / throttl 字样）：
+    /// 按限流的退避重试（次数多、间隔长），并让批量减速
     Throttled,
     /// 我们自己的问题：认证失败、TLS、连不上服务器。重试，最后回报 config（面板不计入用户）
     Config,
@@ -155,6 +156,10 @@ pub fn classify_parts(
     }
     if tls {
         return Failure::Config;
+    }
+    // OCI Email Delivery 超出 sendrate / max-emails-day 回 455（SMTP 本义是「参数无法接受」，别家很少用）
+    if code == Some("455") {
+        return Failure::Throttled;
     }
     if transient {
         let throttle_words = ["rate", "limit", "throttl", "too many", "try again later"];
@@ -239,6 +244,15 @@ mod tests {
                 "421 timeout waiting for data from client"
             ),
             Failure::Transient
+        );
+        assert_eq!(
+            classify_parts(Some("455"), false, true, false, "455 4.5.0 rate exceeded"),
+            Failure::Throttled
+        );
+        assert_eq!(
+            classify_parts(Some("455"), false, false, false, "455 quota"),
+            Failure::Throttled,
+            "455 不管 lettre 怎么归类都按限流"
         );
         assert_eq!(
             classify_parts(None, false, false, true, "tls handshake"),

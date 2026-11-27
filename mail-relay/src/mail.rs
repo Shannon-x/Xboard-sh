@@ -124,13 +124,17 @@ impl Mail {
     }
 
     /// 重新入队用的字段（attempt 已加 1）
-    pub fn retry_fields(&self) -> Vec<(&'static str, Vec<u8>)> {
+    /// 排进延迟重试时写回的字段。`bump` = 这次算一次投递（失败重试）；额度满了延后发的不算
+    pub fn retry_fields(&self, bump: bool) -> Vec<(&'static str, Vec<u8>)> {
         let mut f: Vec<(&'static str, Vec<u8>)> = vec![
             ("id", self.id.clone().into_bytes()),
             ("from", self.from.clone().into_bytes()),
             ("to", self.to.clone().into_bytes()),
             ("not_after", self.not_after.to_string().into_bytes()),
-            ("attempt", (self.attempt + 1).to_string().into_bytes()),
+            (
+                "attempt",
+                (self.attempt + u32::from(bump)).to_string().into_bytes(),
+            ),
             ("meta", self.meta.clone().into_bytes()),
         ];
         if let Some(e) = &self.eml {
@@ -214,8 +218,13 @@ mod tests {
         assert_eq!(m.to, "b@y.test");
         assert_eq!(m.attempt, 0);
         assert_eq!(m.eml.as_deref(), Some(&b"Subject: hi\r\n\r\nbody"[..]));
-        let retry = m.retry_fields();
+        let retry = m.retry_fields(true);
         assert!(retry.iter().any(|(k, v)| *k == "attempt" && v == b"1"));
+        let deferred = m.retry_fields(false);
+        assert!(
+            deferred.iter().any(|(k, v)| *k == "attempt" && v == b"0"),
+            "额度满延后发的不算一次投递"
+        );
     }
 
     #[test]

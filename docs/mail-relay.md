@@ -40,8 +40,14 @@ PHP worker ── 组 MIME ──► XADD mail:relay:stream:<lane>（大邮件�
 - **不重**：发成功先写 `mail:relay:done:<id>`（7 天），再确认。崩在两步之间，重启后看到 done 标记就跳过。
 - **重试**：4xx / 超时 / 连接断开按 `RELAY_BACKOFF`（默认 3、10、30、120 秒）退避，最多 `RELAY_MAX_ATTEMPTS`（4）次；
   5xx 不重试；即时邮件过了 `not_after` 不再排重试，记 `expired`。
-- **服务商喊慢**（421 / 451 带 rate / limit / too many）：批量暂停 30 秒、速率减半，之后每分钟回升 10%；
-  即时和交易不受影响。
+- **服务商喊慢**（OCI 超限回 455；421 / 451 / 452 带 rate / limit / too many）：这封信按 `RELAY_THROTTLE_BACKOFF`
+  （默认 1、2、5、10、15 分钟）重排，最多 `RELAY_THROTTLE_MAX_ATTEMPTS`（10）次，不和普通临时失败共用次数；
+  批量暂停 30 秒、速率减半，连着被限流暂停时间翻倍（最长 10 分钟），之后每分钟回升 10%。即时和交易不受影响。
+- **24 小时额度**（OCI 的 max-emails-day：滚动 24 小时、按收件人计）：按分钟记在 `mail:relay:daily`，重启不归零。
+  批量用到 `RELAY_DAILY_LIMIT - RELAY_DAILY_BULK_RESERVE` 就停，剩下的留给验证码和收据；额度满的信原样延后，
+  不算投递次数。面板自己直发的（没开投递服务的通道）也占 OCI 的额度，所以默认只用 45000，不是 50000。
+- **单封大小**（OCI 默认 2 MB，含头和 Base64 附件）：超过 `RELAY_MAX_MESSAGE_BYTES` 的不发，记 `config`
+  （不算用户退信），收据 / 账单转 Telegram。现在一封带 PDF 的收据约 80 KB。
 - **配置问题**（认证失败、TLS、连不上）：照样重试，最后记 `category = config`，不算在用户头上，`Log::error`。
   与直发不同的是不会进 `failed_jobs`：修好 SMTP 后要补发的话看日报里的 config 失败。
 - **SMTP 账号**：面板每个进程最多 60 秒把后台邮件设置推到 `mail:relay:config`（带内容摘要作版本号），
@@ -68,9 +74,13 @@ PHP worker ── 组 MIME ──► XADD mail:relay:stream:<lane>（大邮件�
 | `RELAY_CONSUMER` | `relay-1` | 只跑一个实例 |
 | `RELAY_CONNECTIONS` | 8 | 并发 SMTP 连接 = 投递 worker 数 |
 | `RELAY_RESERVED` | 2 | 其中几个永远留给即时 / 交易 |
-| `RELAY_RATE_PER_MINUTE` | 0 | 全局速率上限（封 / 分钟），0 = 不限；按服务商限额留两成余量 |
+| `RELAY_RATE_PER_MINUTE` | 600 | 全局速率上限（封 / 分钟），0 = 不限。OCI 付费默认 18000 |
 | `RELAY_BULK_SHARE` | 0.8 | 批量最多占全局速率的比例 |
 | `RELAY_MAX_ATTEMPTS` / `RELAY_BACKOFF` | 4 / `3,10,30,120` | 重试 |
+| `RELAY_THROTTLE_MAX_ATTEMPTS` / `RELAY_THROTTLE_BACKOFF` | 10 / `60,120,300,600,900` | 被限流时的重试 |
+| `RELAY_DAILY_LIMIT` | 45000 | 滚动 24 小时最多发多少（按收件人），0 = 不限。OCI 付费默认 50000，以控制台为准 |
+| `RELAY_DAILY_BULK_RESERVE` | 5000 | 24 小时额度里批量不能用的部分（留给验证码和收据） |
+| `RELAY_MAX_MESSAGE_BYTES` | 2000000 | 单封原文上限，0 = 不拦。OCI 默认 2 MB |
 | `RELAY_SPOOL_DIR` | `/www/storage/mail-spool` | 与面板 `storage/mail-spool` 是同一个目录 |
 | `RELAY_SMTP_TIMEOUT` | 30 | 单次 SMTP 操作超时（秒） |
 | `RELAY_HTTP_ADDR` | `0.0.0.0:9810` | `/healthz`、`/metrics`（Prometheus 文本） |

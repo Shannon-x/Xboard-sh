@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\Log;
  * 收据 / 账单的「已发送」状态，以及退信时的 Telegram 兜底（与直发时 SendBillingMailJob::notify 的口径一样）。
  *
  * 结果字段（mail-relay/src/store.rs push_result）：id、lane、status（sent / failed / expired）、
- * class（ok / permanent / transient / config / throttled / internal / expired）、code、error、attempts、meta、at
+ * class（ok / permanent / transient / config / throttled / internal / too_large / expired）、code、error、attempts、meta、at
  */
 final class MailRelayResults
 {
@@ -47,11 +47,15 @@ final class MailRelayResults
             return $category;
         }
         $error = trim((string) ($r['error'] ?? '')) ?: 'relay: ' . ($class ?: 'failed');
-        // 我们自己的问题（认证、TLS、组信 / spool 出错）不算在用户头上：按 config 记，不碰退信计数
-        $force = in_array($class, ['config', 'internal'], true) ? DeliveryMonitor::CONFIG : null;
+        // 我们自己的问题（认证、TLS、组信 / spool 出错、信超过服务商的单封大小上限）不算在用户头上：按 config 记，不碰退信计数
+        $force = in_array($class, ['config', 'internal', 'too_large'], true) ? DeliveryMonitor::CONFIG : null;
         $category = DeliveryMonitor::record($email, $subject, $view, $error, $userId, $force);
         if ($category === DeliveryMonitor::CONFIG) {
             Log::error('[mail] 投递服务因配置问题放弃了一封信', ['email' => $email, 'view' => $view, 'class' => $class, 'error' => $error]);
+            if ($class === 'too_large') {
+                // 信太大（OCI 单封 2 MB）发不出去，但用户还是该收到收据：和退信一样转 Telegram
+                $this->billingFallback($meta);
+            }
         } else {
             // 退信，或投递服务重试用完仍是临时失败：和直发时一样转 Telegram
             $this->billingFallback($meta);

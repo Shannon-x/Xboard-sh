@@ -50,6 +50,7 @@ async fn metrics(State(sh): State<Arc<Shared>>) -> String {
         ("config", &m.failed_config),
         ("throttled", &m.failed_throttled),
         ("internal", &m.failed_internal),
+        ("too_large", &m.failed_too_large),
     ] {
         let _ = writeln!(
             out,
@@ -60,6 +61,7 @@ async fn metrics(State(sh): State<Arc<Shared>>) -> String {
     for (name, v) in [
         ("mail_relay_expired_total", &m.expired),
         ("mail_relay_retried_total", &m.retried),
+        ("mail_relay_deferred_total", &m.deferred),
         ("mail_relay_duplicates_total", &m.duplicates),
         ("mail_relay_throttle_events_total", &m.throttle_events),
         ("mail_relay_redis_errors_total", &m.redis_errors),
@@ -79,6 +81,13 @@ async fn metrics(State(sh): State<Arc<Shared>>) -> String {
         out,
         "# TYPE mail_relay_bulk_rate_factor gauge\nmail_relay_bulk_rate_factor {}",
         sh.limiter.bulk_factor()
+    );
+    let _ = writeln!(
+        out,
+        "# TYPE mail_relay_daily_used gauge\nmail_relay_daily_used {}\n# TYPE mail_relay_daily_limit gauge\nmail_relay_daily_limit {}\n# TYPE mail_relay_rate_per_minute gauge\nmail_relay_rate_per_minute {}",
+        sh.daily.used(crate::store::now_secs()),
+        sh.cfg.daily_limit,
+        sh.cfg.rate_per_minute
     );
     let _ = writeln!(
         out,

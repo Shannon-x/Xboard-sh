@@ -1,5 +1,6 @@
 //! 发送限速：全局令牌桶（三条通道合计）+ 批量通道自己的桶（只能用全局的一部分），
-//! 再加一个「服务商喊慢点」时的批量退让：收到 421 / 451 / 4.7.x 限流回复后批量暂停一阵、速率减半，之后慢慢回升。
+//! 再加一个「服务商喊慢点」时的批量退让：收到限流回复（421 / 451 / 452 带限流字样，或 OCI 的 455）后批量暂停一阵、
+//! 速率减半，之后慢慢回升。连着被限流，暂停时间翻倍（最长 10 分钟），批量发出去一封就重新从 30 秒算起。
 //! 即时和交易只受全局桶约束，永远不被批量的退让拖住。
 
 use crate::config::Lane;
@@ -49,14 +50,17 @@ struct State {
     bulk_factor: f64,
     bulk_paused_until: Option<Instant>,
     last_recover: Instant,
+    /// 连着被限流了几次（中间没有一封批量发成功）
+    consecutive_throttles: u32,
 }
 
 pub struct Limiter {
     state: Mutex<State>,
 }
 
-/// 被服务商限流后批量暂停多久
+/// 被服务商限流后批量暂停多久（连着被限流就翻倍，最长 MAX_THROTTLE_PAUSE）
 const THROTTLE_PAUSE: Duration = Duration::from_secs(30);
+const MAX_THROTTLE_PAUSE: Duration = Duration::from_secs(600);
 /// 每过这么久批量速率回升 10 个百分点
 const RECOVER_EVERY: Duration = Duration::from_secs(60);
 
@@ -72,6 +76,7 @@ impl Limiter {
                 bulk_factor: 1.0,
                 bulk_paused_until: None,
                 last_recover: Instant::now(),
+                consecutive_throttles: 0,
             }),
         }
     }
@@ -139,17 +144,26 @@ impl Limiter {
         Duration::ZERO
     }
 
-    /// 服务商回了限流类错误：批量暂停 30 秒、速率减半（不限速时只暂停）
+    /// 服务商回了限流类错误：批量暂停（30 秒起，连着被限流就翻倍）、速率减半（不限速时只暂停）
     pub fn throttled(&self) {
         let now = Instant::now();
         let mut s = self.state.lock().unwrap();
-        s.bulk_paused_until = Some(now + THROTTLE_PAUSE);
+        let pause = THROTTLE_PAUSE
+            .saturating_mul(1u32 << s.consecutive_throttles.min(5))
+            .min(MAX_THROTTLE_PAUSE);
+        s.consecutive_throttles = s.consecutive_throttles.saturating_add(1);
+        s.bulk_paused_until = Some(now + pause);
         s.bulk_factor = (s.bulk_factor / 2.0).max(0.1);
         s.last_recover = now;
         let per_minute = s.bulk_base_per_minute * s.bulk_factor;
         if let Some(b) = s.bulk.as_mut() {
             b.per_sec = per_minute / 60.0;
         }
+    }
+
+    /// 批量发成功了一封：下次被限流重新从 30 秒暂停算起
+    pub fn bulk_sent(&self) {
+        self.state.lock().unwrap().consecutive_throttles = 0;
     }
 
     pub fn bulk_factor(&self) -> f64 {
@@ -205,5 +219,45 @@ mod tests {
             "30 秒后恢复"
         );
         assert!((l.bulk_factor() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn repeated_throttling_backs_off_longer() {
+        let l = Limiter::new(0, 0.8);
+        l.throttled();
+        l.throttled();
+        let now = Instant::now();
+        assert!(
+            !l.try_take(Lane::Bulk, now + THROTTLE_PAUSE + Duration::from_secs(1))
+                .is_zero(),
+            "第二次连着被限流暂停 60 秒"
+        );
+        assert!(
+            l.try_take(
+                Lane::Bulk,
+                now + THROTTLE_PAUSE * 2 + Duration::from_secs(1)
+            )
+            .is_zero()
+        );
+        for _ in 0..10 {
+            l.throttled();
+        }
+        let now = Instant::now();
+        assert!(
+            l.try_take(
+                Lane::Bulk,
+                now + MAX_THROTTLE_PAUSE + Duration::from_secs(1)
+            )
+            .is_zero(),
+            "最长暂停 10 分钟"
+        );
+        l.bulk_sent();
+        l.throttled();
+        let now = Instant::now();
+        assert!(
+            l.try_take(Lane::Bulk, now + THROTTLE_PAUSE + Duration::from_secs(1))
+                .is_zero(),
+            "发成功一封后重新从 30 秒算"
+        );
     }
 }

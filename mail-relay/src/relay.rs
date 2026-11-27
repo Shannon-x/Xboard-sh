@@ -2,6 +2,7 @@
 //! 其中 reserved 个 worker 永远不碰批量）→ 共用的 SMTP 连接池。另有重试搬运、心跳、SMTP 配置热更新三个后台任务。
 
 use crate::config::{Config, Lane};
+use crate::daily::{self, Daily};
 use crate::limiter::Limiter;
 use crate::mail::Mail;
 use crate::smtp::{self, Failure, SmtpConfig};
@@ -25,7 +26,10 @@ pub struct Metrics {
     pub failed_config: AtomicU64,
     pub failed_throttled: AtomicU64,
     pub failed_internal: AtomicU64,
+    pub failed_too_large: AtomicU64,
     pub expired: AtomicU64,
+    /// 24 小时额度满了延后发的次数
+    pub deferred: AtomicU64,
     pub retried: AtomicU64,
     pub duplicates: AtomicU64,
     pub throttle_events: AtomicU64,
@@ -39,6 +43,7 @@ impl Metrics {
             "config" => &self.failed_config,
             "throttled" => &self.failed_throttled,
             "internal" => &self.failed_internal,
+            "too_large" => &self.failed_too_large,
             _ => &self.failed_transient,
         }
     }
@@ -56,6 +61,7 @@ pub struct Shared {
     pub cfg: Config,
     pub store: Store,
     pub limiter: Limiter,
+    pub daily: Daily,
     pub metrics: Metrics,
     smtp: RwLock<Option<(SmtpConfig, Transport)>>,
     /// 已经从 Redis 领出来、还没确认的条目（含排在内存队列里的）。重读自己名下的待确认条目时跳过它们，免得一封信同时发两遍
@@ -69,6 +75,7 @@ impl Shared {
             cfg,
             store,
             limiter,
+            daily: Daily::new(),
             metrics: Metrics::default(),
             smtp: RwLock::new(None),
             inflight: Mutex::new(HashSet::new()),
@@ -144,6 +151,10 @@ pub enum Verdict {
     },
     Expired,
     Duplicate,
+    /// 24 小时额度满了：原样延后，不算一次投递
+    Deferred {
+        after: Duration,
+    },
     Retry {
         class: Failure,
         after: Duration,
@@ -176,14 +187,22 @@ pub fn after_failure(
     now: i64,
 ) -> Verdict {
     let attempts = mail.attempt + 1;
-    if class == Failure::Permanent || attempts >= cfg.max_attempts {
+    // 被限流不是这封信的问题：次数放宽、间隔拉长（默认 1、2、5、10、15 分钟……共 10 次）
+    let (max, after) = if class == Failure::Throttled {
+        (
+            cfg.throttle_max_attempts.max(cfg.max_attempts),
+            cfg.throttle_backoff_after(attempts),
+        )
+    } else {
+        (cfg.max_attempts, cfg.backoff_after(attempts))
+    };
+    if class == Failure::Permanent || attempts >= max {
         return Verdict::Failed {
             class: failure_class(class),
             code,
             error,
         };
     }
-    let after = cfg.backoff_after(attempts);
     // 重试时已经过期就不用排了
     if mail.not_after > 0 && now + after.as_secs() as i64 > mail.not_after {
         return Verdict::Failed {
@@ -215,6 +234,26 @@ async fn load_eml(cfg: &Config, mail: &Mail) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("read spool {}: {e}", path.display()))
 }
 
+async fn daily_persist(sh: &Shared, minute: i64, delta: i64) {
+    if let Err(e) = sh.store.daily_add(minute, delta).await {
+        // 只影响重启后的计数，内存里已经记上了
+        sh.metrics.redis_errors.fetch_add(1, Ordering::Relaxed);
+        warn!(error = %e, "写 24 小时额度计数失败");
+    }
+}
+
+/// 超过服务商单封大小上限的信直接放弃：发出去也会被拒（5xx），面板会误记成用户退信
+fn too_large(cfg: &Config, len: usize) -> Option<Verdict> {
+    (cfg.max_message_bytes > 0 && len > cfg.max_message_bytes).then(|| Verdict::Failed {
+        class: "too_large",
+        code: None,
+        error: format!(
+            "message is {len} bytes, over the {} byte limit",
+            cfg.max_message_bytes
+        ),
+    })
+}
+
 async fn deliver(sh: &Shared, mail: &Mail) -> Verdict {
     let now = store::now_secs();
     if mail.not_after > 0 && now > mail.not_after {
@@ -243,6 +282,9 @@ async fn deliver(sh: &Shared, mail: &Mail) -> Verdict {
             };
         }
     };
+    if let Some(v) = too_large(&sh.cfg, eml.len()) {
+        return v;
+    }
     let to: Address = match mail.to.parse() {
         Ok(a) => a,
         Err(e) => {
@@ -283,6 +325,13 @@ async fn deliver(sh: &Shared, mail: &Mail) -> Verdict {
             now,
         );
     };
+    let minute = match sh.daily.take(&sh.cfg, mail.lane, now) {
+        Ok(minute) => {
+            daily_persist(sh, minute, 1).await;
+            minute
+        }
+        Err(after) => return Verdict::Deferred { after },
+    };
     sh.limiter.acquire(mail.lane).await;
     let limit = sh.cfg.smtp_timeout * 3;
     match tokio::time::timeout(limit, transport.send_raw(&envelope, &eml)).await {
@@ -291,6 +340,11 @@ async fn deliver(sh: &Shared, mail: &Mail) -> Verdict {
         },
         Ok(Err(e)) => {
             let class = smtp::classify(&e);
+            if class == Failure::Throttled {
+                // 被限流的那次服务商没收下，不占 24 小时额度
+                sh.daily.give_back(minute);
+                daily_persist(sh, minute, -1).await;
+            }
             let code = e.status().map(|c| c.to_string());
             after_failure(&sh.cfg, mail, class, code, e.to_string(), store::now_secs())
         }
@@ -312,6 +366,9 @@ async fn process(sh: &Shared, mail: Mail) {
     let res = async {
         match &verdict {
             Verdict::Sent { code } => {
+                if mail.lane == Lane::Bulk {
+                    sh.limiter.bulk_sent();
+                }
                 sh.store.mark_done(&mail.id).await?;
                 sh.metrics.sent[lane_idx(mail.lane)].fetch_add(1, Ordering::Relaxed);
                 sh.store
@@ -329,6 +386,11 @@ async fn process(sh: &Shared, mail: Mail) {
                 sh.metrics.duplicates.fetch_add(1, Ordering::Relaxed);
                 info!(id = %mail.id, "已经发过，跳过");
             }
+            Verdict::Deferred { after } => {
+                sh.metrics.deferred.fetch_add(1, Ordering::Relaxed);
+                info!(id = %mail.id, lane = mail.lane.as_str(), retry_in = after.as_secs(), "24 小时额度已满，延后发");
+                sh.store.schedule_retry(&mail, *after, false).await?;
+            }
             Verdict::Retry { class, after, error, .. } => {
                 if *class == Failure::Throttled {
                     sh.limiter.throttled();
@@ -336,7 +398,7 @@ async fn process(sh: &Shared, mail: Mail) {
                 }
                 sh.metrics.retried.fetch_add(1, Ordering::Relaxed);
                 warn!(id = %mail.id, lane = mail.lane.as_str(), attempt = attempts, class = failure_class(*class), retry_in = after.as_secs(), error = %error, "投递失败，稍后重试");
-                sh.store.schedule_retry(&mail, *after).await?;
+                sh.store.schedule_retry(&mail, *after, true).await?;
             }
             Verdict::Failed { class, code, error } => {
                 if *class == "throttled" {
@@ -569,6 +631,13 @@ pub async fn housekeeping(sh: Arc<Shared>, mut stop: watch::Receiver<bool>) {
         if tick.is_multiple_of(2) {
             sh.reload_smtp().await;
         }
+        // 每 10 分钟清掉 Redis 里滑出 24 小时窗口的分钟计数
+        if tick.is_multiple_of(120) {
+            let first_kept = store::now_secs().div_euclid(60) - daily::WINDOW_MINUTES + 1;
+            if let Err(e) = sh.store.daily_prune(first_kept).await {
+                warn!(error = %e, "清理 24 小时额度计数失败");
+            }
+        }
         let body = serde_json::json!({
             "consumer": sh.cfg.consumer,
             "version": env!("CARGO_PKG_VERSION"),
@@ -577,6 +646,8 @@ pub async fn housekeeping(sh: Arc<Shared>, mut stop: watch::Receiver<bool>) {
             "smtp_version": sh.smtp_version(),
             "inflight": sh.inflight_len(),
             "bulk_factor": sh.limiter.bulk_factor(),
+            "daily_used": sh.daily.used(store::now_secs()),
+            "daily_limit": sh.cfg.daily_limit,
         });
         // 没有 SMTP 配置时不发心跳：面板就会继续自己发，不会把信交给一个发不出去的服务
         if sh.smtp_version().is_some()
@@ -605,6 +676,11 @@ mod tests {
             bulk_share: 0.8,
             max_attempts: 3,
             backoff: vec![Duration::from_secs(3), Duration::from_secs(10)],
+            throttle_max_attempts: 5,
+            throttle_backoff: vec![Duration::from_secs(60), Duration::from_secs(300)],
+            daily_limit: 0,
+            daily_bulk_reserve: 0,
+            max_message_bytes: 100,
             spool_dir: "/nonexistent".into(),
             http_addr: String::new(),
             smtp_timeout: Duration::from_secs(30),
@@ -641,7 +717,7 @@ mod tests {
         let v = after_failure(
             &c,
             &mail(Lane::Bulk, 1, 0),
-            Failure::Throttled,
+            Failure::Transient,
             None,
             "e".into(),
             0,
@@ -662,6 +738,73 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn throttling_gets_more_and_longer_retries() {
+        let c = cfg();
+        // 普通临时失败第 3 次就放弃（max_attempts = 3），限流放宽到 5 次、间隔按限流的退避
+        let v = after_failure(
+            &c,
+            &mail(Lane::Bulk, 2, 0),
+            Failure::Throttled,
+            Some("455".into()),
+            "e".into(),
+            0,
+        );
+        assert!(matches!(v, Verdict::Retry { after, .. } if after == Duration::from_secs(300)));
+        let v = after_failure(
+            &c,
+            &mail(Lane::Bulk, 0, 0),
+            Failure::Throttled,
+            None,
+            "e".into(),
+            0,
+        );
+        assert!(matches!(v, Verdict::Retry { after, .. } if after == Duration::from_secs(60)));
+        let v = after_failure(
+            &c,
+            &mail(Lane::Bulk, 4, 0),
+            Failure::Throttled,
+            None,
+            "e".into(),
+            0,
+        );
+        assert!(matches!(
+            v,
+            Verdict::Failed {
+                class: "throttled",
+                ..
+            }
+        ));
+        // 验证码等不了一分钟的限流退避，过期前排不上就放弃
+        assert!(matches!(
+            after_failure(
+                &c,
+                &mail(Lane::Instant, 0, 30),
+                Failure::Throttled,
+                None,
+                "e".into(),
+                0
+            ),
+            Verdict::Failed { .. }
+        ));
+    }
+
+    #[test]
+    fn oversized_mail_is_refused_before_sending() {
+        let c = cfg(); // max_message_bytes = 100
+        assert!(too_large(&c, 100).is_none());
+        assert!(matches!(
+            too_large(&c, 101),
+            Some(Verdict::Failed {
+                class: "too_large",
+                ..
+            })
+        ));
+        let mut off = cfg();
+        off.max_message_bytes = 0;
+        assert!(too_large(&off, usize::MAX).is_none());
     }
 
     #[test]

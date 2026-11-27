@@ -189,6 +189,11 @@ class MailRelayTest extends TestCase
         $this->assertSame(DeliveryMonitor::CONFIG, $results->handle(['id' => 'b', 'status' => 'failed', 'class' => 'config', 'error' => 'no SMTP config yet', 'meta' => $meta($config)]));
         $this->assertSame(0, (int) $config->fresh()->mail_failed_count, '我们自己的配置问题不算在用户头上');
 
+        $big = $this->user();
+        $this->assertSame(DeliveryMonitor::CONFIG, $results->handle(['id' => 'e', 'status' => 'failed', 'class' => 'too_large', 'error' => 'message is 2100000 bytes, over the 2000000 byte limit', 'meta' => $meta($big)]));
+        $this->assertSame(0, (int) $big->fresh()->mail_failed_count, '信太大是我们这边的问题，不算用户退信');
+        $this->assertNull($big->fresh()->mail_suppressed_at);
+
         $late = $this->user();
         $this->assertSame(DeliveryMonitor::EXPIRED, $results->handle(['id' => 'c', 'status' => 'expired', 'class' => 'expired', 'at' => (string) time(), 'meta' => $meta($late)]));
         $this->assertSame(1, MailLog::where('email', $late->email)->where('category', DeliveryMonitor::EXPIRED)->count());

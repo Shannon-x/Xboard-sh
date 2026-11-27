@@ -17,6 +17,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const DONE_TTL_SECS: u64 = 7 * 24 * 3600;
 pub const RESULTS_MAXLEN: usize = 50_000;
+/// 24 小时额度计数的 hash 保留 25 小时（每次写都续期）
+pub const DAILY_TTL_SECS: u64 = 25 * 3600;
 /// 阻塞读一次最多等多久（毫秒）
 pub const BLOCK_MS: u64 = 5_000;
 
@@ -220,17 +222,26 @@ impl Store {
     }
 
     /// 放进重试队列：先存字段、再挂到 delayed，调用方随后才确认原条目（中间崩了最多多发一次重试，done 标记会挡住重复投递）
-    pub async fn schedule_retry(&self, mail: &Mail, after: Duration) -> redis::RedisResult<()> {
+    pub async fn schedule_retry(
+        &self,
+        mail: &Mail,
+        after: Duration,
+        bump: bool,
+    ) -> redis::RedisResult<()> {
         let mut c = self.conn.clone();
-        let rkey = self
-            .cfg
-            .key(&format!("retry:{}:{}", mail.id, mail.attempt + 1));
+        let at = now_secs() + after.as_secs().max(1) as i64;
+        // 同一封信可能先因额度满延后、再失败重试，key 带上时间免得撞名
+        let rkey = self.cfg.key(&format!(
+            "retry:{}:{}:{}",
+            mail.id,
+            mail.attempt + u32::from(bump),
+            at
+        ));
         let mut hset = redis::cmd("HSET");
         hset.arg(&rkey);
-        for (k, v) in mail.retry_fields() {
+        for (k, v) in mail.retry_fields(bump) {
             hset.arg(k).arg(v);
         }
-        let at = now_secs() + after.as_secs().max(1) as i64;
         redis::pipe()
             .add_command(hset)
             .ignore()
@@ -245,6 +256,56 @@ impl Store {
             .ignore()
             .query_async::<()>(&mut c)
             .await
+    }
+
+    /// 24 小时额度的分钟计数（见 daily.rs）
+    pub async fn daily_load(&self) -> redis::RedisResult<HashMap<String, String>> {
+        let mut c = self.conn.clone();
+        redis::cmd("HGETALL")
+            .arg(self.cfg.key("daily"))
+            .query_async(&mut c)
+            .await
+    }
+
+    pub async fn daily_add(&self, minute: i64, delta: i64) -> redis::RedisResult<()> {
+        let mut c = self.conn.clone();
+        let key = self.cfg.key("daily");
+        redis::pipe()
+            .cmd("HINCRBY")
+            .arg(&key)
+            .arg(minute)
+            .arg(delta)
+            .ignore()
+            .cmd("EXPIRE")
+            .arg(&key)
+            .arg(DAILY_TTL_SECS)
+            .ignore()
+            .query_async::<()>(&mut c)
+            .await
+    }
+
+    /// 删掉滑出 24 小时窗口的分钟
+    pub async fn daily_prune(&self, first_kept_minute: i64) -> redis::RedisResult<usize> {
+        let old: Vec<String> = self
+            .daily_load()
+            .await?
+            .into_keys()
+            .filter(|k| {
+                k.parse::<i64>()
+                    .map(|m| m < first_kept_minute)
+                    .unwrap_or(true)
+            })
+            .collect();
+        if old.is_empty() {
+            return Ok(0);
+        }
+        let mut c = self.conn.clone();
+        redis::cmd("HDEL")
+            .arg(self.cfg.key("daily"))
+            .arg(&old)
+            .query_async::<()>(&mut c)
+            .await?;
+        Ok(old.len())
     }
 
     /// 到点的重试搬回通道，返回搬了几封

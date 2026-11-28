@@ -2,9 +2,7 @@
 
 namespace App\Services;
 
-use App\Jobs\StatServerJob;
-use App\Jobs\StatUserJob;
-use App\Jobs\TrafficFetchJob;
+use App\Jobs\TrafficReportJob;
 use App\Models\BalanceLog;
 use App\Models\Order;
 use App\Models\Plan;
@@ -131,6 +129,9 @@ class UserService
     /**
      * 节点上报流量 → 落库任务。
      *
+     * 请求里只派发一个 TrafficReportJob，由它在 worker 里拆块派发下面三类任务，
+     * 这样派发失败时整份上报都不入账，不会一半记进去。
+     *
      * 每 1000 个用户一块派 TrafficFetchJob（累加 v2_user 的 u/d/t）和 StatUserJob（当天按用户的统计）；
      * StatServerJob（当天按节点的统计）只需要这次上报的总和，整次上报派一个就够。原先它也按块派发、
      * 每块都带整份明细到 worker 里再求和：任务数和 Redis 写入量平白多出 1/3。
@@ -154,18 +155,8 @@ class UserService
 
         $timestamp = strtotime(date('Y-m-d'));
         $jobServer = ['id' => $server['id'], 'rate' => $server['rate']];
-        $totalU = 0;
-        $totalD = 0;
-        foreach (array_chunk($data, 1000, true) as $chunk) {
-            TrafficFetchJob::dispatch($jobServer, $chunk, $protocol, $timestamp);
-            StatUserJob::dispatch($jobServer, $chunk, $protocol, 'd');
-            foreach ($chunk as $traffic) {
-                $totalU += (int) $traffic[0];
-                $totalD += (int) $traffic[1];
-            }
-        }
-        // StatServerJob 只累加 $traffic[0] / [1]、不乘倍率（与原来逐块求和的结果完全一致），直接给它总和
-        StatServerJob::dispatch($jobServer, [[$totalU, $totalD]], $protocol, 'd');
+        // 只入队一个任务：派发失败时整份上报都没进队列，不会一半入账（拆块见 TrafficReportJob）
+        TrafficReportJob::dispatch($jobServer, $data, $protocol, $timestamp);
     }
 
     /**

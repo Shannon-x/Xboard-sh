@@ -4,6 +4,7 @@
 namespace App\Jobs;
 
 use App\Models\StatUser;
+use App\Jobs\Concerns\HasReceiptKey;
 use App\Support\JobReceipt;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -15,7 +16,7 @@ use Illuminate\Support\Facades\Log;
 
 class StatUserJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels, HasReceiptKey;
 
     protected array $data;
     protected array $server;
@@ -77,7 +78,7 @@ class StatUserJob implements ShouldQueue
                     throw $e;
                 }
             }
-        });
+        }, $this->receiptKey);
     }
 
     /**

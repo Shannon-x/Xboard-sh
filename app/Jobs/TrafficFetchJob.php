@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\User;
+use App\Jobs\Concerns\HasReceiptKey;
 use App\Support\JobReceipt;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -14,7 +15,7 @@ use Illuminate\Support\Facades\Redis;
 
 class TrafficFetchJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels, HasReceiptKey;
     protected $data;
     protected $server;
     protected $protocol;
@@ -93,7 +94,7 @@ class TrafficFetchJob implements ShouldQueue
             . "t = ? "
             . "WHERE id IN ({$idPlaceholders})";
 
-        JobReceipt::applyOnce($this->job, 'traffic_fetch', fn () => DB::update($sql, $bindings));
+        JobReceipt::applyOnce($this->job, 'traffic_fetch', fn () => DB::update($sql, $bindings), $this->receiptKey);
 
         // 不管这次是真写入还是回执命中跳过，都把用户放进超量待检集合：集合语义，重复无害；
         // 上一次若在写入提交后、sadd 之前被杀，这里正好补上。

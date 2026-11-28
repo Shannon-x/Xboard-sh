@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Jobs\StatServerJob;
 use App\Jobs\StatUserJob;
 use App\Jobs\TrafficFetchJob;
+use App\Jobs\TrafficReportJob;
 use App\Models\Server;
 use App\Services\UserService;
 use App\Support\JobReceipt;
@@ -62,6 +63,22 @@ class TrafficPipelineDispatchTest extends TestCase
         return (fn () => $this->{$name})->call($job);
     }
 
+    /** 请求里只入队一个任务（整份上报），拆块在 worker 里做 */
+    private function fannedOut(Server $node, array $data): TrafficReportJob
+    {
+        (new UserService())->trafficFetch($node, 'vless', $data);
+        Queue::assertPushedOn('traffic_fetch', TrafficReportJob::class);
+        Queue::assertPushed(TrafficReportJob::class, 1);
+        Queue::assertNotPushed(TrafficFetchJob::class);
+        Queue::assertNotPushed(StatUserJob::class);
+        Queue::assertNotPushed(StatServerJob::class);
+        $report = Queue::pushed(TrafficReportJob::class)->sole();
+        $this->assertSame($data, $this->prop($report, 'data'));
+        $report->setJob($this->queuedJob('66666666-6666-6666-6666-666666666666'));
+        $report->handle();
+        return $report;
+    }
+
     #[Test]
     public function one_report_dispatches_two_jobs_per_chunk_and_a_single_summed_server_stat_job(): void
     {
@@ -69,7 +86,7 @@ class TrafficPipelineDispatchTest extends TestCase
         $node = $this->node(2);
         $data = $this->report(2500);
 
-        (new UserService())->trafficFetch($node, 'vless', $data);
+        $this->fannedOut($node, $data);
 
         Queue::assertPushedOn('traffic_fetch', TrafficFetchJob::class);
         Queue::assertPushed(TrafficFetchJob::class, 3);
@@ -97,6 +114,32 @@ class TrafficPipelineDispatchTest extends TestCase
             return true;
         });
         $this->assertSame($data, $seen);
+        // 七个子任务各有一个不同的回执键
+        $keys = collect([TrafficFetchJob::class, StatUserJob::class, StatServerJob::class])
+            ->flatMap(fn ($class) => Queue::pushed($class))
+            ->map(fn ($job) => $job->receiptKey());
+        $this->assertCount(7, $keys->filter()->unique());
+    }
+
+    #[Test]
+    public function a_failure_while_queueing_the_report_queues_none_of_it(): void
+    {
+        // 原先派到第几块失败，前面几块已经入队；现在请求里只有一次入队，失败就整份不入账
+        $node = $this->node(2);
+        Queue::swap(new class(app()) extends \Illuminate\Support\Testing\Fakes\QueueFake {
+            public int $attempts = 0;
+            public function push($job, $data = '', $queue = null)
+            {
+                $this->attempts++;
+                throw new \RuntimeException('redis went away');
+            }
+        });
+        try {
+            (new UserService())->trafficFetch($node, 'vless', $this->report(2500));
+            $this->fail('the queue failure should reach the node as an error');
+        } catch (\RuntimeException) {
+        }
+        $this->assertSame(1, Queue::getFacadeRoot()->attempts);
     }
 
     #[Test]
@@ -108,7 +151,7 @@ class TrafficPipelineDispatchTest extends TestCase
             $server['rate'] = 7.5;
             return [$server, $protocol, $data];
         });
-        (new UserService())->trafficFetch($this->node(2), 'vless', $this->report(3));
+        $this->fannedOut($this->node(2), $this->report(3));
         Queue::assertPushed(StatUserJob::class, fn (StatUserJob $job) => $this->prop($job, 'server')['rate'] === 7.5);
         \App\Services\Plugin\HookManager::reset();
     }
@@ -175,6 +218,77 @@ class TrafficPipelineDispatchTest extends TestCase
         $user = DB::table('v2_user')->where('id', 1)->sole();
         $this->assertSame([101, 201], [(int) $user->u, (int) $user->d]);
         $this->assertSame(2, DB::table(JobReceipt::TABLE)->count());
+    }
+
+    #[Test]
+    public function a_report_that_fails_part_way_and_is_retried_counts_every_chunk_once(): void
+    {
+        // QUEUE_CONNECTION=sync：子任务在派发时就执行。第一块落库后 Redis 出错，本任务失败；
+        // 重试时第一块的回执已在，不会再记一遍，其余几块照常入账。
+        $node = $this->node(2);
+        $data = $this->report(2500);
+        foreach (array_chunk(array_keys($data), 500) as $ids) {
+            DB::table('v2_user')->insert(array_map(fn ($uid) => $this->userRow($uid), $ids));
+        }
+        $calls = 0;
+        Redis::shouldReceive('sadd')->andReturnUsing(function () use (&$calls) {
+            if ($calls++ === 0) {
+                throw new \RuntimeException('redis went away');
+            }
+            return 1;
+        });
+        $server = ['id' => $node->id, 'rate' => 2];
+        $attempt = function () use ($server, $data) {
+            $report = new TrafficReportJob($server, $data, 'vless', strtotime(date('Y-m-d')));
+            // Horizon 重试的是同一份 payload：uuid 不变
+            $report->setJob($this->queuedJob('77777777-7777-7777-7777-777777777777'));
+            $report->handle();
+        };
+        try {
+            $attempt();
+            $this->fail('the first attempt should fail part way');
+        } catch (\RuntimeException) {
+        }
+        $this->assertSame(1000, DB::table('v2_user')->where('u', '>', 0)->count());
+        $attempt();
+        // 重试成功之后 Horizon 不会再投递；即便再投一次也什么都不加
+        $attempt();
+
+        $expectU = array_sum(array_column($data, 0));
+        $expectD = array_sum(array_column($data, 1));
+        $this->assertSame([$expectU * 2, $expectD * 2], [(int) DB::table('v2_user')->sum('u'), (int) DB::table('v2_user')->sum('d')]);
+        $this->assertSame([$expectU * 2, $expectD * 2], [(int) DB::table('v2_stat_user')->sum('u'), (int) DB::table('v2_stat_user')->sum('d')]);
+        $stat = DB::table('v2_stat_server')->where('server_id', $node->id)->sole();
+        $this->assertSame([$expectU, $expectD], [(int) $stat->u, (int) $stat->d]);
+        $this->assertSame(7, DB::table(JobReceipt::TABLE)->count());
+    }
+
+    #[Test]
+    public function separate_reports_never_share_a_receipt(): void
+    {
+        $a = TrafficReportJob::receiptKey('88888888-8888-8888-8888-888888888888', 'traffic_fetch', 0);
+        $this->assertSame($a, TrafficReportJob::receiptKey('88888888-8888-8888-8888-888888888888', 'traffic_fetch', 0));
+        $this->assertNotSame($a, TrafficReportJob::receiptKey('99999999-9999-9999-9999-999999999999', 'traffic_fetch', 0));
+        $this->assertNotSame($a, TrafficReportJob::receiptKey('88888888-8888-8888-8888-888888888888', 'stat_user', 0));
+        $this->assertNotSame($a, TrafficReportJob::receiptKey('88888888-8888-8888-8888-888888888888', 'traffic_fetch', 1));
+        $this->assertSame(36, strlen($a));
+    }
+
+    #[Test]
+    public function jobs_queued_by_the_previous_release_still_use_their_own_uuid(): void
+    {
+        // 升级时队列里还有旧版直接派发的子任务：反序列化后没有回执键，按原来的队列 uuid 记回执
+        DB::table('v2_user')->insert($this->userRow(1));
+        $data = (new TrafficFetchJob(['id' => 1, 'rate' => 1], [1 => [100, 200]], 'vless', 0))->__serialize();
+        unset($data["\0*\0receiptKey"]);
+        $legacy = (new \ReflectionClass(TrafficFetchJob::class))->newInstanceWithoutConstructor();
+        $legacy->__unserialize($data);
+        $legacy = unserialize(serialize($legacy));
+        $this->assertNull($legacy->receiptKey());
+        $legacy->setJob($this->queuedJob('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'));
+        $legacy->handle();
+        $this->assertSame(['aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'], DB::table(JobReceipt::TABLE)->pluck('job_uuid')->all());
+        $this->assertSame(100, (int) DB::table('v2_user')->where('id', 1)->value('u'));
     }
 
     #[Test]

@@ -70,7 +70,7 @@ final class AdminAlert
                     $telegram->sendMessageNow($chatId, $message, $parseMode, self::DIRECT_TIMEOUT);
                     $result['direct']++;
                 } catch (\Throwable $e) {
-                    $result['error'] = $e->getMessage();
+                    $result['error'] = self::redactUrls($e->getMessage());
                     try {
                         SendTelegramJob::dispatch($chatId, $message, $parseMode);
                         $result['queued']++;
@@ -80,7 +80,7 @@ final class AdminAlert
             }
         } catch (\Throwable $e) {
             // 读管理员列表要查库：库也挂了就只能写日志
-            $result['error'] = $e->getMessage();
+            $result['error'] = self::redactUrls($e->getMessage());
         }
 
         if ($result['error'] !== null) {
@@ -94,6 +94,15 @@ final class AdminAlert
         } catch (\Throwable) {
         }
         return $result;
+    }
+
+    /**
+     * 错误信息里的网址换成 [url]。Guzzle 连接失败的报错会附上完整请求地址，Telegram 的是 /bot<TOKEN>/sendMessage，
+     * Uptime Kuma 的是 /api/push/<token>：原样存进缓存会经仪表盘接口显示在后台、留在日志里。
+     */
+    public static function redactUrls(string $message): string
+    {
+        return (string) preg_replace('~[a-z][a-z0-9+.-]*://[^\s"\'<>]+~i', '[url]', $message);
     }
 
     /** 最近一次紧急告警的发送结果（仪表盘「告警通道」） */

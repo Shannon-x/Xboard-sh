@@ -20,7 +20,14 @@ fi
 
 set -- --dir "$DATA_DIR" --unixsocket "$SOCK" --unixsocketperm 777 --appendfsync everysec "$@"
 
-if [ -f "$DATA_DIR/dump.rdb" ] && [ ! -d "$DATA_DIR/appendonlydir" ] && [ ! -f "$DATA_DIR/appendonly.aof" ]; then
+# AOF 可用 = appendonlydir 里有 manifest（或老版本单文件 appendonly.aof）。只看目录不够：CONFIG SET appendonly yes
+# 时 Redis 先建目录，第一次 AOF 重写完成才写 manifest；这期间被杀，目录在、manifest 没有，带 --appendonly yes
+# 启动会是空库，退出时还会把 dump.rdb 覆盖掉（Redis 7 实测）。没有 manifest 就仍按 RDB 起、再在线开 AOF
+aof_ready() {
+    [ -f "$DATA_DIR/appendonlydir/appendonly.aof.manifest" ] || [ -f "$DATA_DIR/appendonly.aof" ]
+}
+
+if [ -f "$DATA_DIR/dump.rdb" ] && ! aof_ready; then
     echo "[redis-start] 已有 dump.rdb、还没有 AOF：先按 RDB 加载，再在线开启 AOF"
     redis-server "$@" --appendonly no &
     pid=$!

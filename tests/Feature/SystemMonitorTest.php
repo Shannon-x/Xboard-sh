@@ -280,6 +280,49 @@ class SystemMonitorTest extends TestCase
         $this->assertCount(1, $this->telegramTexts());
     }
 
+    public function test_check_itself_sends_alerts(): void
+    {
+        // check() 曾把去掉 notify_after 的仪表盘版 issues 交给 notify()，读字段抛错被吞，巡检一条告警都发不出。
+        // CI 没有 Redis，Horizon 读数是 unknown（critical，持续 2 分钟才报）
+        SystemMonitor::check(self::NOW);
+        $this->assertArrayHasKey('horizon:unknown', (array) Cache::get('monitor:open_issues', []), '巡检要把当前问题记进 open_issues');
+        SystemMonitor::check(self::NOW + 130);
+        $texts = $this->telegramTexts();
+        $this->assertNotEmpty($texts, '持续超过 notify_after 的严重问题要发出去');
+        $this->assertStringContainsString('Horizon', implode("\n", $texts));
+    }
+
+    public function test_horizon_down_waits_two_minutes_so_a_deploy_restart_does_not_alert(): void
+    {
+        $issues = SystemMonitor::issues($this->report(['horizon' => ['status' => 'stopped']]), self::NOW);
+        SystemMonitor::notify($issues, self::NOW);
+        SystemMonitor::notify($issues, self::NOW + 60);
+        $this->assertSame([], $this->telegramTexts());
+        SystemMonitor::notify([], self::NOW + 90);
+        SystemMonitor::notify($issues, self::NOW + 100);
+        SystemMonitor::notify($issues, self::NOW + 200);
+        $this->assertSame([], $this->telegramTexts(), '中间恢复过，重新计时');
+        SystemMonitor::notify($issues, self::NOW + 230);
+        $this->assertCount(1, $this->telegramTexts());
+    }
+
+    public function test_error_messages_lose_their_urls_before_they_are_stored(): void
+    {
+        $msg = 'cURL error 28: Operation timed out (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.telegram.org/bot1:SECRET/sendMessage';
+        $clean = \App\Support\AdminAlert::redactUrls($msg);
+        $this->assertStringNotContainsString('SECRET', $clean);
+        $this->assertStringContainsString('cURL error 28', $clean);
+
+        config(['monitor.heartbeat_url' => 'https://kuma.example.test/api/push/PushTok3n']);
+        // 换一个干净的 Http 工厂，免得 setUp 里的 '*' 假响应先匹配上
+        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::fake(fn () => throw new \RuntimeException('cURL error 7: Failed to connect for https://kuma.example.test/api/push/PushTok3n?status=up'));
+        SystemMonitor::pushHeartbeat([], self::NOW);
+        $last = SystemMonitor::report(self::NOW)['alerting']['heartbeat_last'];
+        $this->assertFalse($last['ok']);
+        $this->assertStringNotContainsString('PushTok3n', (string) $last['error']);
+    }
+
     public function test_dashboard_only_issues_never_alert(): void
     {
         $issues = SystemMonitor::issues($this->report(['scheduler' => ['status' => 'fallback'], 'alerting' => ['heartbeat_configured' => false]]), self::NOW);

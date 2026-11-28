@@ -32,14 +32,17 @@ final class SystemMonitor
         Cache::forever(self::LAST_CHECK, $now);
         QueueHealth::dispatchCanaries($now);
 
-        $report = self::report($now);
-        self::notify($report['issues'], $now);
-        self::pushHeartbeat($report['issues'], $now);
+        // notify() 要用 notify_after（问题持续多久才告警）；report() 给仪表盘的 issues 已经去掉了这个字段，
+        // 所以这里拿未剥离的那份。以前直接传 $report['issues']，notify() 读不到 notify_after 抛错被吞，一条告警都发不出
+        $raw = [];
+        $report = self::report($now, $raw);
+        self::notify($raw, $now);
+        self::pushHeartbeat($raw, $now);
         return $report;
     }
 
     /** 仪表盘读的完整报告 */
-    public static function report(?int $now = null): array
+    public static function report(?int $now = null, ?array &$rawIssues = null): array
     {
         $now ??= time();
         $queues = QueueHealth::collect($now);
@@ -58,7 +61,8 @@ final class SystemMonitor
             'mail_relay' => self::mailRelay(),
             'alerting' => self::alerting(),
         ];
-        $report['issues'] = self::withSince(self::issues($report, $now), $now);
+        $rawIssues = self::issues($report, $now);
+        $report['issues'] = self::withSince($rawIssues, $now);
         $report['overall'] = self::overall($report['issues']);
         return $report;
     }
@@ -80,11 +84,11 @@ final class SystemMonitor
         $horizon = $report['horizon']['status'];
         if ($horizon === 'stopped') {
             $add('horizon:stopped', 'critical', '队列进程 Horizon 没在运行',
-                '所有队列任务都不会被处理：流量入账、订单取消 / 补开通、节点同步、Telegram 和邮件。请检查 horizon 容器（docker compose ps / logs horizon）。');
+                '所有队列任务都不会被处理：流量入账、订单取消 / 补开通、节点同步、Telegram 和邮件。请检查 horizon 容器（docker compose ps / logs horizon）。', true, 120);
         } elseif ($horizon === 'paused') {
             $add('horizon:paused', 'critical', '队列进程 Horizon 被暂停了', '有人执行了 horizon:pause，恢复用 php artisan horizon:continue。');
         } elseif ($horizon === 'unknown') {
-            $add('horizon:unknown', 'critical', '读不到 Horizon 状态', '多半是 Redis 连不上。');
+            $add('horizon:unknown', 'critical', '读不到 Horizon 状态', '多半是 Redis 连不上。', true, 120);
         }
 
         foreach ($report['queues'] as $q) {
@@ -96,7 +100,7 @@ final class SystemMonitor
                     '探测任务已排队 ' . self::duration($stuckFor) . "；等待中 " . self::count($q['length']) . " 个，进程 {$q['processes']} 个。worker 可能卡在某个任务上，或者被积压堵住。");
             } elseif ($horizon === 'running' && (int) $q['processes'] === 0) {
                 $add("queue:no_workers:{$q['name']}", 'critical', "{$label}没有工作进程",
-                    'Horizon 在跑，但没有进程守这条队列：多半是主机上挂载的 config/horizon.php 和代码不一致。');
+                    'Horizon 在跑，但没有进程守这条队列：多半是主机上挂载的 config/horizon.php 和代码不一致。', true, 120);
             } elseif ($q['wait'] !== null && $q['wait'] > $q['wait_threshold']) {
                 $add("queue:slow:{$q['name']}", 'warning', "{$label}积压：预计等待 " . self::duration($q['wait']),
                     "等待中 " . self::count($q['length']) . " 个，阈值 " . self::duration($q['wait_threshold']) . "，进程 {$q['processes']} 个。", true, 300);
@@ -177,7 +181,7 @@ final class SystemMonitor
                     'since' => (int) ($prev['since'] ?? $now),
                     'alerted_at' => $prev['alerted_at'] ?? null,
                 ];
-                if ($issue['notify'] && $now - $entry['since'] >= $issue['notify_after']) {
+                if ($issue['notify'] && $now - $entry['since'] >= (int) ($issue['notify_after'] ?? 0)) {
                     $repeat = 60 * max(1, (int) config("monitor.repeat_minutes.{$issue['level']}", 60));
                     if ($entry['alerted_at'] === null || $now - (int) $entry['alerted_at'] >= $repeat) {
                         $send[] = $issue;
@@ -269,6 +273,9 @@ final class SystemMonitor
     private static function schedule(int $now): array
     {
         try {
+            // 网页进程（Octane）只启动 Http Kernel，Console Kernel 没被创建时 app(Schedule::class) 是个空的新实例，
+            // 仪表盘的定时任务表就是空的。先解析 Console Kernel，它会登记带全部任务的 Schedule 单例
+            app(\Illuminate\Contracts\Console\Kernel::class);
             $rows = ScheduleTracker::statuses(app(Schedule::class), $now);
         } catch (\Throwable $e) {
             Log::notice('[monitor] 读定时任务状态失败', ['error' => $e->getMessage()]);
@@ -333,7 +340,8 @@ final class SystemMonitor
                 $result['error'] = 'HTTP ' . $response->status();
             }
         } catch (\Throwable $e) {
-            $result['error'] = mb_substr($e->getMessage(), 0, 200);
+            // Guzzle 的连接错误会带上完整网址（Push 地址里就是令牌），存进缓存前抹掉，仪表盘和日志都不显示
+            $result['error'] = mb_substr(AdminAlert::redactUrls($e->getMessage()), 0, 200);
         }
         if (!$result['ok']) {
             Log::notice('[monitor] 外部心跳上报失败', ['error' => $result['error']]);

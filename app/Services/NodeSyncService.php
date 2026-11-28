@@ -31,7 +31,7 @@ class NodeSyncService
             return;
 
 
-        self::push($nodeId, 'sync.config', ['config' => ServerService::buildNodeConfig($node)]);
+        self::push($nodeId, 'sync.config', NodePayload::configFrame($node));
     }
 
     /**
@@ -46,8 +46,7 @@ class NodeSyncService
             if (!self::isNodeOnline($server->id))
                 continue;
 
-            $users = ServerService::getAvailableUsers($server)->toArray();
-            self::push($server->id, 'sync.users', ['users' => $users]);
+            self::push($server->id, 'sync.users', NodePayload::usersFrame($server));
         }
     }
 
@@ -94,6 +93,60 @@ class NodeSyncService
     }
 
     /**
+     * 一批用户失去使用资格（流量用完、到期）：从他们所在的每个节点上移除，每个节点只推一条。
+     * 按基础组 + 已生效增值组找节点（与 getAvailableUsers 放进名单的范围相同），
+     * 原先只看基础组，增值组节点上的用户要等节点下次拉名单才会断开。
+     *
+     * @param iterable<User> $users
+     * @return int 推送的节点数
+     */
+    public static function notifyUsersUnavailable(iterable $users): int
+    {
+        $usersByGroup = [];
+        foreach ($users as $user) {
+            if ($user->isAvailable()) {
+                continue;
+            }
+            foreach ($user->effectiveGroupIds() as $groupId) {
+                $usersByGroup[(int) $groupId][(int) $user->id] = true;
+            }
+        }
+        if ($usersByGroup === []) {
+            return 0;
+        }
+
+        $groupIds = array_keys($usersByGroup);
+        $servers = Server::where(function ($query) use ($groupIds) {
+            foreach ($groupIds as $groupId) {
+                $query->orWhereJsonContains('group_ids', (string) $groupId);
+            }
+        })->get(['id', 'group_ids']);
+
+        $notified = 0;
+        foreach ($servers as $server) {
+            if (!self::isNodeOnline($server->id)) {
+                continue;
+            }
+            $ids = [];
+            foreach ((array) ($server->group_ids ?? []) as $groupId) {
+                if (is_numeric($groupId) && isset($usersByGroup[(int) $groupId])) {
+                    $ids += $usersByGroup[(int) $groupId];
+                }
+            }
+            if ($ids === []) {
+                continue;
+            }
+            ksort($ids);
+            self::push($server->id, 'sync.user.delta', [
+                'action' => 'remove',
+                'users' => array_map(fn ($id) => ['id' => $id], array_keys($ids)),
+            ]);
+            $notified++;
+        }
+        return $notified;
+    }
+
+    /**
      * Push user removal from a specific group's nodes
      */
     public static function notifyUserRemovedFromGroup(int $userId, int $groupId): void
@@ -124,10 +177,8 @@ class NodeSyncService
         if (!$node)
             return;
 
-        self::push($nodeId, 'sync.config', ['config' => ServerService::buildNodeConfig($node)]);
-
-        $users = ServerService::getAvailableUsers($node)->toArray();
-        self::push($nodeId, 'sync.users', ['users' => $users]);
+        self::push($nodeId, 'sync.config', NodePayload::configFrame($node));
+        self::push($nodeId, 'sync.users', NodePayload::usersFrame($node));
     }
 
     /**

@@ -46,6 +46,8 @@ class Kernel extends ConsoleKernel
         // 自增主键耗尽前告警（v2_stat_user 曾被 upsert 烧满 int 上限，新数据被静默累加到同一行）
         $schedule->command('check:auto-increment')->hourly()->onOneServer()->withoutOverlapping(30)->runInBackground();
         $schedule->command('check:traffic-exceeded')->everyMinute()->onOneServer()->withoutOverlapping(10)->runInBackground();
+        // 按时间到期的用户从 WS 在线节点上移除（流量用完的由上一条推）
+        $schedule->command('node:push-expired')->everyMinute()->onOneServer()->withoutOverlapping(5)->runInBackground();
         // 自动续费：到期前 lead 小时 ~ 到期后 grace 小时窗口内，余额足够的用户按上次配置续费
         $schedule->command('renew:auto')->hourly()->onOneServer()->withoutOverlapping(50)->runInBackground();
         // 上网按量：余额低于门槛且开了自动补充的用户用账户余额买一份（未配置按量套餐时命令直接返回）

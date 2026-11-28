@@ -140,7 +140,11 @@ class UserService
      * tags、route_ids 等几 KB 配置，以前三个任务各复制一份进 Redis。倍率在 hook 之后取：
      * 分时倍率一类插件会在 traffic.process.before 里改写它。
      */
-    public function trafficFetch(Server $server, string $protocol, array $data)
+    /**
+     * @param string|null $parentKey 批次身份（App\Support\TrafficBatchKey）；同一个键的上报只入账一次。
+     *                               null 时行为与原来完全一样。
+     */
+    public function trafficFetch(Server $server, string $protocol, array $data, ?string $parentKey = null)
     {
         $server->rate = $server->getCurrentRate();
         $server = $server->toArray();
@@ -156,7 +160,7 @@ class UserService
         $timestamp = strtotime(date('Y-m-d'));
         $jobServer = ['id' => $server['id'], 'rate' => $server['rate']];
         // 只入队一个任务：派发失败时整份上报都没进队列，不会一半入账（拆块见 TrafficReportJob）
-        TrafficReportJob::dispatch($jobServer, $data, $protocol, $timestamp);
+        TrafficReportJob::dispatch($jobServer, $data, $protocol, $timestamp, $parentKey);
     }
 
     /**

@@ -2,7 +2,6 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Server;
 use App\Models\User;
 use App\Services\NodeSyncService;
 use Illuminate\Console\Command;
@@ -22,41 +21,20 @@ class CheckTrafficExceeded extends Command
 
         $pendingUserIds = array_map('intval', Redis::spop('traffic:pending_check', $count));
 
-        $exceededUsers = User::toBase()
+        // 要算增值组，用模型（effectiveGroupIds 读 plan_id / plan_options / admin_group_ids）
+        $exceededUsers = User::query()
             ->whereIn('id', $pendingUserIds)
             ->whereRaw('u + d >= transfer_enable')
             ->where('transfer_enable', '>', 0)
             ->where('banned', 0)
-            ->select(['id', 'group_id'])
             ->get();
 
         if ($exceededUsers->isEmpty()) {
             return;
         }
 
-        $groupedUsers = $exceededUsers->groupBy('group_id');
-        $notifiedCount = 0;
-
-        foreach ($groupedUsers as $groupId => $users) {
-            if (!$groupId) {
-                continue;
-            }
-
-            $userIdsInGroup = $users->pluck('id')->toArray();
-            $servers = Server::whereJsonContains('group_ids', (string) $groupId)->get();
-
-            foreach ($servers as $server) {
-                if (!NodeSyncService::isNodeOnline($server->id)) {
-                    continue;
-                }
-
-                NodeSyncService::push($server->id, 'sync.user.delta', [
-                    'action' => 'remove',
-                    'users' => array_map(fn($id) => ['id' => $id], $userIdsInGroup),
-                ]);
-                $notifiedCount++;
-            }
-        }
+        // 基础组和已生效增值组的节点都要移除；每个节点一条推送
+        $notifiedCount = NodeSyncService::notifyUsersUnavailable($exceededUsers);
 
         $this->info("Checked " . count($pendingUserIds) . " users, notified {$notifiedCount} nodes for " . $exceededUsers->count() . " exceeded users.");
     }

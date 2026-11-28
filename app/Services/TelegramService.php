@@ -51,18 +51,49 @@ class TelegramService
      */
     public function sendMessage(int $chatId, string $text, string $parseMode = ''): void
     {
+        $this->request('sendMessage', $this->messageParams($chatId, $text, $parseMode));
+    }
+
+    /**
+     * 当场发一条消息、不经过队列、不重试，超时很短：给「队列 / 调度本身坏了」这类告警用。
+     * 队列停了还往 send_telegram 里塞告警，告警就和它要报的故障一起卡在那里（2026-11-23）。
+     *
+     * @param int $timeout 整个请求最多等几秒（看门狗跑在网页进程的 tick 里，不能被一条告警拖住）
+     */
+    public function sendMessageNow(int $chatId, string $text, string $parseMode = '', int $timeout = 5): void
+    {
+        $method = 'sendMessage';
+        $params = $this->messageParams($chatId, $text, $parseMode);
+        try {
+            $response = Http::timeout(max(1, $timeout))
+                ->connectTimeout(min(3, max(1, $timeout)))
+                ->withHeaders(['Accept' => 'application/json'])
+                ->asForm()
+                ->post($this->apiUrl . $method, self::withoutNulls($params));
+            $this->parseResponse($response);
+        } catch (\Exception $e) {
+            $this->logFailure($method, $params, $e);
+            throw new ApiException("Telegram 服务错误: {$e->getMessage()}");
+        }
+    }
+
+    public function hasBotToken(): bool
+    {
+        return $this->botToken !== '';
+    }
+
+    private function messageParams(int $chatId, string $text, string $parseMode): array
+    {
         if ($parseMode === 'markdown') {
             $text = $this->escapeMarkdown($text);
         }
-        $text = self::truncate($text, self::MAX_TEXT_LENGTH);
-
-        $this->request('sendMessage', [
+        return [
             'chat_id' => $chatId,
-            'text' => $text,
+            'text' => self::truncate($text, self::MAX_TEXT_LENGTH),
             'parse_mode' => $this->normalizeParseMode($parseMode),
             // 工单正文里的链接不需要预览卡片，反而会把通知撑得很长
             'link_preview_options' => json_encode(['is_disabled' => true]),
-        ]);
+        ];
     }
 
     /**

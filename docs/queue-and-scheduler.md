@@ -1,8 +1,10 @@
 # 队列、Horizon 与定时任务
 
 后端的异步工作全部走 Redis 队列，由 Horizon（`php artisan horizon`，生产里是独立的 `horizon` 容器）消费；
-定时任务由 Octane 的 `tick`（每 30 秒、带 `scheduler-lock` 分布式锁）在 Swoole task worker 里调用
-`schedule:run`，每条到期的 artisan 命令各起一个子进程。生产主机 56 核 / 256 GB，配置按「快、准、不积压」取值，
+定时任务由独立的 `scheduler` 容器（`php artisan schedule:work`）每分钟起一个 `schedule:run`，每条到期的 artisan
+命令各起一个后台子进程。Octane 的 `tick` 只当看门狗：调度心跳过期时代跑并告警（`config/scheduler.php`，2026-11-23
+之前调度直接挂在 tick 里跑，一条命令卡住整块停摆近三天）。队列和定时任务有没有在干活由每分钟的巡检
+`monitor:check` 判断，见下文[巡检与告警](#巡检与告警)。生产主机 56 核 / 256 GB，配置按「快、准、不积压」取值，
 不按省进程取值。
 
 ## 队列与 supervisor（`config/horizon.php`）
@@ -104,9 +106,61 @@ mail_transactional 60、mail_bulk 900，旧队列 send_email 120、send_email_ma
 | check:auto-increment | 每小时 | 自增主键耗尽告警 |
 | xboard:statistics / reset:log / ticket:clean-attachments / billing:prune-documents / commission:period-sweep | 每天凌晨 | |
 | mail:delivery-digest 09:00、send:remindMail 11:30、email-verify:remind 11:35、commission:notify-digest 12:00 | 每天 | 邮件类 |
+| monitor:check | 每分钟 | 面板巡检，见[巡检与告警](#巡检与告警) |
 
 每条命令是一次 artisan 子进程启动（本地实测约 0.25 s CPU）。支付回调里的开通走 `OrderHandleJob::dispatchSync`，
 不经过队列，Horizon 没起来也不卡单。
+
+## 巡检与告警
+
+`monitor:check`（每分钟，`App\Services\Monitor\SystemMonitor`）和后台仪表盘「队列与定时任务」面板
+（`GET system/getMonitorReport`）用的是同一份报告：
+
+- **Horizon**：master 在不在 / 是否暂停，各 supervisor 进程数。
+- **每条队列**：等待中、Horizon 预计等待（对照 `horizon.waits` 阈值）、进程数、最近一次快照的每分钟处理量和平均耗时、
+  近 1 小时失败数。
+- **金丝雀**（`QueueCanaryJob`）：巡检每分钟往每条队列投一个空任务，执行时记下排了多久。它被执行了才说明
+  Redis、Horizon、这条队列的 worker 都在干活而且没被堵住；上一个没执行前不投新的，排超过
+  `max(stall_min_seconds, 等待阈值 + 60)` 秒算卡住。旧邮件队列（`monitor.canary_skip`）不投。
+- **定时任务**（`ScheduleTracker`）：`Kernel::schedule()` 末尾给每条命令挂 before / after，记下开始、结束、退出码。
+  到点 150 秒后还没开始算「没按时跑」（多半是上一次卡住占着 `withoutOverlapping` 的锁），连续 3 次退出码非 0
+  算「连续失败」。带 `between()` 时间窗的任务（支付通道巡检、两份日报）不判断是否按时：Laravel 在定义调度时
+  就把「现在」冻结进了 between 的闭包，常驻进程里判断不准。
+- **调度进程**：心跳、网页进程最近有没有代跑（有 = 专用 scheduler 容器没在跑）。
+- **邮件投递服务**：开了 `MAIL_RELAY_LANES` 但离线超过 3 分钟。
+- **告警通道**：Bot Token、绑了 Telegram 的管理员数、最近一次紧急告警的结果、外部心跳最近一次上报结果。
+
+告警全部走 `AdminAlert::urgent()`：当场直发 Telegram Bot API（5 秒超时、不重试），直发失败才退回
+`send_telegram` 队列。原来所有告警都经过 `send_telegram` 队列，队列或 Redis 一坏，告警和故障一起卡住。
+新问题汇成一条发出；同一问题严重的 30 分钟、提醒 2 小时重复一次（`monitor.repeat_minutes`）；告警过的问题消失后
+发恢复通知。调度停摆仍由 Octane 看门狗告警（巡检这时跑不起来）；看门狗还盯着巡检本身：调度在跑、巡检 5 分钟没跑
+也会告警；看门狗读写缓存出错（多半是 Redis 挂了）时直发一条，30 分钟一次。
+
+**外部心跳 `MONITOR_HEARTBEAT_URL`**：每次巡检后 GET 一次，Uptime Kuma Push 地址推 `status=up` / `status=down&msg=原因`，
+healthchecks.io 有严重问题时请求 `/fail`。整台机器、Redis 或面板全挂时上面这些都跑不起来，只有外部监控能发现
+「心跳停了」，所以强烈建议配上。
+
+## Redis 持久化（AOF）
+
+队列、缓存、锁、调度心跳、Horizon 数据、邮件投递流都在同一个 Redis 里。原来只开 RDB（默认 save 900 1 / 300 10 /
+60 10000）：Redis 一重启或被 OOM 杀掉，最近几分钟入队的任务（流量上报、补开通、邮件、告警）直接没了。现在由
+`xboard-redis-start`（`.docker/usr/local/bin/`，all-in-one 镜像的 supervisord 与 `compose.sample.yaml` 都用它）开
+AOF、`appendfsync everysec`，最多丢 1 秒。
+
+**不要**直接给已有数据的实例加 `--appendonly yes` 重启：AOF 开着时 Redis 只从 AOF 加载，没有 AOF 文件就以空库启动
+（Redis 7 实测），dump.rdb 里的一切都不会被读。脚本第一次发现「有 dump.rdb、没有 appendonlydir」时先按 RDB 启动，
+加载完再在线 `CONFIG SET appendonly yes` 让 Redis 把内存写成 AOF，之后的启动直接从 AOF 加载。
+
+生产机的 compose 在主机上，不随代码更新。手动切换：
+
+```
+docker compose exec redis redis-cli -s /data/redis.sock config set appendonly yes
+docker compose exec redis redis-cli -s /data/redis.sock info persistence | grep aof_rewrite_in_progress   # 等它变 0
+ls <redis 数据卷>/appendonlydir                                                                         # 确认已生成
+```
+
+然后把 compose 里 redis 的 command 换成 `compose.sample.yaml` 那样（或在原命令后加 `--appendonly yes --appendfsync everysec`），
+下次重启生效。`failed_jobs` 表由 `queue:prune-failed --hours=720` 每天 3:30 清理，保留 30 天。
 
 ## Octane / Swoole（`config/octane.php`）
 

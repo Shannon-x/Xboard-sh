@@ -6,6 +6,7 @@ use App\Http\Controllers\V1\Guest\EpayEventController;
 use App\Http\Controllers\V1\Guest\PaymentController;
 use App\Http\Controllers\V1\Guest\PlanController;
 use App\Http\Controllers\V1\Guest\TelegramController;
+use App\Http\Controllers\V1\Guest\TelegramGateController;
 use App\Http\Controllers\V1\Guest\TicketAttachmentController;
 use App\Http\Controllers\V1\Guest\BillingDocumentController;
 use App\Http\Controllers\V1\Guest\BillingPayController;
@@ -30,6 +31,11 @@ class GuestRoute
                 ->middleware('throttle:restock-notify');
             // Telegram
             $router->post('/telegram/webhook', [TelegramController::class, 'webhook']);
+            // 群管理机器人的入群门槛（只让面板用户进群）：服务端到服务端，X-Gate-Secret 鉴权，未配置时 404
+            $router->post('/telegram/gate/check', [TelegramGateController::class, 'check'])
+                ->middleware('throttle:telegram-gate');
+            $router->post('/telegram/gate/bind', [TelegramGateController::class, 'bind'])
+                ->middleware('throttle:telegram-gate');
             // Payment
             // 易支付 V2 事件消息订阅（交易投诉 / 订单退款）。挂在回调前缀下，中间件回调白名单直接透传
             $router->match(['get', 'post'], '/payment/notify/EPay/{uuid}/event', [EpayEventController::class, 'receive'])

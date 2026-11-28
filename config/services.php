@@ -42,6 +42,20 @@ return [
     |
     */
 
+    /*
+    |--------------------------------------------------------------------------
+    | 群管理机器人入群门槛
+    |--------------------------------------------------------------------------
+    |
+    | sufegroup_bot 调 /api/v1/guest/telegram/gate/* 时带的共享密钥（请求头 X-Gate-Secret），
+    | 与机器人 .env 的 XBOARD_GATE_SECRET 填同一个值，建议 openssl rand -hex 32。留空 = 关闭这两条接口。
+    |
+    */
+
+    'telegram_group_gate' => [
+        'secret' => env('TELEGRAM_GROUP_GATE_SECRET', ''),
+    ],
+
     "usdt_rate" => [
         "proxy" => env("USDT_RATE_PROXY"),
     ],

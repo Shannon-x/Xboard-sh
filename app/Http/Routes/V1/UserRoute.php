@@ -142,6 +142,9 @@ class UserRoute
             $router->get('/gift-card/types', [GiftCardController::class, 'types']);
             // Telegram
             $router->get('/telegram/getBotInfo', [TelegramController::class, 'getBotInfo']);
+            // 群管理机器人「一键绑定」：验机器人签发的票据，把 Telegram 绑到当前账号（已登记进 sufe-middleware-rs 路径表）
+            $router->post('/telegram/gateBind', [TelegramController::class, 'gateBind'])
+                ->middleware('throttle:telegram-gate-bind');
             // Comm
             $router->get('/comm/config', [CommController::class, 'config']);
             $router->Post('/comm/getStripePublicKey', [CommController::class, 'getStripePublicKey']);

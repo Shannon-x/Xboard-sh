@@ -109,6 +109,26 @@ class NodeWebSocketProtocolTest extends TestCase
     // ---- 流量：批次去重 ----
 
     #[Test]
+    public function ws_finds_the_same_node_as_the_http_api_when_a_numeric_code_collides_with_another_id(): void
+    {
+        $a = $this->node(['name' => 'a']);
+        $b = $this->node(['name' => 'b']);
+        $a->update(['code' => (string) $b->id]);   // 现网 id19 的 code 是 20 这种情况
+        $trojan = $this->node(['name' => 't', 'type' => 'trojan']);
+
+        $http = \App\Services\ServerService::getServer((string) $b->id, 'vless');
+        $this->assertSame($a->id, $http->id, 'HTTP 先按 code 认');
+        $this->assertSame($a->id, NodeWsProtocol::resolveNode(['node_id' => (string) $b->id, 'node_type' => 'vless'])?->id);
+
+        $this->assertSame($trojan->id, NodeWsProtocol::resolveNode(['node_id' => (string) $trojan->id, 'node_type' => 'trojan'])?->id);
+        $this->assertNull(NodeWsProtocol::resolveNode(['node_id' => (string) $trojan->id, 'node_type' => 'vless']), '类型不符不认');
+        $this->assertNull(NodeWsProtocol::resolveNode(['node_id' => (string) $trojan->id, 'node_type' => 'nope']));
+        $this->assertNull(NodeWsProtocol::resolveNode(['node_id' => '']));
+        $this->assertNull(NodeWsProtocol::resolveNode(['node_id' => ['x']]));
+        $this->assertSame($trojan->id, NodeWsProtocol::resolveNode(['node_id' => (string) $trojan->id, 'node_type' => 'v2node'])?->id, 'v2node 不按类型过滤');
+    }
+
+    #[Test]
     public function the_same_batch_over_http_is_billed_once_and_says_so(): void
     {
         $node = $this->node();

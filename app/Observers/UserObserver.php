@@ -63,7 +63,9 @@ class UserObserver
       $this->recalculateNextResetAt($user);
     }
     if (isset($sync)) {
-      NodeUserSyncJob::dispatch($user->id, 'updated', ...$sync);
+      // afterCommit：续费 / 换套餐在 OrderHandleJob 的事务里改用户，事务没提交前 worker 读到的还是旧行
+      // （已过期），会给节点推 remove。等事务提交再入队；不在事务里时立即入队，和以前一样
+      NodeUserSyncJob::dispatch($user->id, 'updated', ...$sync)->afterCommit();
     }
   }
 
@@ -73,7 +75,7 @@ class UserObserver
       PlanCustomizationService::forgetAddonMembershipCache();
     }
     $this->recalculateNextResetAt($user);
-    NodeUserSyncJob::dispatch($user->id, 'created');
+    NodeUserSyncJob::dispatch($user->id, 'created')->afterCommit();
   }
 
   public function deleted(User $user): void
@@ -84,7 +86,7 @@ class UserObserver
       PlanCustomizationService::forgetAddonMembershipCache();
     }
     if ($user->group_id || $addonGroups !== []) {
-      NodeUserSyncJob::dispatch($user->id, 'deleted', $user->group_id ?: null, $addonGroups);
+      NodeUserSyncJob::dispatch($user->id, 'deleted', $user->group_id ?: null, $addonGroups)->afterCommit();
     }
   }
 

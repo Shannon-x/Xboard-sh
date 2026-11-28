@@ -7,7 +7,6 @@ use App\Services\DeviceStateService;
 use App\Services\NodeSyncService;
 use App\Services\NodeRegistry;
 use App\Services\NodeWsProtocol;
-use App\Services\ServerService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -146,7 +145,8 @@ class NodeWebSocketServer extends Command
                 return;
             }
 
-            $node = Server::find($nodeId);
+            // 和 HTTP 接口用同一套认节点规则（见 NodeWsProtocol::resolveNode）
+            $node = NodeWsProtocol::resolveNode($params);
             if (!$node) {
                 $conn->close(json_encode([
                     'event' => 'error',
@@ -154,6 +154,10 @@ class NodeWebSocketServer extends Command
                 ]));
                 return;
             }
+            if ((string) $node->id !== (string) ($params['node_id'] ?? '')) {
+                Log::notice('[WS] node_id=' . ($params['node_id'] ?? '') . " 按 code 对应到 Node#{$node->id}，按 HTTP 的规则登记为后者");
+            }
+            $nodeId = (int) $node->id;
 
             // Auth passed — cancel timeout, register connection
             if (isset($conn->authTimer)) {

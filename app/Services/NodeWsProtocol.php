@@ -56,6 +56,25 @@ final class NodeWsProtocol
         return ($params['proto'] ?? null) === self::PROTOCOL;
     }
 
+    /**
+     * WS 握手时认节点，规则和 HTTP 接口（Middleware\Server）一致：按 node_type 过滤，先匹配 code、再匹配 id。
+     * 以前直接 Server::find(id)：现网有几十个节点的 code 是数字、和别的节点 id 撞号（如 id19 的 code 是 20），
+     * 用 node_id=20 连上来的节点在 HTTP 上记到 id19、在 WS 上记到 id20，同一批流量重发时两边各记一次。
+     */
+    public static function resolveNode(array $params): ?Server
+    {
+        $raw = $params['node_id'] ?? '';
+        if (!is_scalar($raw) || (string) $raw === '') {
+            return null;
+        }
+        $type = $params['node_type'] ?? null;
+        $type = is_string($type) && $type !== '' && $type !== 'v2node' ? $type : null;
+        if (!Server::isValidType($type)) {
+            return null;
+        }
+        return ServerService::getServer((string) $raw, Server::normalizeType($type));
+    }
+
     public static function authSuccess(int $nodeId, bool $extended): array
     {
         $data = ['node_id' => $nodeId];

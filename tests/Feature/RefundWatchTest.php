@@ -25,7 +25,7 @@ use Tests\TestCase;
 
 /**
  * 退款回查：用户通过投诉等途径让网关退了款 → 自动封号、收回套餐、重置订阅、踢下线并告警，
- * 管理员确认后删号。两次查询一致才处置；冻结只告警。
+ * 封号满 180 天后自动删号。两次查询一致才处置；冻结只告警。
  *
  * 网关用 Http::fake 打桩：V1 按 trade_no 给出应答队列，V2 由测试内生成的平台私钥签名。
  */
@@ -210,6 +210,7 @@ class RefundWatchTest extends TestCase
         $this->assertNotSame($oldToken, $user->token, '旧订阅链接作废');
         $this->assertSame(0, PersonalAccessToken::where('tokenable_id', $user->id)->where('tokenable_type', User::class)->count(), '踢下线');
         $this->assertStringContainsString('网关退款自动封禁', (string) $user->remarks);
+        $this->assertStringContainsString('封号满 180 天自动删号', (string) $user->remarks);
 
         $row->refresh();
         $this->assertSame('refunded', $row->verdict);
@@ -218,7 +219,8 @@ class RefundWatchTest extends TestCase
 
         $alert = $this->alerts()[0];
         $this->assertStringContainsString('已自动封号', $alert);
-        $this->assertStringContainsString('删除 #' . $user->id, $alert);
+        $this->assertStringContainsString('封号满 180 天（' . date('Y-m-d', time() + 180 * 86400) . '）后系统自动删号', $alert);
+        $this->assertStringNotContainsString('执行删号', $alert, '不再要管理员手动删号');
         $this->assertStringContainsString('该单佣金：¥10.56', $alert);
         $this->assertStringContainsString($order->trade_no, $alert);
 

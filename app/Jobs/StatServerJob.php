@@ -4,6 +4,7 @@
 namespace App\Jobs;
 
 use App\Models\StatServer;
+use App\Jobs\Concerns\HasReceiptKey;
 use App\Support\JobReceipt;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -15,7 +16,7 @@ use Illuminate\Support\Facades\Log;
 
 class StatServerJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels, HasReceiptKey;
 
     protected array $data;
     protected array $server;
@@ -60,7 +61,7 @@ class StatServerJob implements ShouldQueue
 
         try {
             // 回执与累加同一事务：重试不会把同一次上报记两遍（见 JobReceipt）
-            JobReceipt::applyOnce($this->job, 'stat_server', fn () => $this->processServerStat($u, $d, $recordAt));
+            JobReceipt::applyOnce($this->job, 'stat_server', fn () => $this->processServerStat($u, $d, $recordAt), $this->receiptKey);
         } catch (\Exception $e) {
             Log::error('StatServerJob failed for server ' . $this->server['id'] . ': ' . $e->getMessage());
             throw $e;

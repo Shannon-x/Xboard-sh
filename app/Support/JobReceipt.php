@@ -30,11 +30,12 @@ final class JobReceipt
     /**
      * @param  Job|null  $job   InteractsWithQueue 的 $this->job；null 表示不在队列里
      * @param  Closure   $apply 真正的落库动作，在事务内执行
+     * @param  string|null $key  覆盖队列 uuid 的回执键（36 字符），见 App\Jobs\Concerns\HasReceiptKey
      * @return bool true = 这次写入了；false = 之前已经写过，这次跳过
      */
-    public static function applyOnce(?Job $job, string $name, Closure $apply): bool
+    public static function applyOnce(?Job $job, string $name, Closure $apply, ?string $key = null): bool
     {
-        $uuid = $job?->uuid();
+        $uuid = $key ?? $job?->uuid();
         if ($uuid === null || $uuid === '') {
             $apply();
             return true;

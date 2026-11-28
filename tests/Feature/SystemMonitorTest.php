@@ -246,12 +246,13 @@ class SystemMonitorTest extends TestCase
 
     public function test_alerts_are_sent_directly_once_repeated_later_and_followed_by_a_recovery_notice(): void
     {
-        $issues = SystemMonitor::issues($this->report(['horizon' => ['status' => 'stopped']]), self::NOW);
+        // 用「被暂停」：它没有 notify_after，第一次巡检就报（「没在运行」要持续 2 分钟才报，见下一个测试）
+        $issues = SystemMonitor::issues($this->report(['horizon' => ['status' => 'paused']]), self::NOW);
 
         SystemMonitor::notify($issues, self::NOW);
         SystemMonitor::notify($issues, self::NOW + 60);
         $this->assertCount(1, $this->telegramTexts(), '持续的问题不每分钟都发');
-        $this->assertStringContainsString('队列进程 Horizon 没在运行', $this->telegramTexts()[0]);
+        $this->assertStringContainsString('队列进程 Horizon 被暂停了', $this->telegramTexts()[0]);
         Bus::assertNotDispatched(SendTelegramJob::class);
 
         SystemMonitor::notify($issues, self::NOW + 1800);

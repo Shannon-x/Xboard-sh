@@ -18,7 +18,7 @@ use Tests\TestCase;
 
 /**
  * 管理员不常看 Telegram：付款异常告警同时推给客服 / 客服群，每天再发一封汇总邮件
- * （自动封号、待确认删号、核验统计、支付投诉）。
+ * （自动封号、自动删号、核验统计、支付投诉）。封号满 180 天自动删号，邮件里不再列「待你确认删号」。
  *
  * Setting 用内存桩替换（真实实现走 redis 缓存）。
  */
@@ -106,15 +106,15 @@ class PaymentAlertDigestTest extends TestCase
         ], $targets);
     }
 
-    public function test_digest_lists_new_enforcements_pending_deletions_and_complaints(): void
+    public function test_digest_lists_new_enforcements_counts_pending_deletions_and_complaints(): void
     {
         $banned = $this->user(['banned' => 1, 'email' => 'refunder@example.test']);
-        $this->enforcedRow($banned);
-        $old = $this->enforcedRow($this->user(['banned' => 1, 'email' => 'old@example.test']), ['refunded_at' => time() - 5 * 86400,
-            'enforce_snapshot' => ['plan_id' => 38, 'expired_at' => time() + 86400, 'balance' => 0, 'commission' => [
-                'trade_no' => 'T1', 'status_before' => 2, 'amount' => 1320,
-                'clawback' => [['invite_user_id' => 5, 'amount' => 1320, 'from_commission' => 1000, 'from_balance' => 0, 'short' => 320]],
-            ]]]);
+        $this->enforcedRow($banned, ['enforce_snapshot' => ['plan_id' => 45, 'expired_at' => time() + 86400, 'balance' => 0, 'commission' => [
+            'trade_no' => 'T1', 'status_before' => 2, 'amount' => 1320,
+            'clawback' => [['invite_user_id' => 5, 'amount' => 1320, 'from_commission' => 1000, 'from_balance' => 0, 'short' => 320]],
+        ]]]);
+        $oldAt = time() - 5 * 86400;
+        $this->enforcedRow($this->user(['banned' => 1, 'email' => 'old@example.test']), ['refunded_at' => $oldAt]);
         $this->enforcedRow(null);   // 用户已删除：不再算待删
         PaymentVerification::create([
             'subject_type' => 'recharge', 'subject_id' => 1, 'payment_id' => 1, 'callback_no' => 'GWOK',
@@ -125,18 +125,19 @@ class PaymentAlertDigestTest extends TestCase
 
         $digest = (new PaymentAlertDigest())->build(time() - 86400, time());
 
-        $this->assertSame(3, $digest['needs_action'], '待删 2 个 + 投诉 1 条');
-        $this->assertStringContainsString('支付日报：3 项需处理', $digest['subject']);
+        $this->assertSame(2, $digest['needs_action'], '扣不回的佣金 1 + 投诉 1；封号待删的不用管理员处理');
+        $this->assertStringContainsString('支付日报：2 项需处理', $digest['subject']);
         $this->assertStringContainsString('【自动封号】2 个', $digest['content']);
         $this->assertStringContainsString('refunder@example.test', $digest['content']);
-        $this->assertStringContainsString('【待你确认删号】2 个', $digest['content']);
-        $this->assertStringContainsString('old@example.test', $digest['content'], '早先封的、还没删的也要继续列出来');
-        $this->assertStringContainsString('原套餐 #45', $digest['content']);
-        $this->assertStringContainsString('原套餐 #38；佣金 ¥13.20 已扣回，¥3.20 扣不回需人工处理', $digest['content']);
+        $this->assertStringContainsString('原套餐 #45；佣金 ¥13.20 已扣回，¥3.20 扣不回需人工处理', $digest['content']);
+        $this->assertStringNotContainsString('待你确认删号', $digest['content']);
+        $this->assertStringContainsString('【自动删号】无', $digest['content']);
+        $this->assertStringContainsString('【封号待删】2 个，封号满 180 天系统自动删号，不用手动处理', $digest['content']);
+        $this->assertStringContainsString('最早一个 ' . date('Y-m-d', $oldAt + 180 * 86400) . ' 到期', $digest['content']);
+        $this->assertStringNotContainsString('old@example.test', $digest['content'], '早先封的只计数，不再每天列一遍');
         $this->assertStringContainsString('投诉 #55 wxpay ¥35.20 申请退款', $digest['content']);
         $this->assertStringNotContainsString('13800000000', $digest['content'], '不外发手机号');
         $this->assertStringContainsString('一致 1', $digest['content']);
-        $this->assertNotNull($old);
     }
 
     public function test_digest_says_all_clear_and_goes_to_admins_or_configured_addresses(): void

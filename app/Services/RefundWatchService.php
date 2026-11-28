@@ -17,7 +17,7 @@ use Illuminate\Support\Facades\Log;
  * 退款回查与处置。
  *
  * 用户可以绕过我们，通过支付宝 / 微信投诉让网关把钱退回去，服务却照常在用。规则（2026-10-24 定）：
- * 查到退款 → 自动封号、收回套餐、重置订阅、踢下线，告警给管理员；管理员确认后删号，新老用户一律删。
+ * 查到退款 → 自动封号、收回套餐、重置订阅、踢下线，告警给管理员；封号满 180 天后自动删号（见 EnforcedUserPurge），新老用户一律删。
  *
  * 发现途径：
  * - 回查：付款核验通过（verdict=ok）的单，付款后前 15 天每天向网关查一次，之后第 20/25/30/38/45 天再查
@@ -212,7 +212,7 @@ final class RefundWatchService
     }
 
     /**
-     * 封号、收回套餐、重置订阅、踢下线，并告警（见 PaymentEnforcement）。删号留给管理员确认。
+     * 封号、收回套餐、重置订阅、踢下线，并告警（见 PaymentEnforcement）。封号满 180 天后自动删号（见 EnforcedUserPurge）。
      */
     private function enforce(PaymentVerification $row, array $result, string $source): void
     {

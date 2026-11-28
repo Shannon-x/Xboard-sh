@@ -11,14 +11,13 @@ use App\Jobs\SendEmailJob;
 use App\Services\Notification\NotificationPreference;
 use App\Models\BalanceLog;
 use App\Models\Plan;
-use App\Models\TicketAttachment;
 use App\Models\User;
 use App\Services\BalanceLedger;
 use App\Services\EmailVerification;
 use App\Services\AuthService;
 use App\Services\NodeSyncService;
 use App\Services\Plugin\HookManager;
-use App\Services\TicketAttachmentService;
+use App\Services\UserDeletionService;
 use App\Services\UserService;
 use App\Traits\QueryOperators;
 use App\Utils\Helper;
@@ -29,7 +28,6 @@ use Illuminate\Http\JsonResponse;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Schema;
 use Laravel\Sanctum\PersonalAccessToken;
 
 class UserController extends Controller
@@ -887,72 +885,11 @@ class UserController extends Controller
             'id.exists' => '用户不存在'
         ]);
         $user = User::find($request->input('id'));
-        $userId = (int) $user->id;
-
-        HookManager::call('admin.user.destroy.before', [
-            'user' => $user,
-            'request' => $request,
-        ]);
 
         try {
-            DB::beginTransaction();
-
-            // 主体关联：直接删除（旧行为）
-            $user->orders()->delete();
-            $user->codes()->delete();
-            $user->stat()->delete();
-
-            // 工单消息需手动清理：原 hasMany Tickets()->delete() 不会级联到 v2_ticket_message
-            $ticketIds = $user->tickets()->pluck('id')->all();
-            // 附件：先记下要删的对象，事务提交后再删存储里的文件（文件删除不可回滚，不放进事务）
-            $attachments = TicketAttachment::where('user_id', $userId)
-                ->when(!empty($ticketIds), fn($q) => $q->orWhereIn('ticket_id', $ticketIds))
-                ->get();
-            if ($attachments->isNotEmpty()) {
-                TicketAttachment::whereIn('id', $attachments->pluck('id')->all())->delete();
-            }
-            if (!empty($ticketIds)) {
-                DB::table('v2_ticket_message')->whereIn('ticket_id', $ticketIds)->delete();
-            }
-            $user->tickets()->delete();
-
-            // 自身的佣金/礼品卡使用记录：删除
-            DB::table('v2_commission_log')->where('user_id', $userId)->delete();
-            if (Schema::hasTable('v2_gift_card_usage')) {
-                DB::table('v2_gift_card_usage')->where('user_id', $userId)->delete();
-            }
-            if (Schema::hasTable('v2_traffic_reset_log')) {
-                DB::table('v2_traffic_reset_log')->where('user_id', $userId)->delete();
-            }
-
-            // 他人对该用户的引用：保留记录但置空，避免悬挂 FK 误读
-            User::where('invite_user_id', $userId)->update(['invite_user_id' => null]);
-            DB::table('v2_commission_log')->where('invite_user_id', $userId)->update(['invite_user_id' => null]);
-            if (Schema::hasTable('v2_gift_card_usage')) {
-                DB::table('v2_gift_card_usage')->where('invite_user_id', $userId)->update(['invite_user_id' => null]);
-            }
-            if (Schema::hasTable('v2_gift_card_code')) {
-                DB::table('v2_gift_card_code')->where('user_id', $userId)->update(['user_id' => null]);
-            }
-
-            $user->delete();
-            DB::commit();
-
-            if ($attachments->isNotEmpty()) {
-                $attachmentService = new TicketAttachmentService();
-                foreach ($attachments as $attachment) {
-                    $attachmentService->deleteFile($attachment);
-                }
-            }
-
-            HookManager::call('admin.user.destroy.after', [
-                'user' => $user,
-                'request' => $request,
-            ]);
-
+            app(UserDeletionService::class)->delete($user, $request);
             return $this->success(true);
         } catch (\Exception $e) {
-            DB::rollBack();
             Log::error($e);
             return $this->fail([500, '删除失败']);
         }

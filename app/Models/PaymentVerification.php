@@ -24,6 +24,8 @@ use Illuminate\Database\Eloquent\Model;
  * @property int|null $checked_at
  * @property int|null $next_check_at
  * @property int|null $alerted_at
+ * @property array|null $enforce_snapshot 自动处置前的用户状态；封号满期删号后另有 deleted（删前的邮箱、单号等）
+ * @property int|null $user_deleted_at 封号满期自动删号的时间
  */
 class PaymentVerification extends Model
 {
@@ -48,6 +50,7 @@ class PaymentVerification extends Model
         'recheck_at' => 'integer',
         'refunded_at' => 'integer',
         'enforce_snapshot' => 'array',
+        'user_deleted_at' => 'integer',
     ];
 
     public const SUBJECT_ORDER = 'order';

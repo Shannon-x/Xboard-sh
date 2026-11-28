@@ -19,7 +19,7 @@ class SendPaymentAlertDigest extends Command
         {--dry-run : 只输出，不发邮件}
         {--once-per-day : 当天已发过就跳过；没发过则从上一封起汇总（最多 72 小时）}';
 
-    protected $description = '支付异常每日邮件：自动封号、待确认删号、核验统计、支付投诉';
+    protected $description = '支付异常每日邮件：自动封号、自动删号、核验统计、支付投诉';
 
     public const LAST_SENT_KEY = 'payment_alert_digest:last_sent_at';
 

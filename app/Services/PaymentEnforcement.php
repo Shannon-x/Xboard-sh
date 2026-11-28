@@ -19,7 +19,8 @@ use Laravel\Sanctum\PersonalAccessToken;
  * 订单带来的邀请佣金一并收回：还没发的作废，已经发了的从邀请人那里扣回（见 revokeCommission）。
  *
  * 管理员不常看 Telegram（2026-10-24）：所以确认异常就直接处置，不等人看；告警同时推给客服，
- * 并进每日邮件汇总（PaymentAlertDigest）。删号不在这里做，由管理员看过后在后台确认。
+ * 并进每日邮件汇总（PaymentAlertDigest）。删号不在这里做：封号满 180 天后由 EnforcedUserPurge 自动删，
+ * 不再等管理员确认（2026-11-28）；在那之前解封的不会删。
  */
 final class PaymentEnforcement
 {
@@ -42,8 +43,8 @@ final class PaymentEnforcement
             $user = $locked->user_id ? User::find($locked->user_id) : null;
             $snapshot = $user
                 ? $this->suspend($user, sprintf(
-                    '[%s %s自动封禁：%s %s，待确认删号]',
-                    date('Y-m-d H:i'), $reason, self::kindOf($locked), self::tradeNoOf($locked)
+                    '[%s %s自动封禁：%s %s，封号满 %d 天自动删号]',
+                    date('Y-m-d H:i'), $reason, self::kindOf($locked), self::tradeNoOf($locked), EnforcedUserPurge::DAYS
                 ))
                 : ['user_missing' => true];
             if ($commission !== null) {
@@ -188,8 +189,8 @@ final class PaymentEnforcement
                 $snapshot['expired_at'] ? date('Y-m-d', (int) $snapshot['expired_at']) : '长期',
                 $isRecharge ? '；充值进去的余额 ¥' . self::yuan((int) $snapshot['balance']) . ' 未扣回' : ''
             );
-            $lines[] = '确认删号：到后台「用户」里删除 #' . $user->id . '，或回复「执行删号 ' . $user->id . '」。'
-                . '若属误判：解封并按上面的原值恢复套餐' . (isset($snapshot['commission']) ? '，佣金按核验记录里的快照退回' : '') . '。';
+            $lines[] = sprintf('封号满 %d 天（%s）后系统自动删号，不用手动删。', EnforcedUserPurge::DAYS, date('Y-m-d', EnforcedUserPurge::deleteAt(time())))
+                . '若属误判：在此之前解封并按上面的原值恢复套餐' . (isset($snapshot['commission']) ? '，佣金按核验记录里的快照退回' : '') . '，解封后不会被删。';
         }
         AdminAlert::send(implode("\n", $lines), 'html', true);
     }
@@ -201,10 +202,11 @@ final class PaymentEnforcement
 
     public static function tradeNoOf(PaymentVerification $row): string
     {
-        if ($row->subject_type === PaymentVerification::SUBJECT_RECHARGE) {
-            return (string) RechargeOrder::where('id', $row->subject_id)->value('trade_no');
-        }
-        return (string) Order::where('id', $row->subject_id)->value('trade_no');
+        $tradeNo = $row->subject_type === PaymentVerification::SUBJECT_RECHARGE
+            ? (string) RechargeOrder::where('id', $row->subject_id)->value('trade_no')
+            : (string) Order::where('id', $row->subject_id)->value('trade_no');
+        // 自动删号时订单随用户一起删了，单号在删前记进了快照
+        return $tradeNo !== '' ? $tradeNo : (string) (((array) $row->enforce_snapshot)['deleted']['trade_no'] ?? '');
     }
 
     /**
@@ -255,9 +257,18 @@ final class PaymentEnforcement
         if ((int) $revoked['status_before'] !== self::COMMISSION_PAID) {
             return '；佣金 ¥' . self::yuan((int) $revoked['amount']) . ' 已作废';
         }
-        $short = (int) array_sum(array_column($revoked['clawback'], 'short'));
+        $short = self::commissionShortOf($revoked);
         return '；佣金 ¥' . self::yuan((int) $revoked['amount']) . ' 已扣回'
             . ($short > 0 ? '，¥' . self::yuan($short) . ' 扣不回需人工处理' : '');
+    }
+
+    /** 已发放的佣金里扣不回、要人工追的金额（分）；$revoked 是 revokeCommission 的结果 */
+    public static function commissionShortOf(?array $revoked): int
+    {
+        if ($revoked === null || (int) ($revoked['status_before'] ?? 0) !== self::COMMISSION_PAID) {
+            return 0;
+        }
+        return (int) array_sum(array_column((array) ($revoked['clawback'] ?? []), 'short'));
     }
 
     public static function yuan(int $minor): string

@@ -35,9 +35,10 @@ class UserObserver
     //
     // 未来如有新增"合成写 expired_at + next_reset_at + save()"需求，请审视是否真的
     // 需要绕过 Observer，必要时通过 TrafficResetService 的显式 API 推动，不要在此处放宽守卫。
-    if ($user->isDirty(['plan_id', 'expired_at']) && !$user->isDirty('next_reset_at')) {
-      $this->recalculateNextResetAt($user);
-    }
+    // 重算 next_reset_at 会 refresh() 再 save()，用户的 dirty 状态在那之后就清空了，
+    // 所以要不要下发、下发什么，必须在重算之前定下来。否则续费、换套餐（改 expired_at /
+    // plan_id）都不会推到节点，只能等节点下一次全量拉取。
+    $resetNextResetAt = $user->isDirty(['plan_id', 'expired_at']) && !$user->isDirty('next_reset_at');
 
     // NodeUserSyncJob 派发独立分支，不受上面守卫影响 —— 节点端依赖
     // expired_at / transfer_enable / banned 等字段变化做下发，必须照常 dispatch。
@@ -55,7 +56,14 @@ class UserObserver
         );
         $lostAddonGroups = array_values(array_diff($before, $user->addonGroupIds()));
       }
-      NodeUserSyncJob::dispatch($user->id, 'updated', $oldGroupId, $lostAddonGroups);
+      $sync = [$oldGroupId, $lostAddonGroups];
+    }
+
+    if ($resetNextResetAt) {
+      $this->recalculateNextResetAt($user);
+    }
+    if (isset($sync)) {
+      NodeUserSyncJob::dispatch($user->id, 'updated', ...$sync);
     }
   }
 

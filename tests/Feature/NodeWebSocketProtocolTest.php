@@ -433,6 +433,28 @@ class NodeWebSocketProtocolTest extends TestCase
     }
 
     #[Test]
+    public function a_renewal_or_plan_change_is_pushed_to_ws_nodes(): void
+    {
+        // 改 expired_at / plan_id 会先重算 next_reset_at（refresh + save），之前这一步把 dirty
+        // 状态清掉了，续费和换套餐都不下发。队列在测试里是同步的，这里直接看推送。
+        $node = $this->node();
+        Cache::put("node_ws_alive:{$node->id}", true, 60);
+        DB::table('v2_plan')->insert(['id' => 1, 'group_id' => 1, 'name' => 'p', 'transfer_enable' => 1024,
+            'show' => 1, 'renew' => 1, 'sell' => 1, 'created_at' => time(), 'updated_at' => time()]);
+        $this->user(1, ['expired_at' => time() - 60]);
+        $this->published = [];
+
+        $user = User::findOrFail(1);
+        $user->expired_at = time() + 30 * 86400;
+        $user->save();
+
+        $this->assertSame(['sync.user.delta'], array_column($this->published, 'event'));
+        $this->assertSame('add', $this->published[0]['data']['action']);
+        $this->assertSame([1], array_column($this->published[0]['data']['users'], 'id'));
+        $this->assertNotNull(User::findOrFail(1)->next_reset_at, '续费时仍要重算 next_reset_at');
+    }
+
+    #[Test]
     public function exceeded_users_are_removed_from_their_addon_group_nodes_too(): void
     {
         $base = $this->node(['name' => 'base', 'group_ids' => ['1']]);

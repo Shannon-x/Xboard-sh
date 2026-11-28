@@ -6,6 +6,7 @@ use App\Models\Server;
 use App\Services\DeviceStateService;
 use App\Services\NodeSyncService;
 use App\Services\NodeRegistry;
+use App\Services\NodeWsProtocol;
 use App\Services\ServerService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
@@ -30,6 +31,14 @@ class NodeWebSocketServer extends Command
 
     /** Ping interval in seconds */
     private const PING_INTERVAL = 55;
+
+    /**
+     * WS 服务心跳：握手接口只在它新鲜时才让节点连 WS。WS 进程没在跑时，节点直接走 HTTP，
+     * 不用先连一次失败再回落。
+     */
+    public const HEARTBEAT_CACHE_KEY = 'ws_server:heartbeat';
+    private const HEARTBEAT_INTERVAL = 10;
+    private const HEARTBEAT_TTL = 30;
 
     public function handle(): void
     {
@@ -60,6 +69,15 @@ class NodeWebSocketServer extends Command
         $worker->onWorkerStart = function (Worker $worker) {
             $this->info("[WS] Worker started, pid={$worker->id}");
             $this->subscribeRedis();
+
+            Cache::put(self::HEARTBEAT_CACHE_KEY, time(), self::HEARTBEAT_TTL);
+            Timer::add(self::HEARTBEAT_INTERVAL, function () {
+                try {
+                    Cache::put(self::HEARTBEAT_CACHE_KEY, time(), self::HEARTBEAT_TTL);
+                } catch (\Throwable $e) {
+                    Log::warning("[WS] heartbeat failed: {$e->getMessage()}");
+                }
+            });
 
             // Periodic ping to detect dead connections
             Timer::add(self::PING_INTERVAL, function () {
@@ -115,6 +133,8 @@ class NodeWebSocketServer extends Command
 
             $token = $params['token'] ?? '';
             $nodeId = (int) ($params['node_id'] ?? 0);
+            // 带 proto=sufe.1 的节点（Rust 节点）用扩展协议：上报逐条确认、定时对账
+            $extended = NodeWsProtocol::negotiated($params);
 
             // Authenticate
             $serverToken = admin_setting('server_token', '');
@@ -141,22 +161,25 @@ class NodeWebSocketServer extends Command
             }
 
             $conn->nodeId = $nodeId;
+            $conn->extended = $extended;
             NodeRegistry::add($nodeId, $conn);
             Cache::put("node_ws_alive:{$nodeId}", true, 86400);
 
-            // 清理该节点的旧设备数据（节点重连后需重新上报全量）
-            app(DeviceStateService::class)->clearAllNodeDevices($nodeId);
+            // 清理该节点的旧设备数据（节点重连后需重新上报全量）。
+            // 扩展协议的节点连上后马上报全量快照（syncNodeDevices 按快照替换），断开时回落到 HTTP 继续报，
+            // 不清：清了会让这个节点上的设备数在两次上报之间归零，设备数限制短暂失效。
+            if (!$extended) {
+                app(DeviceStateService::class)->clearAllNodeDevices($nodeId);
+            }
 
             Log::debug("[WS] Node#{$nodeId} connected", [
                 'remote' => $conn->getRemoteIp(),
                 'total' => NodeRegistry::count(),
+                'protocol' => $extended ? NodeWsProtocol::PROTOCOL : 'xboard',
             ]);
 
             // Send auth success
-            $conn->send(json_encode([
-                'event' => 'auth.success',
-                'data' => ['node_id' => $nodeId],
-            ]));
+            $conn->send(json_encode(NodeWsProtocol::authSuccess($nodeId, $extended)));
 
             // Push full sync (config + users) immediately to this specific connection
             $this->pushFullSync($conn, $node);
@@ -170,6 +193,19 @@ class NodeWebSocketServer extends Command
 
             $event = $msg['event'] ?? '';
             $nodeId = $conn->nodeId ?? null;
+            if (!is_string($event)) {
+                return;
+            }
+
+            if ($nodeId && !empty($conn->extended)) {
+                $frames = NodeWsProtocol::handle((int) $nodeId, $event, $msg['data'] ?? null);
+                if ($frames !== null) {
+                    foreach ($frames as $frame) {
+                        $conn->send(json_encode($frame));
+                    }
+                    return;
+                }
+            }
 
             switch ($event) {
                 case 'pong':
@@ -201,11 +237,16 @@ class NodeWebSocketServer extends Command
         $worker->onClose = function (TcpConnection $conn) {
             if (!empty($conn->nodeId)) {
                 $nodeId = $conn->nodeId;
-                NodeRegistry::remove($nodeId);
+                // 同一节点重连时旧连接的关闭可能晚于新连接注册：只有登记的还是这条连接才注销
+                if (!NodeRegistry::removeIfCurrent($nodeId, $conn)) {
+                    return;
+                }
                 Cache::forget("node_ws_alive:{$nodeId}");
 
-                $service = app(DeviceStateService::class);
-                $affectedUserIds = $service->clearAllNodeDevices($nodeId);
+                $affectedUserIds = [];
+                if (empty($conn->extended)) {
+                    $affectedUserIds = app(DeviceStateService::class)->clearAllNodeDevices($nodeId);
+                }
 
                 Log::debug("[WS] Node#{$nodeId} disconnected", [
                     'total' => NodeRegistry::count(),
@@ -355,23 +396,14 @@ class NodeWebSocketServer extends Command
     private function pushFullSync(TcpConnection $conn, Server $node): void
     {
         $nodeId = $conn->nodeId;
-        // Push config
-        $config = ServerService::buildNodeConfig($node);
-        Log::debug("[WS] Node#{$nodeId} config: ", $config);
-        $conn->send(json_encode([
-            'event' => 'sync.config',
-            'data' => ['config' => $config]
-        ]));
-
-        // Push users
-        $users = ServerService::getAvailableUsers($node)->toArray();
-        $conn->send(json_encode([
-            'event' => 'sync.users',
-            'data' => ['users' => $users]
-        ]));
+        // 配置（与 HTTP config 响应相同，含 base_config）和名单，各带 ETag
+        $frames = NodeWsProtocol::fullSync($node);
+        foreach ($frames as $frame) {
+            $conn->send(json_encode($frame));
+        }
 
         Log::info("[WS] Full sync pushed to node#{$nodeId}", [
-            'users' => count($users),
+            'users' => count($frames[1]['data']['users']),
         ]);
     }
 }

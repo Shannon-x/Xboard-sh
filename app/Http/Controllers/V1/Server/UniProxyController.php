@@ -7,6 +7,7 @@ use App\Services\DeviceStateService;
 use App\Services\NodeSyncService;
 use App\Services\ServerService;
 use App\Services\UserService;
+use App\Support\TrafficBatchKey;
 use App\Utils\CacheKey;
 use App\Utils\Helper;
 use Illuminate\Http\Request;
@@ -62,14 +63,18 @@ class UniProxyController extends Controller
         if (!is_array($res)) {
             return $this->fail([422, 'Invalid data format']);
         }
-        // 统一清洗：拒负数、非整数、超大值、非正整数 uid（见 ServerService::sanitizeTrafficData）
-        $data = ServerService::sanitizeTrafficData($res);
-        if (empty($data)) {
-            return $this->success(true);
-        }
         $node = $this->getNodeInfo($request);
         $nodeType = $node->type;
         $nodeId = $node->id;
+        // 带账本号 + 批次号的上报（Rust 节点）按批次身份去重，并在响应头里告诉节点；
+        // 不带这两个头的请求（Go 版 V2bX）得到 null，响应和入账与原来完全一样。
+        $parentKey = TrafficBatchKey::fromRequest($request, (string) $nodeType, (int) $nodeId);
+
+        // 统一清洗：拒负数、非整数、超大值、非正整数 uid（见 ServerService::sanitizeTrafficData）
+        $data = ServerService::sanitizeTrafficData($res);
+        if (empty($data)) {
+            return $this->idempotent($this->success(true), $parentKey);
+        }
 
         Cache::put(
             CacheKey::get('SERVER_' . strtoupper($nodeType) . '_ONLINE_USER', $nodeId),
@@ -83,8 +88,16 @@ class UniProxyController extends Controller
         );
 
         $userService = new UserService();
-        $userService->trafficFetch($node, $nodeType, $data);
-        return $this->success(true);
+        $userService->trafficFetch($node, $nodeType, $data, $parentKey);
+        return $this->idempotent($this->success(true), $parentKey);
+    }
+
+    private function idempotent($response, ?string $parentKey)
+    {
+        if ($parentKey !== null) {
+            $response->headers->set(TrafficBatchKey::IDEMPOTENT_HEADER, '1');
+        }
+        return $response;
     }
 
     // 后端获取配置

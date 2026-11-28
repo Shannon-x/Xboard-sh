@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\V2\Server;
 
+use App\Console\Commands\NodeWebSocketServer;
 use App\Http\Controllers\Controller;
 use App\Services\DeviceStateService;
 use App\Services\ServerService;
@@ -21,14 +22,16 @@ class ServerController extends Controller
     {
         $websocket = ['enabled' => false];
 
-        if ((bool) admin_setting('server_ws_enable', 1)) {
+        // WS 进程没在跑（心跳过期）时不让节点连：节点直接走 HTTP，不用先连一次失败再回落
+        if ((bool) admin_setting('server_ws_enable', 1) && Cache::has(NodeWebSocketServer::HEARTBEAT_CACHE_KEY)) {
             $customUrl = trim((string) admin_setting('server_ws_url', ''));
 
             if ($customUrl !== '') {
                 $wsUrl = rtrim($customUrl, '/');
             } else {
+                // 与上游一致：默认走面板同源的 /ws（反代到 127.0.0.1:8076），不用另开端口和证书
                 $wsScheme = $request->isSecure() ? 'wss' : 'ws';
-                $wsUrl = "{$wsScheme}://{$request->getHost()}:8076";
+                $wsUrl = "{$wsScheme}://{$request->getHttpHost()}/ws";
             }
 
             $websocket = [

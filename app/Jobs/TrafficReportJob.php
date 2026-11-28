@@ -22,6 +22,9 @@ use Ramsey\Uuid\Uuid;
  * 拆块和派发挪到这里，在 worker 里做。中途失败时本任务重试，重新派发全部子任务；子任务的回执键
  * 由本任务的 uuid、任务类和块号决定（见 HasReceiptKey），已经落库的那一份不会再记一遍。
  * 子任务的队列、拆块大小、数据和原来完全一样。
+ *
+ * 带批次身份的上报（见 App\Support\TrafficBatchKey）用批次身份代替队列 uuid 做父键：节点没拿到
+ * 确认而重发的同一批，会派发出回执键完全相同的子任务，第二份不再记账。
  */
 class TrafficReportJob implements ShouldQueue
 {
@@ -37,6 +40,8 @@ class TrafficReportJob implements ShouldQueue
     protected array $data;
     protected string $protocol;
     protected int $timestamp;
+    /** 批次身份算出的父键；null（V2bX、旧任务）时用队列 uuid，与原来一样 */
+    protected ?string $parentKey = null;
 
     public $tries = 5;
     public $timeout = 30;
@@ -46,13 +51,14 @@ class TrafficReportJob implements ShouldQueue
         return [1, 5, 10, 30];
     }
 
-    public function __construct(array $server, array $data, string $protocol, int $timestamp)
+    public function __construct(array $server, array $data, string $protocol, int $timestamp, ?string $parentKey = null)
     {
         $this->onQueue('traffic_fetch');
         $this->server = $server;
         $this->data = $data;
         $this->protocol = $protocol;
         $this->timestamp = $timestamp;
+        $this->parentKey = $parentKey;
     }
 
     public function handle(): void
@@ -60,8 +66,9 @@ class TrafficReportJob implements ShouldQueue
         if (empty($this->data)) {
             return;
         }
-        // 没有队列上下文（测试里直接 handle()）时没有 uuid：每次执行都算一次新的上报。
-        $parent = $this->job?->uuid() ?: (string) Str::uuid();
+        // 批次身份优先；否则用队列 uuid。没有队列上下文（测试里直接 handle()）时也没有 uuid：
+        // 每次执行都算一次新的上报。
+        $parent = $this->parentKey ?: ($this->job?->uuid() ?: (string) Str::uuid());
 
         $totalU = 0;
         $totalD = 0;

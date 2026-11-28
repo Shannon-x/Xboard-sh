@@ -27,6 +27,19 @@ class NodeRegistry
         unset(self::$connections[$nodeId]);
     }
 
+    /**
+     * 只在登记的还是这条连接时注销。同一节点重连时，add() 关掉的旧连接如果发送缓冲区没清空，
+     * 它的 onClose 会晚于新连接登记；不加判断就会把新连接注销掉，之后的推送都发不出去。
+     */
+    public static function removeIfCurrent(int $nodeId, TcpConnection $conn): bool
+    {
+        if ((self::$connections[$nodeId] ?? null) !== $conn) {
+            return false;
+        }
+        unset(self::$connections[$nodeId]);
+        return true;
+    }
+
     public static function get(int $nodeId): ?TcpConnection
     {
         return self::$connections[$nodeId] ?? null;

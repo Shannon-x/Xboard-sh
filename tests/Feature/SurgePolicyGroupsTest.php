@@ -37,14 +37,14 @@ class SurgePolicyGroupsTest extends TestCase
         '【10x】日本星链家宽ss【不可直连！小白不要连接！】',
     ];
 
-    private function groups(array $names = self::NAMES): array
+    private function policyGroups(array $names = self::NAMES): array
     {
         return (new SurgePolicyGroups($names))->groups();
     }
 
     public function test_main_group_lists_groups_not_every_node(): void
     {
-        $g = $this->groups();
+        $g = $this->policyGroups();
         $this->assertSame([
             '自动选择', '故障转移',
             '🇭🇰 香港节点', '🇹🇼 台湾节点', '🇯🇵 日本节点', '🇺🇸 美国节点', '🇸🇬 新加坡节点', '🇰🇷 韩国节点', '🌍 其他地区',
@@ -55,7 +55,7 @@ class SurgePolicyGroupsTest extends TestCase
 
     public function test_auto_pools_skip_info_heavy_and_cf_nodes(): void
     {
-        $auto = $this->groups()['自动选择']['members'];
+        $auto = $this->policyGroups()['自动选择']['members'];
         foreach ($auto as $n) {
             $this->assertDoesNotMatchRegularExpression('/(6x|10x|cf加速|官网|不可直连|seednet|NTT)/u', $n);
         }
@@ -65,7 +65,7 @@ class SurgePolicyGroupsTest extends TestCase
 
     public function test_region_groups_start_with_their_auto_group(): void
     {
-        $g = $this->groups();
+        $g = $this->policyGroups();
         $this->assertSame('url-test', $g['🇭🇰 香港自动']['type']);
         $this->assertSame(['🇭🇰 香港自动', '自动选择'], array_slice($g['🇭🇰 香港节点']['members'], 0, 2));
         // 手动选择里有该地区全部节点（含 6x/cf），自动组里只有 1x/3x
@@ -81,7 +81,7 @@ class SurgePolicyGroupsTest extends TestCase
 
     public function test_line_groups_by_multiplier(): void
     {
-        $g = $this->groups();
+        $g = $this->policyGroups();
         $this->assertSame('🚇 3x 自动', $g['🚇 3x 中转节点']['members'][0]);
         $this->assertContains('优秀|[3x]中转|台湾hinet家宽02', $g['🚇 3x 中转节点']['members']);
         $this->assertNotContains('【3x】中转|台湾seednet动态家宽🇹🇼', $g['🚇 3x 自动']['members']);
@@ -93,7 +93,7 @@ class SurgePolicyGroupsTest extends TestCase
 
     public function test_ai_group_defaults_to_auto_chain(): void
     {
-        $g = $this->groups();
+        $g = $this->policyGroups();
         $this->assertSame('🤖 AI优选', $g['🤖 AI服务']['members'][0]);
         $this->assertSame(['🧠 AI自动', '🇯🇵 日本自动', '🇺🇸 美国自动', '🇹🇼 台湾自动', '🇸🇬 新加坡自动'], $g['🤖 AI优选']['members']);
         foreach ($g['🧠 AI自动']['members'] as $n) {
@@ -105,7 +105,7 @@ class SurgePolicyGroupsTest extends TestCase
     public function test_no_group_is_empty_or_dangling(): void
     {
         foreach ([self::NAMES, [], ['【10x】三网优化|美国一🇺🇸'], ['【10x】日本星链家宽ss【不可直连！小白不要连接！】']] as $names) {
-            $g = $this->groups($names);
+            $g = $this->policyGroups($names);
             $this->assertArrayHasKey('Proxy', $g);
             $this->assertArrayHasKey('🤖 AI服务', $g);
             foreach ($g as $name => $group) {
@@ -136,7 +136,7 @@ class SurgePolicyGroupsTest extends TestCase
         $this->assertStringContainsString('$proxy_groups', $tpl);
         $this->assertStringNotContainsString('$proxy_group,', $tpl);
         preg_match('/\[Rule\](.*?)(\n\[|$)/s', $tpl, $m);
-        $g = $this->groups([]);
+        $g = $this->policyGroups([]);
         foreach (explode("\n", $m[1]) as $line) {
             $line = trim($line);
             if ($line === '' || str_starts_with($line, '#')) {

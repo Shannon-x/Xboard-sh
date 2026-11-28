@@ -17,9 +17,11 @@ interface SubtotalBuffer
 
     /**
      * 取出目前攒下的全部小计交给 $write。$write 抛异常时这部分留到下次再交。
+     * 同一时刻只有一个 drain 在交（定时任务和明细查询都会调）；别人正在交时最多等 $waitSeconds 秒，
+     * 等不到就返回 0。
      *
      * @param callable(array<int,array{dt:string,node_type:string,node_id:int,user_id:int,records:int,up:int,down:int,hours:int}>):void $write
      * @return int 交出的行数
      */
-    public function drain(callable $write): int;
+    public function drain(callable $write, int $waitSeconds = 0): int;
 }

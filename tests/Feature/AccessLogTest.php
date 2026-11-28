@@ -319,6 +319,20 @@ class AccessLogTest extends TestCase
         $this->postJson($this->adminPath('/accessLog/query'), ['user_id' => 7, 'from' => '2026-11-01', 'to' => '2026-11-28'])->assertStatus(422);
     }
 
+    public function test_a_detail_query_sees_batches_uploaded_since_the_last_flush(): void
+    {
+        $this->upload($this->batch([[7, 'example.com', 10, 20], [8, 'eight.test', 3, 4]], $this->hourAt('2026-11-28 14:00:00')))->assertOk();
+        $this->admin();
+
+        // 定时合并还没跑：查询任务自己先并一次
+        $id = $this->postJson($this->adminPath('/accessLog/query'), ['user_id' => 7, 'from' => '2026-11-28', 'to' => '2026-11-28'])
+            ->assertOk()->json('data.id');
+        $query = AccessLogQuery::find($id);
+        $this->assertSame([AccessLogQuery::STATUS_DONE, 1, 1], [$query->status, $query->files, $query->rows]);
+        $summary = $this->postJson($this->adminPath('/accessLog/summary'), ['user_id' => 7])->assertOk()->json('data');
+        $this->assertSame(['records' => 1, 'up' => 10, 'down' => 20], $summary['total']);
+    }
+
     public function test_read_only_tokens_cannot_see_access_records(): void
     {
         $admin = User::create([
@@ -429,6 +443,14 @@ class AccessLogTest extends TestCase
             ['dt' => '2026-11-28', 'node_type' => 'vless', 'node_id' => 3, 'user_id' => 8, 'records' => 1, 'up' => 3, 'down' => 4, 'hours' => 1 << 14],
         ], $seen);
         $this->assertSame(0, $buffer->drain(fn() => null));
+
+        // 别人正在交（锁被占着）时不交，免得同一份被加两次
+        $this->assertTrue($buffer->add('b4', '2026-11-28', 15, 'vless', 3, [[7, 1, 1, 1]]));
+        Redis::connection()->set('access_log:drain_lock', 'someone-else', 'EX', 60);
+        $this->assertSame(0, $buffer->drain(fn() => null));
+        Redis::connection()->del('access_log:drain_lock');
+        $this->assertSame(1, $buffer->drain(fn() => null));
+        $this->assertNull(Redis::connection()->get('access_log:drain_lock'));
         Redis::flushdb();
     }
 }

@@ -17,7 +17,7 @@ use RuntimeException;
  *
  * 对象布局：
  *   {prefix}/v1/dt=YYYY-MM-DD/node={type}-{id}/hour=HH/{ledger}-{seq}.tsv.gz  节点上传的批次（32 个 gzip 成员首尾相接）
- *   {prefix}/exports/{query}-{random}.csv.gz                                   后台导出的明细
+ *   {prefix}/exports/{query}-{random}.csv                                      后台导出的明细
  */
 final class AccessLogStorage
 {
@@ -82,7 +82,7 @@ final class AccessLogStorage
 
     public function exportKey(int $queryId): string
     {
-        return sprintf('%s/exports/%d-%s.csv.gz', $this->prefix, $queryId, Str::lower(Str::random(16)));
+        return sprintf('%s/exports/%d-%s.csv', $this->prefix, $queryId, Str::lower(Str::random(16)));
     }
 
     public function put(string $key, string $body, string $contentType = 'application/gzip'): void
@@ -170,7 +170,7 @@ final class AccessLogStorage
     {
         return $this->signer->presign('GET', $this->objectUrl($key), $ttl, [
             'response-content-disposition' => "attachment; filename*=UTF-8''" . rawurlencode($downloadName),
-            'response-content-type' => 'application/gzip',
+            'response-content-type' => 'text/csv; charset=utf-8',
         ]);
     }
 

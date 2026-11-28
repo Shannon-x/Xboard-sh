@@ -23,7 +23,7 @@ final class ArraySubtotalBuffer implements SubtotalBuffer
         return true;
     }
 
-    public function drain(callable $write): int
+    public function drain(callable $write, int $waitSeconds = 0): int
     {
         $rows = [];
         foreach ($this->sums as $key => $users) {

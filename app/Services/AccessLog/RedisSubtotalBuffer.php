@@ -13,6 +13,15 @@ final class RedisSubtotalBuffer implements SubtotalBuffer
 {
     private const PENDING = 'access_log:pending';
     private const RETRY = 'access_log:retry';
+    /** 两个 drain 同时交会把 retry 里的同一份各加一次，所以交之前先拿这把锁 */
+    private const LOCK = 'access_log:drain_lock';
+    private const LOCK_TTL = 300;
+    private const RELEASE = <<<'LUA'
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+LUA;
     /** 节点最多重传 8 天前的批次（见 AccessLogBatch::parse），标记留 9 天 */
     private const SEEN_TTL = 9 * 86400;
     private const ADD = <<<'LUA'
@@ -50,7 +59,25 @@ LUA;
         return (int) $added === 1;
     }
 
-    public function drain(callable $write): int
+    public function drain(callable $write, int $waitSeconds = 0): int
+    {
+        $redis = Redis::connection();
+        $token = Str::random(20);
+        $until = microtime(true) + $waitSeconds;
+        while (!$redis->set(self::LOCK, $token, 'EX', self::LOCK_TTL, 'NX')) {
+            if (microtime(true) >= $until) {
+                return 0;
+            }
+            usleep(200_000);
+        }
+        try {
+            return $this->drainLocked($write);
+        } finally {
+            $redis->eval(self::RELEASE, 1, self::LOCK, $token);
+        }
+    }
+
+    private function drainLocked(callable $write): int
     {
         $redis = Redis::connection();
         $total = 0;

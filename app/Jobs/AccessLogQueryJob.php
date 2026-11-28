@@ -3,8 +3,10 @@
 namespace App\Jobs;
 
 use App\Models\AccessLogQuery;
+use App\Services\AccessLog\AccessLogIngest;
 use App\Services\AccessLog\AccessLogQueryService;
 use App\Services\AccessLog\AccessLogStorage;
+use App\Services\AccessLog\SubtotalBuffer;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -34,9 +36,16 @@ class AccessLogQueryJob implements ShouldQueue
         if (!$query || $query->status !== AccessLogQuery::STATUS_PENDING) {
             return;
         }
+        $deadline = time() + AccessLogQueryService::SOFT_DEADLINE;
         $query->forceFill(['status' => AccessLogQuery::STATUS_RUNNING])->save();
+        // 先把还攒在 Redis 里的小计并进日汇总：查询靠它找文件，不并的话最近几分钟上传的批次查不到
         try {
-            (new AccessLogQueryService(app(AccessLogStorage::class)))->run($query);
+            app(SubtotalBuffer::class)->drain(static fn(array $rows) => AccessLogIngest::writeSummary($rows), 20);
+        } catch (\Throwable $e) {
+            report($e);
+        }
+        try {
+            (new AccessLogQueryService(app(AccessLogStorage::class)))->run($query, $deadline);
         } catch (\Throwable $e) {
             $query->forceFill([
                 'status' => AccessLogQuery::STATUS_FAILED,

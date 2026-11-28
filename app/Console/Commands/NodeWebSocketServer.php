@@ -183,7 +183,7 @@ class NodeWebSocketServer extends Command
             ]);
 
             // Send auth success
-            $conn->send(json_encode(NodeWsProtocol::authSuccess($nodeId, $extended)));
+            $conn->send(json_encode(NodeWsProtocol::authSuccess(NodeWsProtocol::ackNodeId($params, $node), $extended)));
 
             // Push full sync (config + users) immediately to this specific connection
             $this->pushFullSync($conn, $node);

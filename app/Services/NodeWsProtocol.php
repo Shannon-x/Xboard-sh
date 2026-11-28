@@ -75,6 +75,20 @@ final class NodeWsProtocol
         return ServerService::getServer((string) $raw, Server::normalizeType($type));
     }
 
+    /**
+     * auth.success 里回给节点的 node_id：回它自己连上来时用的号，不回按 code 对应到的面板内部 id。
+     * 节点（Rust 节点、Xboard-Node）拿这个号核对是不是连对了，号不一样会当作认证失败，
+     * code 和别的节点 id 撞号的节点就永远连不上 WS。按 code 认到的节点只在面板内部登记。
+     */
+    public static function ackNodeId(array $params, Server $node): int
+    {
+        $raw = $params['node_id'] ?? null;
+        if (is_string($raw) && preg_match('/^(0|[1-9][0-9]{0,9})$/', $raw) && (int) $raw <= 4294967295) {
+            return (int) $raw;
+        }
+        return (int) $node->id;
+    }
+
     public static function authSuccess(int $nodeId, bool $extended): array
     {
         $data = ['node_id' => $nodeId];

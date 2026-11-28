@@ -129,6 +129,27 @@ class NodeWebSocketProtocolTest extends TestCase
     }
 
     #[Test]
+    public function auth_success_echoes_the_node_id_the_node_connected_with(): void
+    {
+        // 节点核对 auth.success 的 node_id 和自己配置的是否一致；按 code 认到别的 id 时也要回它自己的号
+        $a = $this->node(['name' => 'a']);
+        $b = $this->node(['name' => 'b']);
+        $a->update(['code' => (string) $b->id]);
+        $params = ['node_id' => (string) $b->id, 'node_type' => 'vless'];
+
+        $node = NodeWsProtocol::resolveNode($params);
+        $this->assertSame($a->id, $node->id, '面板内部按 HTTP 的规则登记');
+        $this->assertSame($b->id, NodeWsProtocol::ackNodeId($params, $node));
+        $this->assertSame($b->id, NodeWsProtocol::authSuccess(NodeWsProtocol::ackNodeId($params, $node), true)['data']['node_id']);
+
+        // 号不是规范的整数（字符串 code）时回内部 id
+        $a->update(['code' => 'jp-a']);
+        $byCode = ['node_id' => 'jp-a', 'node_type' => 'vless'];
+        $this->assertSame($a->id, NodeWsProtocol::ackNodeId($byCode, NodeWsProtocol::resolveNode($byCode)));
+        $this->assertSame($a->id, NodeWsProtocol::ackNodeId(['node_id' => '007'], $a));
+    }
+
+    #[Test]
     public function the_same_batch_over_http_is_billed_once_and_says_so(): void
     {
         $node = $this->node();

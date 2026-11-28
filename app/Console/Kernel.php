@@ -78,6 +78,9 @@ class Kernel extends ConsoleKernel
 
         // 工单附件：按后台配置的保留期清理，另回收未随消息发出 / 工单已删的孤儿文件
         $schedule->command('ticket:clean-attachments')->dailyAt('3:20')->onOneServer()->withoutOverlapping(120)->runInBackground();
+        // 用户访问记录：批次小计每 5 分钟并入日汇总；过期的对象、目录、汇总和导出每天清一次
+        $schedule->command('access-log:flush')->everyFiveMinutes()->onOneServer()->withoutOverlapping(10)->runInBackground();
+        $schedule->command('access-log:prune')->dailyAt('3:25')->onOneServer()->withoutOverlapping(120)->runInBackground();
         // 收据 / 账单归档：收据 PDF 过保留期只删文件（可重建），已结清 / 失效的旧账单连记录删，防止归档无限膨胀
         $schedule->command('billing:prune-documents')->dailyAt('3:40')->onOneServer()->withoutOverlapping(120)->runInBackground();
         // 失败任务表（failed_jobs）：原来从不清理，一张卡住的单两天就能刷几百条。保留 30 天，

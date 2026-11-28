@@ -440,17 +440,19 @@ class NodeWebSocketProtocolTest extends TestCase
     {
         $node = $this->node();
         $url = '/api/v2/server/handshake' . $this->query($node);
+        // 访问记录默认关闭（见 AccessLogTest）
+        $off = ['enabled' => false, 'interval' => 300];
 
-        $this->postJson($url)->assertOk()->assertExactJson(['websocket' => ['enabled' => false]]);
+        $this->postJson($url)->assertOk()->assertExactJson(['websocket' => ['enabled' => false], 'access_log' => $off]);
 
         Cache::put(NodeWebSocketServer::HEARTBEAT_CACHE_KEY, time(), 30);
-        $this->postJson($url)->assertOk()->assertExactJson(['websocket' => ['enabled' => true, 'ws_url' => 'ws://localhost/ws']]);
+        $this->postJson($url)->assertOk()->assertExactJson(['websocket' => ['enabled' => true, 'ws_url' => 'ws://localhost/ws'], 'access_log' => $off]);
 
         admin_setting(['server_ws_url' => 'wss://panel.example.test/ws/']);
-        $this->postJson($url)->assertOk()->assertExactJson(['websocket' => ['enabled' => true, 'ws_url' => 'wss://panel.example.test/ws']]);
+        $this->postJson($url)->assertOk()->assertExactJson(['websocket' => ['enabled' => true, 'ws_url' => 'wss://panel.example.test/ws'], 'access_log' => $off]);
 
         admin_setting(['server_ws_enable' => 0]);
-        $this->postJson($url)->assertOk()->assertExactJson(['websocket' => ['enabled' => false]]);
+        $this->postJson($url)->assertOk()->assertExactJson(['websocket' => ['enabled' => false], 'access_log' => $off]);
     }
 
     // ---- 推送修复 ----

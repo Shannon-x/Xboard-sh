@@ -52,10 +52,15 @@ services:
       - redis
   redis:
     image: redis:7-alpine
-    command: redis-server --unixsocket /data/redis.sock --unixsocketperm 777
+    # 开 AOF（appendfsync everysec）：只用 RDB 时重启会丢最近几分钟入队的任务（流量上报、补开通、邮件、告警）。
+    # 不要直接把 --appendonly yes 加到 redis-server 上重启已有数据的实例：没有 AOF 文件时 Redis 会以空库启动。
+    # 这个脚本第一次先按 dump.rdb 加载、再在线开启 AOF，之后直接从 AOF 启动（见 docs/queue-and-scheduler.md）。
+    command: ["sh", "/usr/local/bin/xboard-redis-start"]
     restart: unless-stopped
+    stop_grace_period: 30s
     volumes:
       - redis-data:/data
+      - ./.docker/usr/local/bin/xboard-redis-start:/usr/local/bin/xboard-redis-start:ro
     sysctls:
       net.core.somaxconn: 1024
 

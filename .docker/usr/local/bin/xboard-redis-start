@@ -1,0 +1,54 @@
+#!/bin/sh
+# Redis 启动脚本：开 AOF（appendfsync everysec），重启最多丢 1 秒的写入。
+#
+# 只用 RDB（默认 save 900 1 / 300 10 / 60 10000）时，Redis 重启会丢掉最近几分钟的写入：
+# 已入队的流量上报、订单补开通、邮件、告警任务都在里面，丢了没人知道。
+#
+# 已经在跑、只有 dump.rdb 的实例不能直接带 --appendonly yes 重启：AOF 开着时 Redis 只从 AOF 加载，
+# 没有 AOF 就以空库启动（Redis 7 实测），队列、缓存、Horizon 数据全丢。所以第一次先按 RDB 起，
+# 加载完再在线 CONFIG SET appendonly yes，由 Redis 把内存里的数据写成 AOF；之后的重启直接带 AOF 启动。
+#
+# 用法：xboard-redis-start [其他 redis-server 参数…]，数据目录取 REDIS_DATA_DIR（默认 /data）。
+DATA_DIR="${REDIS_DATA_DIR:-/data}"
+SOCK="${REDIS_SOCKET:-$DATA_DIR/redis.sock}"
+
+# 官方 redis 镜像的入口只在命令是 redis-server 时才降权；用这个脚本当命令时自己降到 redis 用户
+if [ "$(id -u)" = "0" ] && command -v su-exec >/dev/null 2>&1 && id redis >/dev/null 2>&1; then
+    find "$DATA_DIR" \! -user redis -exec chown redis '{}' + 2>/dev/null
+    exec su-exec redis sh "$0" "$@"
+fi
+
+set -- --dir "$DATA_DIR" --unixsocket "$SOCK" --unixsocketperm 777 --appendfsync everysec "$@"
+
+if [ -f "$DATA_DIR/dump.rdb" ] && [ ! -d "$DATA_DIR/appendonlydir" ] && [ ! -f "$DATA_DIR/appendonly.aof" ]; then
+    echo "[redis-start] 已有 dump.rdb、还没有 AOF：先按 RDB 加载，再在线开启 AOF"
+    redis-server "$@" --appendonly no &
+    pid=$!
+    trap 'redis-cli -s "$SOCK" shutdown >/dev/null 2>&1 || kill -TERM "$pid" 2>/dev/null' TERM INT
+    # 大库加载要一会儿，期间 PING 回 LOADING
+    i=0
+    until [ "$(redis-cli -s "$SOCK" ping 2>/dev/null)" = "PONG" ]; do
+        i=$((i + 1))
+        if [ "$i" -gt 1200 ] || ! kill -0 "$pid" 2>/dev/null; then
+            echo "[redis-start] Redis 没有就绪，保持只用 RDB"
+            wait "$pid"
+            exit $?
+        fi
+        sleep 0.5
+    done
+    if redis-cli -s "$SOCK" config set appendonly yes >/dev/null; then
+        echo "[redis-start] 已开启 AOF，下次启动直接从 AOF 加载"
+    else
+        echo "[redis-start] 开启 AOF 失败，本次继续只用 RDB"
+    fi
+    wait "$pid"
+    status=$?
+    # 收到 TERM 时第一次 wait 会被打断，等 Redis 真正存盘退出
+    while kill -0 "$pid" 2>/dev/null; do
+        wait "$pid"
+        status=$?
+    done
+    exit "$status"
+fi
+
+exec redis-server "$@" --appendonly yes

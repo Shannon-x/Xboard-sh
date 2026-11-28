@@ -78,6 +78,9 @@ class Kernel extends ConsoleKernel
         $schedule->command('ticket:clean-attachments')->dailyAt('3:20')->onOneServer()->withoutOverlapping(120)->runInBackground();
         // 收据 / 账单归档：收据 PDF 过保留期只删文件（可重建），已结清 / 失效的旧账单连记录删，防止归档无限膨胀
         $schedule->command('billing:prune-documents')->dailyAt('3:40')->onOneServer()->withoutOverlapping(120)->runInBackground();
+        // 失败任务表（failed_jobs）：原来从不清理，一张卡住的单两天就能刷几百条。保留 30 天，
+        // 比 Horizon 的失败记录（7 天）长，SMTP 配置坏了之类的整批失败修好后还来得及 queue:retry
+        $schedule->command('queue:prune-failed', ['--hours' => 720])->dailyAt('3:30')->onOneServer()->withoutOverlapping(60)->runInBackground();
         // 闲置过期的登录 / AI 助手令牌：过期一天后从库里删掉（Sanctum 本来就不认，留着只会越积越多）
         $schedule->command('sanctum:prune-expired', ['--hours' => 24])->dailyAt('3:50')->onOneServer()->withoutOverlapping(60)->runInBackground();
         // 客户 AI 助手：调用记录过保留期、长期没用过的 AI 软件登记、令牌已删的授权

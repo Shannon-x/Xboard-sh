@@ -52,6 +52,7 @@ final class ScheduleTracker
         'commission:refresh-usdt-rate' => 'USDT 汇率刷新',
         'ticket:clean-attachments' => '工单附件清理',
         'billing:prune-documents' => '收据 / 账单归档清理',
+        'queue:prune-failed' => '失败任务表清理',
         'sanctum:prune-expired' => '过期令牌清理',
         'mcp:prune' => 'AI 助手记录清理',
         'commission:period-sweep' => '周期返佣资格巡检',

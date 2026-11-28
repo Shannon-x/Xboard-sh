@@ -140,6 +140,28 @@ mail_transactional 60、mail_bulk 900，旧队列 send_email 120、send_email_ma
 healthchecks.io 有严重问题时请求 `/fail`。整台机器、Redis 或面板全挂时上面这些都跑不起来，只有外部监控能发现
 「心跳停了」，所以强烈建议配上。
 
+## Redis 持久化（AOF）
+
+队列、缓存、锁、调度心跳、Horizon 数据、邮件投递流都在同一个 Redis 里。原来只开 RDB（默认 save 900 1 / 300 10 /
+60 10000）：Redis 一重启或被 OOM 杀掉，最近几分钟入队的任务（流量上报、补开通、邮件、告警）直接没了。现在由
+`xboard-redis-start`（`.docker/usr/local/bin/`，all-in-one 镜像的 supervisord 与 `compose.sample.yaml` 都用它）开
+AOF、`appendfsync everysec`，最多丢 1 秒。
+
+**不要**直接给已有数据的实例加 `--appendonly yes` 重启：AOF 开着时 Redis 只从 AOF 加载，没有 AOF 文件就以空库启动
+（Redis 7 实测），dump.rdb 里的一切都不会被读。脚本第一次发现「有 dump.rdb、没有 appendonlydir」时先按 RDB 启动，
+加载完再在线 `CONFIG SET appendonly yes` 让 Redis 把内存写成 AOF，之后的启动直接从 AOF 加载。
+
+生产机的 compose 在主机上，不随代码更新。手动切换：
+
+```
+docker compose exec redis redis-cli -s /data/redis.sock config set appendonly yes
+docker compose exec redis redis-cli -s /data/redis.sock info persistence | grep aof_rewrite_in_progress   # 等它变 0
+ls <redis 数据卷>/appendonlydir                                                                         # 确认已生成
+```
+
+然后把 compose 里 redis 的 command 换成 `compose.sample.yaml` 那样（或在原命令后加 `--appendonly yes --appendfsync everysec`），
+下次重启生效。`failed_jobs` 表由 `queue:prune-failed --hours=720` 每天 3:30 清理，保留 30 天。
+
 ## Octane / Swoole（`config/octane.php`）
 
 - `swoole.options.max_request` / `task_max_request` = 10000：命令行默认 500 会让 worker 每十几秒就重新 boot 一次框架。

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\V2\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\AdminAuditLog;
 use App\Services\Mail\MailRelayStatus;
+use App\Services\Monitor\SystemMonitor;
 use App\Utils\CacheKey;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -47,6 +48,12 @@ class SystemController extends Controller
         return collect($masters)->contains(function ($master) {
             return $master->status === 'paused';
         }) ? false : true;
+    }
+
+    /** 仪表盘「队列与定时任务」面板：Horizon、每条队列（含金丝雀）、失败任务、定时任务、调度进程、告警通道、当前问题 */
+    public function getMonitorReport()
+    {
+        return $this->success(SystemMonitor::report());
     }
 
     /** 仪表盘「邮件投递」卡片：Rust 投递服务的状态、积压、速度和 24 小时额度 */

@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Services\Monitor\SystemMonitor;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
@@ -22,6 +23,15 @@ final class SchedulerWatchdog
     private const FALLBACK_ALERT = 'scheduler:fallback_alerted';
     private const STALL_ALERT = 'scheduler:stall_alerted';
     private const ALERTED_FLAG = 'scheduler:alert_open';
+    /** 最近一次代跑的时间：仪表盘据此区分「专用调度进程在跑」和「网页进程在代跑」 */
+    public const FALLBACK_AT = 'scheduler:fallback_at';
+    /** 看门狗自己出错（多半是 Redis 连不上）时的告警间隔：缓存不可用，只能记在进程内存里 */
+    private const ERROR_ALERT_INTERVAL = 1800;
+
+    private const MONITOR_ALERT = 'scheduler:monitor_alerted';
+    private const MONITOR_STALE_AFTER = 300;
+
+    private static int $lastErrorAlertAt = 0;
 
     /** @var callable(): void|null 测试替身：派子进程 */
     private static $spawner = null;
@@ -51,6 +61,7 @@ final class SchedulerWatchdog
             $stale = $age === null || $age > $staleAfter;
             if (!$stale) {
                 self::announceRecovery($age);
+                self::checkMonitor($now);
                 return 'ok';
             }
 
@@ -58,7 +69,7 @@ final class SchedulerWatchdog
                 self::spawnOncePerMinute();
                 if ($age !== null && Cache::add(self::FALLBACK_ALERT, 1, 3600)) {
                     Cache::forever(self::ALERTED_FLAG, 1);
-                    AdminAlert::send("⚠️ 定时任务：专用调度进程已 {$age} 秒没有心跳\n"
+                    AdminAlert::urgent("⚠️ 定时任务：专用调度进程已 {$age} 秒没有心跳\n"
                         . "网页进程已临时代跑定时任务，业务不受影响；请检查 scheduler 容器（docker compose ps / logs scheduler）。\n"
                         . '1 小时内不再重复提醒。');
                 }
@@ -67,7 +78,7 @@ final class SchedulerWatchdog
             if ($age !== null && $age > $alertAfter && Cache::add(self::STALL_ALERT, 1, 1800)) {
                 Cache::forever(self::ALERTED_FLAG, 1);
                 $minutes = intdiv($age, 60);
-                AdminAlert::send("🚨 定时任务已停摆 {$minutes} 分钟\n"
+                AdminAlert::urgent("🚨 定时任务已停摆 {$minutes} 分钟\n"
                     . "退款回查封号、付款核验、流量重置、佣金结算、每日邮件都不会跑。\n"
                     . ($mode === 'auto' ? '网页进程代跑也没能恢复，' : '')
                     . '请立即检查 scheduler 与 web 容器。30 分钟后仍未恢复会再提醒。', 'markdown', true);
@@ -78,6 +89,7 @@ final class SchedulerWatchdog
                 Log::warning('[scheduler] 看门狗出错', ['error' => $e->getMessage()]);
             } catch (\Throwable) {
             }
+            self::alertWatchdogError($e, $now);
             return 'skipped';
         }
     }
@@ -89,7 +101,40 @@ final class SchedulerWatchdog
         }
         Cache::forget(self::FALLBACK_ALERT);
         Cache::forget(self::STALL_ALERT);
-        AdminAlert::send('✅ 定时任务已恢复，最近一次心跳在 ' . (int) $age . ' 秒前。积压的任务会分批补跑。');
+        AdminAlert::urgent('✅ 定时任务已恢复，最近一次心跳在 ' . (int) $age . ' 秒前。积压的任务会分批补跑。');
+    }
+
+    /**
+     * 调度在跑、巡检（monitor:check）却 5 分钟没跑过：多半是它自己卡住占着锁。巡检不跑，队列卡住就没人报。
+     * 只在巡检跑过至少一次之后才看（刚升级、还没轮到它时不报）。
+     */
+    private static function checkMonitor(int $now): void
+    {
+        $last = Cache::get(SystemMonitor::LAST_CHECK);
+        if ($last === null || $now - (int) $last <= self::MONITOR_STALE_AFTER) {
+            return;
+        }
+        if (Cache::add(self::MONITOR_ALERT, 1, 3600)) {
+            $minutes = intdiv($now - (int) $last, 60);
+            AdminAlert::urgent("⚠️ 面板巡检已 {$minutes} 分钟没跑\n"
+                . "定时任务在跑，但 monitor:check 没有按时执行：队列卡住、定时任务失败时不会再收到告警。\n"
+                . '请看 scheduler 容器日志。1 小时内不再重复提醒。');
+        }
+    }
+
+    /**
+     * 看门狗读写缓存都失败，多半是 Redis 挂了：这时定时任务、队列、锁全都不可用，
+     * 却没有任何东西能发告警（告警的节流也存在 Redis 里）。直发一条，用进程内存节流。
+     */
+    private static function alertWatchdogError(\Throwable $e, int $now): void
+    {
+        if ($now - self::$lastErrorAlertAt < self::ERROR_ALERT_INTERVAL) {
+            return;
+        }
+        self::$lastErrorAlertAt = $now;
+        AdminAlert::urgent("🚨 面板看门狗出错，定时任务和队列可能都停了\n"
+            . mb_substr($e->getMessage(), 0, 300) . "\n"
+            . '多半是 Redis 连不上：请检查 redis 容器与 web / horizon / scheduler 日志。30 分钟内不再重复提醒。');
     }
 
     /** 每分钟最多派一个 schedule:run 子进程（同一分钟内的重复派发由事件自身的 onOneServer 再兜一层） */
@@ -98,6 +143,7 @@ final class SchedulerWatchdog
         if (!Cache::add(self::SPAWN_LOCK, 1, 55)) {
             return;
         }
+        Cache::forever(self::FALLBACK_AT, time());
         if (self::$spawner !== null) {
             (self::$spawner)();
             return;

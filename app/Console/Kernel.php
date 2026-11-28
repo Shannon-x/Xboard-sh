@@ -2,6 +2,7 @@
 
 namespace App\Console;
 
+use App\Services\Monitor\ScheduleTracker;
 use App\Services\Plugin\PluginManager;
 use App\Support\SchedulerHeartbeat;
 use Illuminate\Console\Scheduling\Schedule;
@@ -97,11 +98,17 @@ class Kernel extends ConsoleKernel
         $schedule->command('mail:delivery-digest', ['--once-per-day'])->everyFifteenMinutes()->between('9:00', '23:59')->onOneServer()->withoutOverlapping(30)->runInBackground();
         // horizon metrics
         $schedule->command('horizon:snapshot')->everyFiveMinutes()->onOneServer()->runInBackground();
+        // 面板巡检：队列金丝雀、Horizon、失败任务、每条定时任务按时与否；有问题直发 Telegram（不经过队列）。
+        // 仪表盘「队列与定时任务」面板读同一份数据（SystemMonitor）
+        $schedule->command('monitor:check')->everyMinute()->onOneServer()->withoutOverlapping(3)->runInBackground();
         // backup Timing
         // if (env('ENABLE_AUTO_BACKUP_AND_UPDATE', false)) {
         //     $schedule->command('backup:database', ['true'])->daily()->onOneServer()->runInBackground();
         // }
         app(PluginManager::class)->registerPluginSchedules($schedule);
+
+        // 每条命令记下开始 / 结束 / 退出码，巡检据此判断「没按时跑」「连续失败」「卡住」（放在最后，插件的命令也算上）
+        ScheduleTracker::attach($schedule);
 
     }
 

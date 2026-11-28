@@ -3,6 +3,7 @@
 namespace App\Protocols;
 
 use App\Support\CertPinHelper;
+use App\Support\SurgePolicyGroups;
 use App\Utils\Helper;
 use Illuminate\Support\Facades\File;
 use App\Support\AbstractProtocol;
@@ -119,6 +120,13 @@ class Surge extends AbstractProtocol
         $config = str_replace('$subs_link', $subsURL, $config);
         $config = str_replace('$subs_domain', $subsDomain, $config);
         $config = str_replace('$proxies', $proxies, $config);
+        // 新模板写 $proxy_groups：由服务端按地区/线路倍率生成整段策略组（见 SurgePolicyGroups）。
+        // 必须先于 $proxy_group 替换，否则 $proxy_group 会把 $proxy_groups 的前缀吃掉。
+        // 没写 $proxy_groups 的旧模板行为不变。
+        if (str_contains($config, '$proxy_groups')) {
+            $names = array_values(array_filter(array_map('trim', explode(',', $proxyGroup))));
+            $config = str_replace('$proxy_groups', (new SurgePolicyGroups($names, $surge6))->render(), $config);
+        }
         $config = str_replace('$proxy_group', rtrim($proxyGroup, ', '), $config);
 
         $upload = round($user['u'] / (1024 * 1024 * 1024), 2);

@@ -107,6 +107,17 @@ class ConfigSave extends FormRequest
         'show_protocol_to_server_enable' => '',
         'ticket_active_subscription_required' => '',
         'subscribe_path' => '',
+        // access log（用户访问记录，见 App\Services\AccessLog\AccessLogConfig）
+        'access_log_enable' => 'boolean',
+        'access_log_interval' => 'integer|min:60|max:3600',
+        'access_log_retention_days' => 'integer|min:1|max:365',
+        'access_log_s3_endpoint' => 'nullable|url|max:255',
+        'access_log_s3_region' => 'nullable|string|max:64',
+        'access_log_s3_bucket' => 'nullable|string|max:128',
+        'access_log_s3_access_key' => 'nullable|string|max:255',
+        'access_log_s3_secret_key' => 'nullable|string|max:255',
+        'access_log_s3_path_style' => 'boolean',
+        'access_log_s3_prefix' => 'nullable|string|max:64|regex:/^[A-Za-z0-9._\/-]*$/',
         // server
         'server_token' => 'nullable|string|min:16|max:128',
         'server_pull_interval' => 'integer',

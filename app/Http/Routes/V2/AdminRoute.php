@@ -1,6 +1,7 @@
 <?php
 namespace App\Http\Routes\V2;
 
+use App\Http\Controllers\V2\Admin\AccessLogController;
 use App\Http\Controllers\V2\Admin\AuthController;
 use App\Http\Controllers\V2\Admin\ConfigController;
 use App\Http\Controllers\V2\Admin\SecurityController;
@@ -181,6 +182,17 @@ class AdminRoute
             });
 
             // Stat
+            // 用户访问记录：全部 POST、不以 fetch / detail 结尾，只读令牌调不到，每次查看都进审计日志
+            $router->group([
+                'prefix' => 'accessLog'
+            ], function ($router) {
+                $router->post('/overview', [AccessLogController::class, 'overview']);
+                $router->post('/summary', [AccessLogController::class, 'summary']);
+                $router->post('/query', [AccessLogController::class, 'query']);
+                $router->post('/queries', [AccessLogController::class, 'queries']);
+                $router->post('/result', [AccessLogController::class, 'result']);
+                $router->post('/testStorage', [AccessLogController::class, 'testStorage']);
+            });
             $router->group([
                 'prefix' => 'stat'
             ], function ($router) {

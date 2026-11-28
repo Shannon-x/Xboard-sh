@@ -216,6 +216,8 @@ class ConfigController extends Controller
                 'frontend_theme_color' => admin_setting('frontend_theme_color', 'default'),
                 'frontend_background_url' => admin_setting('frontend_background_url'),
             ],
+            // 用户访问记录（Rust 节点 → S3）：开关、批次间隔、保留天数和存储 —— 默认值集中在 AccessLogConfig
+            'access_log' => \App\Services\AccessLog\AccessLogConfig::fromSettings()->toAdminArray(),
             'server' => [
                 'server_token' => admin_setting('server_token'),
                 'server_pull_interval' => admin_setting('server_pull_interval', 60),

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\V2\Server;
 
 use App\Console\Commands\NodeWebSocketServer;
 use App\Http\Controllers\Controller;
+use App\Services\AccessLog\AccessLogConfig;
 use App\Services\DeviceStateService;
 use App\Services\ServerService;
 use App\Services\UserService;
@@ -41,7 +42,9 @@ class ServerController extends Controller
         }
 
         return response()->json([
-            'websocket' => $websocket
+            'websocket' => $websocket,
+            // 只有 Rust 节点调握手；旧版 Rust 节点忽略不认识的字段
+            'access_log' => AccessLogConfig::fromSettings()->forNode(),
         ]);
     }
 

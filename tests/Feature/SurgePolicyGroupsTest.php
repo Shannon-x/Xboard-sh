@@ -37,9 +37,9 @@ class SurgePolicyGroupsTest extends TestCase
         '【10x】日本星链家宽ss【不可直连！小白不要连接！】',
     ];
 
-    private function policyGroups(array $names = self::NAMES): array
+    private function policyGroups(array $names = self::NAMES, bool $smart = false): array
     {
-        return (new SurgePolicyGroups($names))->groups();
+        return (new SurgePolicyGroups($names, $smart))->toArray();
     }
 
     public function test_main_group_lists_groups_not_every_node(): void
@@ -105,15 +105,18 @@ class SurgePolicyGroupsTest extends TestCase
     public function test_no_group_is_empty_or_dangling(): void
     {
         foreach ([self::NAMES, [], ['【10x】三网优化|美国一🇺🇸'], ['【10x】日本星链家宽ss【不可直连！小白不要连接！】']] as $names) {
-            $g = $this->policyGroups($names);
-            $this->assertArrayHasKey('Proxy', $g);
-            $this->assertArrayHasKey('🤖 AI服务', $g);
+          foreach ([false, true] as $smart) {
+            $g = $this->policyGroups($names, $smart);
+            foreach (['Proxy', '🤖 AI服务', '📲 电报消息', '🎞️ 国际流媒体', '🐟 漏网之鱼'] as $required) {
+                $this->assertArrayHasKey($required, $g);
+            }
             foreach ($g as $name => $group) {
                 $this->assertNotEmpty($group['members'], $name);
                 foreach ($group['members'] as $m) {
                     $this->assertTrue(in_array($m, $names, true) || isset($g[$m]) || $m === 'DIRECT', "{$name} 引用了不存在的 {$m}");
                 }
             }
+          }
         }
     }
 
@@ -123,11 +126,56 @@ class SurgePolicyGroupsTest extends TestCase
         $lines = explode("\r\n", $out);
         $this->assertSame('Proxy = select, 自动选择, 故障转移, 🇭🇰 香港节点', implode(', ', array_slice(explode(', ', $lines[0]), 0, 4)));
         $this->assertStringContainsString('🇭🇰 香港自动 = url-test, ', $out);
-        $this->assertStringContainsString('url=http://www.gstatic.com/generate_204, interval=600, timeout=5, tolerance=100', $out);
+        $this->assertStringContainsString('url=http://www.gstatic.com/generate_204, interval=600, timeout=5, tolerance=100, hidden=true', $out);
+        // 顶层自动选择在列表里可见
+        $this->assertMatchesRegularExpression('/(^|\n)自动选择 = url-test, [^\r\n]*tolerance=100(\r|$)/u', $out);
         $this->assertStringContainsString('🤖 AI优选 = fallback, 🧠 AI自动, ', $out);
         foreach ($lines as $line) {
-            $this->assertMatchesRegularExpression('/^[^=,]+ = (select|url-test|fallback), /u', $line);
+            $this->assertMatchesRegularExpression('/^[^=,]+ = (select|url-test|fallback|smart), /u', $line);
         }
+    }
+
+    public function test_surge6_uses_smart_for_region_and_line_auto_groups(): void
+    {
+        $g = $this->policyGroups(self::NAMES, true);
+        foreach (['🇭🇰 香港自动', '🇯🇵 日本自动', '🚇 3x 自动', '🎬 解锁节点'] as $name) {
+            $this->assertSame('smart', $g[$name]['type'], $name);
+            $this->assertSame('hidden=true', $g[$name]['params'], $name);
+        }
+        // 顶层自动选择、故障转移、AI 自动（要用 chatgpt.com 测速）不变
+        $this->assertSame('url-test', $g['自动选择']['type']);
+        $this->assertSame('fallback', $g['故障转移']['type']);
+        $this->assertSame('url-test', $g['🧠 AI自动']['type']);
+        $this->assertStringContainsString('chatgpt.com', $g['🧠 AI自动']['params']);
+        // smart 组里只放节点，不放组（官方说明 smart 不支持嵌套组）
+        foreach ($g as $name => $group) {
+            if ($group['type'] === 'smart') {
+                foreach ($group['members'] as $m) {
+                    $this->assertArrayNotHasKey($m, $g, "{$name} 里不能套组 {$m}");
+                    $this->assertNotSame('DIRECT', $m);
+                }
+            }
+        }
+    }
+
+    public function test_service_groups(): void
+    {
+        $g = $this->policyGroups();
+        $this->assertSame(['Proxy', '自动选择', '🇭🇰 香港节点'], array_slice($g['📲 电报消息']['members'], 0, 3));
+        $this->assertSame(['🎬 解锁节点', '🇯🇵 日本节点', 'Proxy'], array_slice($g['🎞️ 国际流媒体']['members'], 0, 3));
+        // 解锁节点与 Clash 模板同口径，不含 cf 加速和高倍率
+        $unlock = $g['🎬 解锁节点']['members'];
+        $this->assertContains('【3x】中转|美国一🇺🇸', $unlock);
+        $this->assertContains('【3x】中转|台湾🇹🇼', $unlock);
+        $this->assertContains('优秀｜【3x】中转|新日本KDDI家宽🇯🇵', $unlock);
+        $this->assertNotContains('cf加速|日本KDDI家宽🇯🇵', $unlock);
+        $this->assertNotContains('【6x】透传专线|美国一🇺🇸', $unlock);
+        $this->assertNotContains('日本樱花10gbps🌸hy2', $unlock);
+        $this->assertSame(['Proxy', '自动选择', 'DIRECT'], $g['🐟 漏网之鱼']['members']);
+        // 没有能解锁的节点时，流媒体组退到主选择，不留空引用
+        $g = $this->policyGroups(['【3x】中转|英国']);
+        $this->assertArrayNotHasKey('🎬 解锁节点', $g);
+        $this->assertSame('Proxy', $g['🎞️ 国际流媒体']['members'][0]);
     }
 
     public function test_default_template_only_references_generated_groups(): void
@@ -146,5 +194,9 @@ class SurgePolicyGroupsTest extends TestCase
             $policy = $parts[0] === 'FINAL' ? $parts[1] : $parts[2];
             $this->assertTrue(isset($g[$policy]) || in_array($policy, ['DIRECT', 'REJECT', 'REJECT-TINYGIF'], true), "规则引用了不存在的策略 {$policy}：{$line}");
         }
+        $this->assertStringContainsString('FINAL,🐟 漏网之鱼,dns-failed', $tpl);
+        // 不含 IP 的规则集要在 IP 规则集前面（SukkaW/Surge 的用法，避免提前做 DNS 解析）
+        $this->assertLessThan(strpos($tpl, '/List/ip/'), strrpos($tpl, '/List/non_ip/'));
+        $this->assertLessThan(strpos($tpl, 'Loyalsoldier/surge-rules@release/google.txt'), strpos($tpl, '/List/non_ip/stream.conf'));
     }
 }

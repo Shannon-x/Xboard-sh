@@ -125,7 +125,7 @@ class Surge extends AbstractProtocol
         // 没写 $proxy_groups 的旧模板行为不变。
         if (str_contains($config, '$proxy_groups')) {
             $names = array_values(array_filter(array_map('trim', explode(',', $proxyGroup))));
-            $config = str_replace('$proxy_groups', (new SurgePolicyGroups($names))->render(), $config);
+            $config = str_replace('$proxy_groups', (new SurgePolicyGroups($names, $surge6))->render(), $config);
         }
         $config = str_replace('$proxy_group', rtrim($proxyGroup, ', '), $config);
 
